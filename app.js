@@ -16,15 +16,15 @@
 
 /**
  * Array of magnification multipliers corresponding to each image.
- * Index 0 = 1.webp at 1x, Index 9 = 10.webp at 50000x
+ * Index 0 = 2.webp at 10x, Index 8 = 10.webp at 50000x
  * These represent the actual SEM magnification values.
  */
-const SCALE_LABELS = [1, 10, 50, 200, 500, 1000, 5000, 10000, 25000, 50000];
+const SCALE_LABELS = [10, 50, 200, 500, 1000, 5000, 10000, 25000, 50000];
 
 /**
- * Total number of images available (1.webp through 10.webp)
+ * Total number of images available (2.webp through 10.webp)
  */
-const TOTAL_IMAGES = 10;
+const TOTAL_IMAGES = 9;
 
 /**
  * Image file extension
@@ -34,7 +34,7 @@ const IMAGE_EXTENSION = '.webp';
 /**
  * Path to images folder
  */
-const IMAGE_PATH = './images/';
+const IMAGE_PATH = '/images/';
 
 /**
  * WebSocket server URL for receiving focus data
@@ -72,9 +72,12 @@ const AppState = {
     // Concentration-based zoom mechanics
     // concentrationVelocity: increases with wheel input, naturally decays over time
     concentrationVelocity: 0.0,
+    lastScrollTime: 0, // Track when the user last scrolled
 
     // WebSocket connection reference
     ws: null,
+
+    reconnectAttempts: 0,
 };
 
 // ============================================================================
@@ -135,6 +138,12 @@ const textureCache = {};
  */
 async function initialize() {
     console.log('🚀 Initializing Mind Zoom Application...');
+
+    // Apply background image fix directly to container on load
+    DOM.landingContainer.style.backgroundColor = 'transparent';
+    DOM.landingContainer.style.backgroundImage = "url('/images/1.webp')";
+    DOM.landingContainer.style.backgroundSize = "cover";
+    DOM.landingContainer.style.backgroundPosition = "center";
 
     // Attach event listeners
     attachEventListeners();
@@ -252,28 +261,34 @@ function handleContinueSimulation() {
 function activateSimulationMode() {
     console.log('🖱️  Mouse wheel listener activated for focus simulation');
 
+    let wheelAccumulator = 0;
+
     // Listen to wheel events on immersion container
     DOM.immersionContainer.addEventListener('wheel', (event) => {
         event.preventDefault();
 
         // ====================================================================
-        // Concentration Velocity Model
+        // Concentration Velocity Model with Step Divider
         // ====================================================================
-        // Instead of directly modifying focus, we increase concentrationVelocity
-        // This creates a more organic, fluid interaction where:
-        // - Multiple wheel events compound into a velocity
-        // - The velocity naturally decays when no input is received
-        // - The zoom feels reactive rather than mechanical
-        // ====================================================================
+        // Accumulate scroll ticks, applying velocity only every 3 steps
+        // to dampen sensitivity and slow down image swapping.
+        
+        wheelAccumulator += (event.deltaY > 0 ? 1 : -1);
 
-        // Positive deltaY = scrolling down = increasing concentration (zooming in)
-        // Negative deltaY = scrolling up = decreasing concentration (zooming out)
-        const wheelDelta = event.deltaY > 0 ? 0.02 : -0.02;
+        if (Math.abs(wheelAccumulator) >= 3) {
+            AppState.lastScrollTime = performance.now(); // Update last scroll time
+            
+            const direction = wheelAccumulator > 0 ? 1 : -1;
+            const wheelDelta = direction * 0.01;
 
-        // Add to concentration velocity (accumulate input)
-        AppState.concentrationVelocity = Math.max(-0.1, Math.min(0.1, AppState.concentrationVelocity + wheelDelta));
+            // Add to concentration velocity (accumulate input)
+            AppState.concentrationVelocity = Math.max(-0.05, Math.min(0.05, AppState.concentrationVelocity + wheelDelta));
 
-        console.log(`🎯 Concentration Velocity: ${AppState.concentrationVelocity.toFixed(3)}`);
+            console.log(`🎯 Concentration Velocity: ${AppState.concentrationVelocity.toFixed(3)}`);
+            
+            // Reset accumulator
+            wheelAccumulator = 0;
+        }
     }, { passive: false });
 }
 
@@ -294,6 +309,13 @@ function switchToLanding() {
 
     // Show landing container
     DOM.landingContainer.style.display = 'block';
+    
+    // Restore background image for landing view
+    document.body.style.backgroundImage = "url('/images/1.webp')";
+    DOM.landingContainer.style.backgroundColor = 'transparent';
+    DOM.landingContainer.style.backgroundImage = "url('/images/1.webp')";
+    DOM.landingContainer.style.backgroundSize = "cover";
+    DOM.landingContainer.style.backgroundPosition = "center";
 
     // ========================================================================
     // Note: In PixiJS v8, the ticker runs automatically.
@@ -313,8 +335,11 @@ function switchToImmersion() {
     // Hide landing container
     DOM.landingContainer.style.display = 'none';
 
-    // Show immersion container
+    // Show immersion container and clear background image
     DOM.immersionContainer.style.display = 'block';
+    document.body.style.backgroundImage = 'none';
+    document.body.style.backgroundColor = '#000';
+    DOM.immersionContainer.style.backgroundColor = '#000';
 
     // ========================================================================
     // Note: In PixiJS v8, the ticker runs automatically upon initialization.
@@ -363,6 +388,7 @@ function initializeWebSocket() {
         // Connection opened
         AppState.ws.onopen = () => {
             console.log('✅ WebSocket connected');
+            AppState.reconnectAttempts = 0;
             // Device connections will be confirmed via messages
         };
 
@@ -404,11 +430,16 @@ function initializeWebSocket() {
             updateConnectionIndicators();
             updateEstablishConnectionButtonState();
 
-            // Attempt reconnection after 3 seconds
-            setTimeout(() => {
-                console.log('🔄 Attempting to reconnect...');
-                initializeWebSocket();
-            }, 3000);
+            if (AppState.reconnectAttempts < 3) {
+                AppState.reconnectAttempts++;
+                console.log(`🔄 Attempting to reconnect... (${AppState.reconnectAttempts}/3)`);
+                setTimeout(() => {
+                    initializeWebSocket();
+                }, 3000);
+            } else {
+                console.warn('⚠️ Max WebSocket reconnection attempts reached. Staying in simulation mode.');
+                AppState.isSimulationMode = true;
+            }
         };
 
         // Connection error
@@ -426,22 +457,69 @@ function initializeWebSocket() {
 function updateConnectionIndicators() {
     console.log(`📊 Updating connection indicators`);
 
+    const container = document.querySelector('.status-indicators');
+    if (container && !container.dataset.styled) {
+        container.dataset.styled = "true";
+        container.style.flexDirection = 'column';
+        container.style.background = 'rgba(15, 23, 42, 0.85)';
+        container.style.padding = '1rem';
+        container.style.borderRadius = '0.5rem';
+        container.style.border = '1px solid rgba(102, 126, 234, 0.3)';
+        container.style.overflow = 'hidden';
+        container.style.transition = 'max-height 0.3s ease';
+        container.style.maxHeight = '150px';
+
+        const label = document.createElement('div');
+        label.innerHTML = 'Connection Status <span id="connection-chevron">▼</span>';
+        label.style.color = '#667eea';
+        label.style.fontWeight = 'bold';
+        label.style.fontSize = '0.85rem';
+        label.style.marginBottom = '0.5rem';
+        label.style.cursor = 'pointer';
+        label.style.userSelect = 'none';
+        label.style.display = 'flex';
+        label.style.justifyContent = 'space-between';
+        label.style.alignItems = 'center';
+        label.style.gap = '0.5rem';
+        
+        label.addEventListener('click', () => {
+            const isCollapsed = container.style.maxHeight === '35px';
+            container.style.maxHeight = isCollapsed ? '150px' : '35px';
+            const chevron = document.getElementById('connection-chevron');
+            if (chevron) chevron.textContent = isCollapsed ? '▼' : '▲';
+        });
+        
+        container.insertBefore(label, container.firstChild);
+    }
+
+    const applyBloom = (indicator, isConnected) => {
+        const color = isConnected ? '#10b981' : '#ef4444';
+        indicator.style.backgroundColor = color;
+        indicator.style.color = color;
+        indicator.style.boxShadow = `0 0 4px ${color}`;
+        indicator.style.filter = `drop-shadow(0 0 2px ${color})`;
+    };
+
     // Update Muse indicator
     if (AppState.isMuseConnected) {
         DOM.museIndicator.classList.remove('disconnected');
         DOM.museIndicator.classList.add('connected');
+        applyBloom(DOM.museIndicator, true);
     } else {
         DOM.museIndicator.classList.remove('connected');
         DOM.museIndicator.classList.add('disconnected');
+        applyBloom(DOM.museIndicator, false);
     }
 
     // Update Mind Monitor indicator
     if (AppState.isMindMonitorConnected) {
         DOM.mindmonitorIndicator.classList.remove('disconnected');
         DOM.mindmonitorIndicator.classList.add('connected');
+        applyBloom(DOM.mindmonitorIndicator, true);
     } else {
         DOM.mindmonitorIndicator.classList.remove('connected');
         DOM.mindmonitorIndicator.classList.add('disconnected');
+        applyBloom(DOM.mindmonitorIndicator, false);
     }
 }
 
@@ -468,25 +546,20 @@ async function preloadImages() {
 
     const loadPromises = [];
 
-    for (let i = 1; i <= TOTAL_IMAGES; i++) {
-        const imagePath = `${IMAGE_PATH}${i}${IMAGE_EXTENSION}`;
+    for (let i = 0; i < TOTAL_IMAGES; i++) {
+        const imageNumber = i + 2;
+        const imagePath = `${IMAGE_PATH}${imageNumber}${IMAGE_EXTENSION}`;
 
-        // Create a promise for each image load
-        const loadPromise = new Promise((resolve, reject) => {
-            const img = new Image();
-            img.onload = () => {
+        const loadPromise = PIXI.Assets.load(imagePath)
+            .then((texture) => {
                 console.log(`   ✅ Loaded: ${imagePath}`);
-                resolve();
-            };
-            img.onerror = () => {
+                textureCache[`image-${i}`] = texture;
+            })
+            .catch((err) => {
                 console.warn(`   ⚠️  Failed to load: ${imagePath}. Generating placeholder...`);
-                // Generate colored placeholder canvas
                 const placeholderDataURL = generatePlaceholderTexture(i);
-                textureCache[`image-${i - 1}`] = PIXI.Texture.from(placeholderDataURL);
-                resolve();
-            };
-            img.src = imagePath;
-        });
+                textureCache[`image-${i}`] = PIXI.Texture.from(placeholderDataURL);
+            });
 
         loadPromises.push(loadPromise);
     }
@@ -506,7 +579,7 @@ async function preloadImages() {
  * @param {number} imageIndex - Image number (1-10)
  * @returns {string} Data URL of the placeholder canvas
  */
-function generatePlaceholderTexture(imageIndex) {
+function generatePlaceholderTexture(index) {
     // Create canvas element
     const canvas = document.createElement('canvas');
     canvas.width = 1024;
@@ -518,9 +591,9 @@ function generatePlaceholderTexture(imageIndex) {
     // Generate a unique color for each image based on its index
     // Uses HSL to create a nice spectrum of distinct colors
     // ========================================================================
-    const hue = (imageIndex / TOTAL_IMAGES) * 360; // 0-360
-    const saturation = 60 + (imageIndex % 3) * 10; // 60-90%
-    const lightness = 40 + (imageIndex % 2) * 10; // 40-50%
+    const hue = (index / TOTAL_IMAGES) * 360; // 0-360
+    const saturation = 60 + (index % 3) * 10; // 60-90%
+    const lightness = 40 + (index % 2) * 10; // 40-50%
 
     const backgroundColor = `hsl(${hue}, ${saturation}%, ${lightness}%)`;
 
@@ -541,7 +614,8 @@ function generatePlaceholderTexture(imageIndex) {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
 
-    const label = `Image ${imageIndex}`;
+    const imageNumber = index + 2;
+    const label = `Image ${imageNumber}`;
     ctx.shadowColor = 'rgba(0, 0, 0, 0.7)';
     ctx.shadowBlur = 10;
     ctx.shadowOffsetX = 2;
@@ -553,12 +627,12 @@ function generatePlaceholderTexture(imageIndex) {
     ctx.font = 'bold 32px Arial, sans-serif';
     ctx.textAlign = 'right';
     ctx.textBaseline = 'bottom';
-    const magLabel = `${SCALE_LABELS[imageIndex - 1]}x`;
+    const magLabel = `${SCALE_LABELS[index]}x`;
     ctx.fillText(magLabel, canvas.width - 40, canvas.height - 40);
 
     // Convert to data URL
     const dataURL = canvas.toDataURL('image/png');
-    console.log(`   ✨ Generated placeholder for Image ${imageIndex}`);
+    console.log(`   ✨ Generated placeholder for Image ${imageNumber}`);
 
     return dataURL;
 }
@@ -638,14 +712,15 @@ function updateFrame() {
     // Decay factor: 0.95 = 5% reduction per frame (~30fps = smooth decay)
     AppState.concentrationVelocity *= 0.95;
 
-    // ========================================================================
-    // UPDATE TARGET FOCUS FROM CONCENTRATION VELOCITY
-    // ========================================================================
-    // In simulation mode, the target focus is driven by concentration velocity
-    // In connected mode, it's driven by WebSocket focus data
-    // Both can coexist - WebSocket overrides when connected
+    // Check for active focus: if no scroll for 1 second, rapidly decay targetFocus
     if (AppState.isSimulationMode) {
-        AppState.targetFocus = Math.max(0.0, Math.min(1.0, AppState.targetFocus + AppState.concentrationVelocity));
+        const timeSinceLastScroll = performance.now() - AppState.lastScrollTime;
+        if (timeSinceLastScroll > 1000) {
+            // Rapid decay back to base state (0.0 focus)
+            AppState.targetFocus *= 0.98;
+        } else {
+            AppState.targetFocus = Math.max(0.0, Math.min(1.0, AppState.targetFocus + AppState.concentrationVelocity));
+        }
     }
 
     // ========================================================================
@@ -670,11 +745,8 @@ function updateFrame() {
     // Ensure we don't exceed array bounds
     const nextImageIndex = Math.min(imageIndex + 1, TOTAL_IMAGES - 1);
 
-    // Calculate the interpolated magnification value between two consecutive scale labels
-    // For example: if imageIndex = 2 and localProgress = 0.5
-    //   magnification = SCALE_LABELS[2] * (1 - 0.5) + SCALE_LABELS[3] * 0.5
-    //   = 50 * 0.5 + 200 * 0.5 = 125x
-    const currentMagnification = SCALE_LABELS[imageIndex] * (1 - localProgress) + SCALE_LABELS[nextImageIndex] * localProgress;
+    // Smooth lerped visual zoom strictly from 1x to 100x max
+    const currentMagnification = 1 + (AppState.currentFocus * 99);
 
     // ========================================================================
     // DUAL-SPRITE CROSSFADE ZOOM
@@ -700,16 +772,10 @@ function updateFrame() {
     // ========================================================================
     // Load texture for Sprite A (imageIndex)
     const textureKeyA = `image-${imageIndex}`;
-    if (!textureCache[textureKeyA]) {
-        textureCache[textureKeyA] = PIXI.Texture.from(`${IMAGE_PATH}${imageIndex + 1}${IMAGE_EXTENSION}`);
-    }
     spriteA.texture = textureCache[textureKeyA];
 
     // Load texture for Sprite B (nextImageIndex)
     const textureKeyB = `image-${nextImageIndex}`;
-    if (!textureCache[textureKeyB]) {
-        textureCache[textureKeyB] = PIXI.Texture.from(`${IMAGE_PATH}${nextImageIndex + 1}${IMAGE_EXTENSION}`);
-    }
     spriteB.texture = textureCache[textureKeyB];
 
     // ========================================================================
@@ -790,10 +856,8 @@ function updateMagnificationBar(magnification) {
     // ========================================================================
     // CAPPED MAGNIFICATION DISPLAY (1x - 100x)
     // ========================================================================
-    // Map the currentFocus (0.0-1.0) to a 1x-100x display range
-    // This provides a smooth, intuitive magnification scale for the user
-    // The internal image transitions still use SCALE_LABELS for precise control
-    const displayMagnification = 1 + (AppState.currentFocus * 99); // 1x at 0.0, 100x at 1.0
+    // The internal image transitions use the passed magnification parameter
+    const displayMagnification = magnification;
 
     // Format label
     let label;
@@ -808,6 +872,7 @@ function updateMagnificationBar(magnification) {
 /**
  * Update the waveform bar display
  * Draws a real-time sine wave whose amplitude expands/contracts based on focus
+ * Adds overlaid sine waves based on focus intensity and a subtle bloom.
  */
 function updateWaveformBar() {
     const ctx = DOM.waveformCanvas.getContext('2d');
@@ -821,44 +886,69 @@ function updateWaveformBar() {
     // WAVEFORM PARAMETERS
     // ========================================================================
     // The amplitude of the sine wave is proportional to currentFocus
-    // At focus = 0.0: minimal amplitude
-    // At focus = 1.0: maximum amplitude
-    const maxAmplitude = canvas.height / 4; // Max wave height
+    // Calculate max amplitude dynamically to fit the canvas height
+    // Accounting for the shadow blur to prevent clipping
+    const maxAmplitude = (canvas.height / 2) - 10; 
     const amplitude = AppState.currentFocus * maxAmplitude;
 
     // Wave frequency and phase for animation
     const frequency = 0.05; // Lower = wider waves
-    const phase = performance.now() * 0.003; // Animate over time
-
-    // ========================================================================
-    // DRAW SINE WAVE
-    // ========================================================================
-    ctx.strokeStyle = 'rgba(102, 126, 234, 0.8)';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-
+    const basePhase = performance.now() * 0.003; // Animate over time
     const centerY = canvas.height / 2;
 
-    for (let x = 0; x < canvas.width; x++) {
-        // Sine wave: y = A * sin(ωx + φ)
-        // A = amplitude (proportional to focus)
-        // ω = frequency
-        // φ = phase (for animation)
-        const y = centerY + amplitude * Math.sin(frequency * x + phase);
+    // Apply bloom to all rendering in this canvas
+    ctx.shadowBlur = 4;
+    ctx.shadowColor = 'rgba(102, 126, 234, 0.8)';
 
-        if (x === 0) {
-            ctx.moveTo(x, y);
-        } else {
-            ctx.lineTo(x, y);
+    // Function to draw a single sine wave
+    const drawWave = (phaseOffset, alpha, lineWidth) => {
+        ctx.strokeStyle = `rgba(102, 126, 234, ${alpha})`;
+        ctx.lineWidth = lineWidth;
+        ctx.beginPath();
+        
+        for (let x = 0; x < canvas.width; x++) {
+            // Spatial Amplitude Modulation (Parabolic multiplier)
+            // Normalized x position (0 to 1)
+            const nx = x / canvas.width;
+            // Parabola peaking at 1.0 in center, 0.0 at edges
+            const parabolicMultiplier = 1.0 - Math.pow(2.0 * nx - 1.0, 2.0);
+            
+            // Multiply the amplitude by the spatial parabolic curve
+            const y = centerY + (amplitude * parabolicMultiplier) * Math.sin(frequency * x + basePhase + phaseOffset);
+            
+            if (x === 0) {
+                ctx.moveTo(x, y);
+            } else {
+                ctx.lineTo(x, y);
+            }
         }
+        ctx.stroke();
+    };
+
+    // ========================================================================
+    // OVERLAY WAVES
+    // ========================================================================
+    // Add extra waves based on concentration (currentFocus)
+    // Map currentFocus to a number of extra waves (0 to 3 max)
+    const extraWaves = Math.floor(AppState.currentFocus * 3);
+    
+    // Ensure we always have deterministic randomness for the current frame
+    // We base the pseudo-random phase offsets on the number of waves so they jitter slightly
+    for (let i = 0; i < extraWaves; i++) {
+        // pseudo random phase offset and slightly reduced amplitude/alpha
+        const phaseOffset = (i + 1) * 2.5 + Math.sin(basePhase * 0.5) * i;
+        const overlayAlpha = 0.2 + (0.1 * AppState.currentFocus); 
+        drawWave(phaseOffset, overlayAlpha, 1);
     }
 
-    ctx.stroke();
+    // ========================================================================
+    // DRAW MAIN SINE WAVE
+    // ========================================================================
+    // Draw the primary wave last so it's on top
+    drawWave(0, 0.8, 2);
 
-    // Optional: Draw a subtle background glow
-    ctx.strokeStyle = 'rgba(102, 126, 234, 0.2)';
-    ctx.lineWidth = 4;
-    ctx.stroke();
+    // Reset shadow for any other canvas operations
+    ctx.shadowBlur = 0;
 }
 
 // ============================================================================
