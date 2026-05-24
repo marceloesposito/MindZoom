@@ -69,16 +69,33 @@ const AppState = {
     // Simulation mode flag (activated when entering immersion without connection)
     isSimulationMode: false,
 
-    // Concentration-based zoom mechanics
-    // concentrationVelocity: increases with wheel input, naturally decays over time
-    concentrationVelocity: 0.0,
-    lastScrollTime: 0, // Track when the user last scrolled
-
     // WebSocket connection reference
     ws: null,
 
     reconnectAttempts: 0,
 };
+
+// ============================================================================
+// INTERFACCIA SENSORE (0 - 255)
+// ============================================================================
+
+/**
+ * Aggiorna il livello di zoom in base a un input esterno.
+ * Questa è l'unica interfaccia che l'app usa per muovere lo zoom.
+ * In futuro basterà passare a questa funzione la lettura di un sensore reale.
+ * 
+ * @param {number} rawValue - Un valore normalizzato compreso tra 0 e 255.
+ */
+function updateFocusFromSensor(rawValue) {
+    // Assicura che il valore resti nei limiti hardware previsti (0-255)
+    const clampedValue = Math.max(0, Math.min(255, rawValue));
+    
+    // Normalizza il valore nel range (0.0 - 1.0) richiesto dal motore di rendering
+    AppState.targetFocus = clampedValue / 255.0;
+}
+
+// Esposto globalmente per facilitare test o l'integrazione di script esterni
+window.setSensorValue = updateFocusFromSensor;
 
 // ============================================================================
 // DOM ELEMENT REFERENCES
@@ -253,43 +270,69 @@ function handleContinueSimulation() {
     activateSimulationMode();
 }
 
+// ============================================================================
+// MODULO SIMULAZIONE (Scollegabile)
+// ============================================================================
+
+// Stato incapsulato per non sporcare il resto dell'app
+const SimulationState = {
+    value: 0,          // Valore simulato del sensore (0-255)
+    velocity: 0,       // Inerzia dello scroll
+    accumulator: 0,    // Accumulatore scatti rotellina
+    lastScrollTime: 0  // Timestamp ultimo scroll
+};
+
 /**
- * Activate simulation mode: listen to mouse wheel for focus control
- * Instead of directly incrementing focus, wheel input increases concentrationVelocity
- * which is then processed in the updateFrame loop with natural decay
+ * Attiva la simulazione tramite mouse.
+ * Per disabilitarla quando avrai il sensore reale, basterà NON chiamare 
+ * questa funzione (o commentarne la chiamata in handleContinueSimulation).
  */
 function activateSimulationMode() {
-    console.log('🖱️  Mouse wheel listener activated for focus simulation');
+    console.log('🖱️ Modulo simulazione sensore (mouse wheel) attivato');
 
-    let wheelAccumulator = 0;
+    // 1. Ascolto della rotellina del mouse
+    DOM.immersionContainer.addEventListener('wheel', handleSimulationWheel, { passive: false });
 
-    // Listen to wheel events on immersion container
-    DOM.immersionContainer.addEventListener('wheel', (event) => {
-        event.preventDefault();
+    // 2. Aggiunge il loop di simulazione indipendente al motore di rendering
+    if (pixiApp && pixiApp.ticker) {
+        pixiApp.ticker.add(simulationLoop);
+    }
+}
 
-        // ====================================================================
-        // Concentration Velocity Model with Step Divider
-        // ====================================================================
-        // Accumulate scroll ticks, applying velocity only every 3 steps
-        // to dampen sensitivity and slow down image swapping.
+function handleSimulationWheel(event) {
+    event.preventDefault();
+    
+    SimulationState.accumulator += (event.deltaY > 0 ? 1 : -1);
+
+    // Applica forza ogni 3 scatti della rotellina (dampening)
+    if (Math.abs(SimulationState.accumulator) >= 3) {
+        SimulationState.lastScrollTime = performance.now();
         
-        wheelAccumulator += (event.deltaY > 0 ? 1 : -1);
+        const direction = SimulationState.accumulator > 0 ? 1 : -1;
+        const force = direction * 4.0; // Incremento inerziale (scala 0-255)
 
-        if (Math.abs(wheelAccumulator) >= 3) {
-            AppState.lastScrollTime = performance.now(); // Update last scroll time
-            
-            const direction = wheelAccumulator > 0 ? 1 : -1;
-            const wheelDelta = direction * 0.01;
+        SimulationState.velocity = Math.max(-15, Math.min(15, SimulationState.velocity + force));
+        SimulationState.accumulator = 0;
+    }
+}
 
-            // Add to concentration velocity (accumulate input)
-            AppState.concentrationVelocity = Math.max(-0.05, Math.min(0.05, AppState.concentrationVelocity + wheelDelta));
+function simulationLoop() {
+    // Decadimento naturale della velocità (inerzia)
+    SimulationState.velocity *= 0.95;
 
-            console.log(`🎯 Concentration Velocity: ${AppState.concentrationVelocity.toFixed(3)}`);
-            
-            // Reset accumulator
-            wheelAccumulator = 0;
-        }
-    }, { passive: false });
+    // Decadimento target per inattività (>1 secondo senza input)
+    const timeSinceLastScroll = performance.now() - SimulationState.lastScrollTime;
+    if (timeSinceLastScroll > 1000) {
+        SimulationState.value *= 0.98; // Collasso rapido verso lo 0
+    } else {
+        SimulationState.value += SimulationState.velocity;
+    }
+
+    // Limita il valore strettamente al range del sensore simulato (0 - 255)
+    SimulationState.value = Math.max(0, Math.min(255, SimulationState.value));
+
+    // INVIA IL VALORE ALL'INTERFACCIA HARDWARE/LOGICA
+    updateFocusFromSensor(SimulationState.value);
 }
 
 // ============================================================================
@@ -703,26 +746,6 @@ async function initializePixiJS() {
  * Called every frame by PixiJS ticker
  */
 function updateFrame() {
-    // ========================================================================
-    // CONCENTRATION DECAY MECHANICS
-    // ========================================================================
-    // When no wheel input is received, concentrationVelocity naturally decays
-    // This creates an organic, fluid zoom feel where the zoom level smoothly
-    // drops back down when concentration fades (no user input)
-    // Decay factor: 0.95 = 5% reduction per frame (~30fps = smooth decay)
-    AppState.concentrationVelocity *= 0.95;
-
-    // Check for active focus: if no scroll for 1 second, rapidly decay targetFocus
-    if (AppState.isSimulationMode) {
-        const timeSinceLastScroll = performance.now() - AppState.lastScrollTime;
-        if (timeSinceLastScroll > 1000) {
-            // Rapid decay back to base state (0.0 focus)
-            AppState.targetFocus *= 0.98;
-        } else {
-            AppState.targetFocus = Math.max(0.0, Math.min(1.0, AppState.targetFocus + AppState.concentrationVelocity));
-        }
-    }
-
     // ========================================================================
     // FOCUS INTERPOLATION (Smoothing)
     // ========================================================================
