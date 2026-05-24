@@ -32,14 +32,19 @@ const TOTAL_IMAGES = 10;
 const IMAGE_EXTENSION = '.webp';
 
 /**
- * Path to images folder
+ * Path to images folder (absolute from root after public directory migration)
  */
-const IMAGE_PATH = './images/';
+const IMAGE_PATH = '/images/';
 
 /**
  * WebSocket server URL for receiving focus data
  */
 const WS_SERVER_URL = 'wss://il-tuo-bridge.onrender.com';
+
+/**
+ * Maximum WebSocket reconnection attempts (then give up)
+ */
+const MAX_WS_RECONNECT_ATTEMPTS = 3;
 
 /**
  * Focus interpolation easing factor (0.0 to 1.0)
@@ -73,8 +78,9 @@ const AppState = {
     // concentrationVelocity: increases with wheel input, naturally decays over time
     concentrationVelocity: 0.0,
 
-    // WebSocket connection reference
+    // WebSocket connection tracking
     ws: null,
+    wsReconnectAttempts: 0,
 };
 
 // ============================================================================
@@ -404,11 +410,18 @@ function initializeWebSocket() {
             updateConnectionIndicators();
             updateEstablishConnectionButtonState();
 
-            // Attempt reconnection after 3 seconds
-            setTimeout(() => {
-                console.log('🔄 Attempting to reconnect...');
-                initializeWebSocket();
-            }, 3000);
+            // ================================================================
+            // Capped Reconnection Logic (Max 3 attempts)
+            // ================================================================
+            if (AppState.wsReconnectAttempts < MAX_WS_RECONNECT_ATTEMPTS) {
+                AppState.wsReconnectAttempts++;
+                console.log(`🔄 Reconnection attempt ${AppState.wsReconnectAttempts}/${MAX_WS_RECONNECT_ATTEMPTS}...`);
+                setTimeout(() => {
+                    initializeWebSocket();
+                }, 3000);
+            } else {
+                console.log(`⛔ WebSocket reconnection attempts exhausted (${MAX_WS_RECONNECT_ATTEMPTS} attempts). Falling back to simulation mode.`);
+            }
         };
 
         // Connection error
