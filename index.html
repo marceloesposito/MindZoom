@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mind Zoom - SEM Microscope Interactive Experience</title>
+    
+    <!-- TailwindCSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- PixiJS CDN (v8.x) -->
+    <script src="https://cdn.jsdelivr.net/npm/pixi.js@8.0.0/dist/pixi.min.js"></script>
+    
+    <style>
+        /* Smooth transitions and animations */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #000;
+        }
+
+        /* Landing page specific styles */
+        #landing-container {
+            width: 100%;
+            height: 100vh;
+            overflow-y: auto;
+            scroll-behavior: smooth;
+        }
+
+        /* Hero section styling */
+        .hero-section {
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background: linear-gradient(135deg, #1e1e2e 0%, #16213e 100%);
+            position: relative;
+        }
+
+        .hero-title {
+            font-size: 4rem;
+            font-weight: 700;
+            color: #fff;
+            margin-bottom: 2rem;
+            letter-spacing: 2px;
+            text-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+        }
+
+        .cta-buttons {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            margin-top: 2rem;
+            align-items: center;
+        }
+
+        .cta-primary {
+            padding: 0.75rem 2rem;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 0.5rem;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .cta-primary:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+        }
+
+        .cta-secondary {
+            padding: 0.75rem 2rem;
+            background: transparent;
+            color: #667eea;
+            border: 2px solid #667eea;
+            border-radius: 0.5rem;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .cta-secondary:hover:not(:disabled) {
+            background: rgba(102, 126, 234, 0.1);
+            transform: translateY(-2px);
+        }
+
+        .cta-secondary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* Status indicators */
+        .status-indicators {
+            position: absolute;
+            bottom: 2rem;
+            left: 2rem;
+            display: flex;
+            gap: 1.5rem;
+            z-index: 10;
+        }
+
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.9rem;
+            color: #fff;
+        }
+
+        .status-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            transition: background-color 0.3s ease;
+        }
+
+        .status-indicator.connected {
+            background-color: #10b981;
+            box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
+        }
+
+        .status-indicator.disconnected {
+            background-color: #ef4444;
+            box-shadow: 0 0 8px rgba(239, 68, 68, 0.6);
+        }
+
+        /* Info section */
+        .info-section {
+            height: 100vh;
+            width: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #0f172a;
+            padding: 4rem;
+            color: #fff;
+        }
+
+        .info-content {
+            max-width: 800px;
+            font-size: 1.1rem;
+            line-height: 1.8;
+            color: #cbd5e1;
+        }
+
+        .info-title {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: #667eea;
+            margin-bottom: 1rem;
+        }
+
+        /* Immersion view - PixiJS canvas */
+        #immersion-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: none;
+            z-index: 50;
+        }
+
+        #pixi-canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        /* Back button */
+        .back-button {
+            position: absolute;
+            top: 2rem;
+            right: 2rem;
+            width: 50px;
+            height: 50px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            color: white;
+            font-size: 1.5rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s ease;
+            z-index: 100;
+            backdrop-filter: blur(10px);
+        }
+
+        .back-button:hover {
+            background: rgba(255, 255, 255, 0.2);
+            border-color: rgba(255, 255, 255, 0.6);
+        }
+
+        /* Magnification bar */
+        .magnification-bar {
+            position: absolute;
+            top: 2rem;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 80%;
+            max-width: 600px;
+            height: 60px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+        }
+
+        #magnification-canvas {
+            display: block;
+        }
+
+        .magnification-label {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 1.2rem;
+            font-weight: 600;
+            letter-spacing: 1px;
+            pointer-events: none;
+            text-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+        }
+
+        /* Waveform bar */
+        .waveform-bar {
+            position: absolute;
+            bottom: 2rem;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 80%;
+            max-width: 600px;
+            height: 80px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(102, 126, 234, 0.3);
+            border-radius: 0.5rem;
+            padding: 1rem;
+            z-index: 100;
+            backdrop-filter: blur(10px);
+        }
+
+        #waveform-canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        /* Modal styles */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 200;
+            backdrop-filter: blur(5px);
+        }
+
+        .modal-content {
+            background: #1e1e2e;
+            border-radius: 1rem;
+            padding: 2rem;
+            max-width: 500px;
+            color: white;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8);
+            border: 1px solid rgba(102, 126, 234, 0.2);
+        }
+
+        .modal-title {
+            font-size: 1.5rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+            color: #667eea;
+        }
+
+        .modal-text {
+            font-size: 1rem;
+            line-height: 1.6;
+            margin-bottom: 1.5rem;
+            color: #cbd5e1;
+        }
+
+        .modal-buttons {
+            display: flex;
+            gap: 1rem;
+            justify-content: flex-end;
+        }
+
+        .modal-button {
+            padding: 0.5rem 1.5rem;
+            border-radius: 0.5rem;
+            border: none;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .modal-button-primary {
+            background: #667eea;
+            color: white;
+        }
+
+        .modal-button-primary:hover {
+            background: #764ba2;
+        }
+
+        .modal-button-secondary {
+            background: transparent;
+            color: #667eea;
+            border: 2px solid #667eea;
+        }
+
+        .modal-button-secondary:hover {
+            background: rgba(102, 126, 234, 0.1);
+        }
+
+        .setup-guide {
+            background: rgba(102, 126, 234, 0.1);
+            border-left: 4px solid #667eea;
+            padding: 1rem;
+            margin-bottom: 1.5rem;
+            border-radius: 0.25rem;
+        }
+
+        .setup-guide-title {
+            font-weight: 600;
+            color: #667eea;
+            margin-bottom: 0.5rem;
+        }
+
+        .setup-guide-text {
+            font-size: 0.9rem;
+            line-height: 1.6;
+            color: #cbd5e1;
+        }
+
+        /* Hidden state */
+        .hidden {
+            display: none !important;
+        }
+    </style>
+</head>
+<body>
+    <!-- LANDING VIEW -->
+    <div id="landing-container" class="landing-view">
+        <!-- Hero Section -->
+        <section class="hero-section">
+            <!-- Status Indicators (Bottom-Left) -->
+            <div class="status-indicators">
+                <div class="status-item">
+                    <div class="status-indicator disconnected" id="muse-indicator"></div>
+                    <span>Muse Athena</span>
+                </div>
+                <div class="status-item">
+                    <div class="status-indicator disconnected" id="mindmonitor-indicator"></div>
+                    <span>Mind Monitor</span>
+                </div>
+            </div>
+
+            <!-- Hero Title and CTA -->
+            <div class="text-center">
+                <h1 class="hero-title">Mind Zoom</h1>
+                
+                <div class="cta-buttons">
+                    <!-- Primary CTA -->
+                    <button id="begin-immersion-btn" class="cta-primary">
+                        Begin the immersion
+                    </button>
+                    
+                    <!-- Establish Connection CTA -->
+                    <button id="establish-connection-btn" class="cta-secondary">
+                        Establish connection
+                    </button>
+                    
+                    <!-- Know More CTA -->
+                    <button id="know-more-btn" class="cta-secondary">
+                        Know more
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Info Section (at +80vh) -->
+        <section class="info-section">
+            <div class="info-content">
+                <div class="info-title">Progetto studentesco sviluppato nell'ambito dell'Hybrid Design Lab.</div>
+                <p>
+                    Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. 
+                    Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. 
+                    Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. 
+                    Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
+                </p>
+                <p style="margin-top: 1.5rem;">
+                    Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque laudantium, totam rem aperiam, 
+                    eaque ipsa quae ab illo inventore veritatis et quasi architecto beatae vitae dicta sunt explicabo. Nemo enim ipsam 
+                    voluptatem quia voluptas sit aspernatur aut odit aut fugit, sed quia consequuntur magni dolores.
+                </p>
+            </div>
+        </section>
+    </div>
+
+    <!-- IMMERSION VIEW -->
+    <div id="immersion-container">
+        <!-- PixiJS Canvas (rendered by app.js) -->
+        <canvas id="pixi-canvas"></canvas>
+
+        <!-- Back Button -->
+        <button class="back-button" id="back-button" title="Return to landing">←</button>
+
+        <!-- Magnification Bar (Top Center) -->
+        <div class="magnification-bar">
+            <canvas id="magnification-canvas" width="500" height="50"></canvas>
+            <div class="magnification-label" id="magnification-label">1x</div>
+        </div>
+
+        <!-- Waveform Bar (Bottom Center) -->
+        <div class="waveform-bar">
+            <canvas id="waveform-canvas" width="560" height="48"></canvas>
+        </div>
+    </div>
+
+    <!-- MODALS (hidden by default) -->
+    <!-- Alert Modal: Connection Failed or Not Established -->
+    <div id="alert-modal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <div class="modal-title">Connessione non stabilita</div>
+            <div class="modal-text">
+                L'esperienza può essere vissuta simulando la concentrazione tramite lo scroll del mouse.
+            </div>
+            <div class="modal-buttons">
+                <button id="modal-go-back-btn" class="modal-button modal-button-secondary">
+                    Torna indietro
+                </button>
+                <button id="modal-continue-simulation-btn" class="modal-button modal-button-primary">
+                    Prosegui con simulazione
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Setup Guide Modal: Device Connection -->
+    <div id="setup-modal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <div class="modal-title">Establish Device Connection</div>
+            
+            <div class="setup-guide">
+                <div class="setup-guide-title">Quick Setup Guide:</div>
+                <div class="setup-guide-text">
+                    1. Ensure your Muse Athena headset is powered and within Bluetooth range.<br>
+                    2. Ensure your Mind Monitor application is running.<br>
+                    3. The connection will be established automatically once devices are detected.<br>
+                    4. You can close this dialog and try again once devices are ready.
+                </div>
+            </div>
+
+            <div class="modal-text">
+                Status: Waiting for device connections...
+            </div>
+            
+            <div class="modal-buttons">
+                <button id="modal-setup-close-btn" class="modal-button modal-button-secondary">
+                    Close
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Application Script -->
+    <script src="app.js"></script>
+</body>
+</html>
