@@ -527,6 +527,26 @@
         </div>
     </div>
 
+    <!-- EEG Status UI (Testing) -->
+    <div id="eeg-testing-ui" class="fixed top-4 left-4 z-50 bg-black/50 p-4 rounded-lg text-white hidden">
+        <h3 class="font-bold mb-2 text-sm text-gray-300">BLE Testing</h3>
+        <div class="mb-2">
+            <div class="text-xs">Alpha</div>
+            <div class="w-32 h-2 bg-gray-700 rounded overflow-hidden">
+                <div id="alpha-bar" class="h-full bg-blue-500" style="width: 0%"></div>
+            </div>
+        </div>
+        <div>
+            <div class="text-xs">Beta</div>
+            <div class="w-32 h-2 bg-gray-700 rounded overflow-hidden">
+                <div id="beta-bar" class="h-full bg-red-500" style="width: 0%"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Native Web Bluetooth Module -->
+    <script src="MuseBluetooth.js"></script>
+
     <!-- Main Application Script -->
     <script src="app.js"></script>
 </body>

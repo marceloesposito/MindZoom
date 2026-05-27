@@ -14,6 +14,8 @@
 // CONFIGURATION & CONSTANTS
 // ============================================================================
 
+const IS_TESTING_BLE = true; // Attiva l'integrazione nativa Muse Bluetooth per test
+
 /**
  * Array of magnification multipliers corresponding to each image.
  * Index 0 = 2.webp at 10x, Index 8 = 10.webp at 50000x
@@ -228,11 +230,66 @@ function handleBeginImmersion() {
 
 /**
  * Handle "Establish connection" button click
- * Opens the setup modal with device connection guide
+ * Opens the setup modal with device connection guide, or native BLE prompt if testing.
  */
 function handleEstablishConnection() {
     console.log('🔌 Establish Connection clicked');
-    showSetupModal();
+    if (IS_TESTING_BLE) {
+        initNativeMuse();
+    } else {
+        showSetupModal();
+    }
+}
+
+// ============================================================================
+// NATIVE MUSE BLUETOOTH INTEGRATION
+// ============================================================================
+let museInstance = null;
+
+function initNativeMuse() {
+    if (!museInstance) {
+        museInstance = new MuseBluetooth();
+        
+        museInstance.onEEGData((data) => {
+            // Aggiorna lo zoom
+            updateFocusFromSensor(data.focus);
+
+            // Aggiorna la UI (Barre Alpha e Beta)
+            const alphaBar = document.getElementById('alpha-bar');
+            const betaBar = document.getElementById('beta-bar');
+            if (alphaBar && betaBar) {
+                alphaBar.style.width = `${data.alpha}%`;
+                betaBar.style.width = `${data.beta}%`;
+            }
+        });
+
+        museInstance.onDisconnect(() => {
+            console.log('Muse natively disconnected, falling back to simulation.');
+            AppState.isMuseConnected = false;
+            document.getElementById('muse-indicator').classList.remove('connected');
+            document.getElementById('muse-indicator').classList.add('disconnected');
+            
+            // Revert to simulation
+            activateSimulationMode();
+            switchToImmersion();
+        });
+    }
+
+    museInstance.connect().then(() => {
+        AppState.isMuseConnected = true;
+        document.getElementById('muse-indicator').classList.remove('disconnected');
+        document.getElementById('muse-indicator').classList.add('connected');
+        
+        // Show testing UI
+        document.getElementById('eeg-testing-ui').classList.remove('hidden');
+        
+        // Hide modals and go to immersion
+        closeSetupModal();
+        closeAlertModal();
+        switchToImmersion();
+    }).catch(err => {
+        console.error("Native connection failed:", err);
+    });
 }
 
 /**
