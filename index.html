@@ -9,8 +9,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     
     <!-- PixiJS CDN (v8.x) -->
-    <script src="https://cdn.jsdelivr.net/npm/pixi.js@8.0.0/dist/pixi.min.js"></script>
-    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/8.1.0/pixi.min.js"></script>    
     <style>
         /* Smooth transitions and animations */
         * {
@@ -501,27 +500,46 @@
     </div>
 
     <!-- Setup Guide Modal: Device Connection -->
+    <!-- Setup Guide Modal: Device Connection -->
+    <!-- Setup Guide Modal: Device Connection -->
+    <!-- Setup Guide Modal: Device Connection -->
     <div id="setup-modal" class="modal-overlay hidden">
-        <div class="modal-content">
-            <div class="modal-title">Establish Device Connection</div>
+        <div class="modal-content" style="max-width: 600px; width: 90%; background-color: #111827; border: 1px solid #374151;">
+            <div class="modal-title text-center text-white mb-4">Muse Device Diagnostics</div>
             
-            <div class="setup-guide">
-                <div class="setup-guide-title">Quick Setup Guide:</div>
-                <div class="setup-guide-text">
-                    1. Ensure your Muse Athena headset is powered and within Bluetooth range.<br>
-                    2. Ensure your Mind Monitor application is running.<br>
-                    3. The connection will be established automatically once devices are detected.<br>
-                    4. You can close this dialog and try again once devices are ready.
+            <div class="flex justify-between items-center mb-6 px-4">
+                <div class="flex space-x-6">
+                    <div class="flex items-center space-x-2">
+                        <div id="signal-af7-led" class="w-4 h-4 rounded-full bg-gray-600 transition-colors duration-300"></div>
+                        <span class="text-sm text-gray-300 font-mono">Signal AF7</span>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <div id="signal-af8-led" class="w-4 h-4 rounded-full bg-gray-600 transition-colors duration-300"></div>
+                        <span class="text-sm text-gray-300 font-mono">Signal AF8</span>
+                    </div>
+                </div>
+                <div id="connection-status-badge" class="px-3 py-1 rounded-full text-xs font-bold bg-blue-900/50 text-blue-400 border border-blue-500/30 animate-pulse">
+                    Awaiting Connection...
                 </div>
             </div>
 
-            <div class="modal-text">
-                Status: Waiting for device connections...
+            <div class="chart-container bg-black rounded-lg border border-gray-800 p-2 mb-6" style="height: 200px; position: relative;">
+                <canvas id="eeg-chart-canvas" style="width: 100%; height: 100%;"></canvas>
+                <div class="absolute top-2 right-2 text-xs font-mono text-gray-500">FFT Spectrum 0-40Hz</div>
             </div>
             
-            <div class="modal-buttons">
-                <button id="modal-setup-close-btn" class="modal-button modal-button-secondary">
-                    Close
+            <div class="modal-buttons flex justify-between">
+                <button id="modal-cancel-btn" class="px-6 py-2 rounded-lg bg-gray-700 text-gray-300 font-semibold opacity-50 cursor-not-allowed transition-all" disabled>
+                    Cancel connection
+                </button>
+                <button id="modal-connect-btn" class="px-6 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold shadow-[0_0_15px_rgba(37,99,235,0.5)] transition-all">
+                    Connetti Fascia
+                </button>
+            </div>
+            
+            <div class="mt-4 text-center">
+                 <button id="modal-setup-close-btn" class="text-xs text-gray-500 hover:text-white underline">
+                    Chiudi e simula (Mouse)
                 </button>
             </div>
         </div>
@@ -531,23 +549,16 @@
     <div id="eeg-testing-ui" class="fixed top-4 left-4 z-50 bg-black/50 p-4 rounded-lg text-white hidden">
         <h3 class="font-bold mb-2 text-sm text-gray-300">BLE Testing</h3>
         <div class="mb-2">
-            <div class="text-xs">Alpha</div>
+            <div class="text-xs flex justify-between"><span>Alpha</span><span id="telemetry-alpha-val">0%</span></div>
             <div class="w-32 h-2 bg-gray-700 rounded overflow-hidden">
-                <div id="alpha-bar" class="h-full bg-blue-500" style="width: 0%"></div>
+                <div id="telemetry-alpha-bar" class="h-full bg-blue-500 transition-all duration-100" style="width: 0%"></div>
             </div>
         </div>
         <div>
-            <div class="text-xs">Beta</div>
+            <div class="text-xs flex justify-between"><span>Beta</span><span id="telemetry-beta-val">0%</span></div>
             <div class="w-32 h-2 bg-gray-700 rounded overflow-hidden">
-                <div id="beta-bar" class="h-full bg-red-500" style="width: 0%"></div>
+                <div id="telemetry-beta-bar" class="h-full bg-red-500 transition-all duration-100" style="width: 0%"></div>
             </div>
         </div>
     </div>
 
-    <!-- Native Web Bluetooth Module -->
-    <script src="MuseBluetooth.js"></script>
-
-    <!-- Main Application Script -->
-    <script src="app.js"></script>
-</body>
-</html>
