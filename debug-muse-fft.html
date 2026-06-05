@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Muse FFT Debug</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="MuseBluetooth.js"></script>
+  <style>
+    :root{--bg:#0b0f12;--panel:#0f1720;--muted:#9ca3af;--accent:#00e5ff}
+    html,body{height:100%;margin:0;background:var(--bg);color:#e6eef6;font-family:Segoe UI,Roboto,Arial,sans-serif}
+    .wrap{padding:18px;display:flex;flex-direction:column;gap:12px}
+    .top{display:flex;justify-content:space-between;align-items:center;gap:12px}
+    .controls{display:flex;gap:8px}
+    button{background:#111827;color:var(--accent);border:1px solid var(--accent);padding:8px 12px;border-radius:6px;cursor:pointer}
+    button.secondary{background:transparent;color:var(--muted);border:1px solid #263238}
+    #status{font-weight:700;color:#fca5a5}
+    .grid{display:grid;grid-template-columns:1fr 420px;gap:12px}
+    .panel{background:var(--panel);border:1px solid #14202a;padding:12px;border-radius:8px}
+    canvas{width:100%;height:240px;display:block}
+    .tele{font-family:monospace;font-size:13px;color:var(--accent);height:120px;overflow:auto;padding:8px;background:#041018;border-radius:6px}
+    .tele .row{display:flex;justify-content:space-between;margin-bottom:6px}
+    .bars{display:flex;gap:8px;margin-top:8px}
+    .bar{flex:1;background:#07202a;border-radius:6px;overflow:hidden;height:12px}
+    .bar > i{display:block;height:100%;background:linear-gradient(90deg,#3b82f6,#ef4444);width:0}
+    .small{font-size:12px;color:var(--muted)}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <div class="controls">
+        <button id="btnConnect">Connect Muse Headset</button>
+        <button id="btnDump" class="secondary">Dump Services</button>
+        <button id="btnSim" class="secondary">Simulate Device</button>
+      </div>
+      <div>
+        <span id="status">Disconnected</span>
+        <span class="small" style="margin-left:12px" id="packets"></span>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="panel">
+        <canvas id="timeChart" width="800" height="240" style="width:100%;height:240px;display:block"></canvas>
+        <div style="height:8px"></div>
+        <canvas id="fftChart" width="800" height="240" style="width:100%;height:240px;display:block"></canvas>
+      </div>
+
+      <div class="panel">
+        <div class="tele" id="telemetry">
+          <div class="row"><div>Focus</div><div id="tvFocus">0</div></div>
+          <div class="row"><div>Alpha %</div><div id="tvAlpha">0</div></div>
+          <div class="row"><div>Beta %</div><div id="tvBeta">0</div></div>
+          <div class="row"><div>Packets/sec</div><div id="tvPPS">0</div></div>
+          <div style="margin-top:8px" class="small">Raw Telemetry (latest)</div>
+            <div id="devInfo" style="margin-top:8px"></div>
+            <div id="log" style="margin-top:8px"></div>
+          <div class="bars">
+            <div style="width:1px"></div>
+            <div style="flex:1">
+              <div class="bar"><i id="alphaBar"></i></div>
+            </div>
+            <div style="flex:1">
+              <div class="bar"><i id="betaBar"></i></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="small panel">Note: Web Bluetooth requires HTTPS or localhost. Serve this folder and open on https://localhost or http://localhost.</div>
+  </div>
+
+  <script>
+    // Configuration
+    const TIME_LEN = 256; // samples shown in time chart
+    const FFT_BINS = 41;  // display 0..40 Hz
+
+    // UI refs
+    const btnConnect = document.getElementById('btnConnect');
+    const btnSim = document.getElementById('btnSim');
+    const statusEl = document.getElementById('status');
+    const logEl = document.getElementById('log');
+    const tvFocus = document.getElementById('tvFocus');
+    const tvAlpha = document.getElementById('tvAlpha');
+    const tvBeta = document.getElementById('tvBeta');
+    const alphaBar = document.getElementById('alphaBar');
+    const betaBar = document.getElementById('betaBar');
+    const packetsEl = document.getElementById('packets');
+    const tvPPS = document.getElementById('tvPPS');
+
+    // Data buffers (per-channel)
+    const CHANNELS = ['TP9','AF7','AF8','TP10'];
+    const COLORS = ['#00e5ff','#3b82f6','#ef4444','#f59e0b'];
+    let timeBuffers = CHANNELS.map(()=> new Float32Array(TIME_LEN).fill(0));
+    let fftDisplays = CHANNELS.map(()=> new Float32Array(FFT_BINS).fill(0));
+
+    // Chart.js instances
+    // Force a sane devicePixelRatio before creating charts
+    Chart.defaults.devicePixelRatio = 1;
+    const timeCtx = document.getElementById('timeChart').getContext('2d');
+    const fftCtx = document.getElementById('fftChart').getContext('2d');
+
+    const timeChart = new Chart(timeCtx, {
+      type: 'line',
+      data: {
+        labels: Array.from({length: TIME_LEN}, () => ''),
+        datasets: CHANNELS.map((label,i)=>({label, data: Array.from(timeBuffers[i]), borderColor: COLORS[i], borderWidth: 1.2, pointRadius:0, tension:0.15}))
+      },
+      // Disable Chart.js automatic responsive resizing and set fixed pixel height
+      options: {animation:false,responsive:false,maintainAspectRatio:false,scales:{x:{display:false},y:{grid:{color:'#112'},suggestedMin:-100,suggestedMax:100}}}
+    });
+
+    const fftLabels = Array.from({length:FFT_BINS}, (_,i)=>i.toString());
+
+    const fftChart = new Chart(fftCtx, {
+      type: 'line',
+      data: {
+        labels: fftLabels,
+        datasets: CHANNELS.map((label,i)=>({label, data: Array.from(fftDisplays[i]), borderColor: COLORS[i], backgroundColor: COLORS[i] + '33', pointRadius:0, tension:0.15}))
+      },
+      options: {animation:false,responsive:false,maintainAspectRatio:false,scales:{x:{grid:{display:false}},y:{grid:{color:'#112'},beginAtZero:true}}}
+    });
+
+    // Canvas sizes are fixed via width/height attributes to avoid runaway sizes
+
+    let needsUpdate = false;
+
+    function pushSamples(vals){
+      // vals: [tp9, af7, af8, tp10]
+      for (let ch=0; ch<CHANNELS.length; ch++){
+        const buf = timeBuffers[ch];
+        for(let i=0;i<TIME_LEN-1;i++) buf[i]=buf[i+1];
+        buf[TIME_LEN-1] = vals[ch] || 0;
+      }
+      needsUpdate = true;
+    }
+
+    function updateCharts(){
+      for (let ch=0; ch<CHANNELS.length; ch++){
+        timeChart.data.datasets[ch].data = Array.from(timeBuffers[ch]);
+        fftChart.data.datasets[ch].data = Array.from(fftDisplays[ch]);
+      }
+      timeChart.update('none');
+      fftChart.update('none');
+      needsUpdate = false;
+    }
+
+    // Simple in-place radix-2 FFT (copied from MuseBluetooth.js)
+    function computeRadix2FFT(real, imag){
+      const n = real.length;
+      let j = 0;
+      for (let i = 0; i < n - 1; i++) {
+        if (i < j) {
+          let tr = real[i]; let ti = imag[i]; real[i]=real[j]; imag[i]=imag[j]; real[j]=tr; imag[j]=ti;
+        }
+        let k = n >> 1;
+        while (k <= j) { j -= k; k >>= 1; }
+        j += k;
+      }
+      const PI2 = -2 * Math.PI;
+      for (let size = 2; size <= n; size <<= 1) {
+        let halfSize = size >> 1;
+        let angleStep = PI2 / size;
+        for (let j = 0; j < halfSize; j++) {
+          let wReal = Math.cos(j * angleStep);
+          let wImag = Math.sin(j * angleStep);
+          for (let i = j; i < n; i += size) {
+            let l = i + halfSize;
+            let tReal = wReal * real[l] - wImag * imag[l];
+            let tImag = wReal * imag[l] + wImag * real[l];
+            real[l] = real[i] - tReal; imag[l] = imag[i] - tImag;
+            real[i] += tReal; imag[i] += tImag;
+          }
+        }
+      }
+    }
+
+    function computeFFTFromTime(){
+      // copy latest TIME_LEN samples into Float32Array of length 256
+      const N = 256;
+      const real = new Float32Array(N);
+      const imag = new Float32Array(N);
+      // Use channel 0 (TP9) as source for this helper
+      const srcBuf = timeBuffers[0];
+      const offset = N - srcBuf.length;
+      for (let i=0;i<offset;i++) real[i]=0;
+      for (let i=0;i<srcBuf.length;i++) real[offset+i]=srcBuf[i];
+      computeRadix2FFT(real, imag);
+      // fill fftDisplays[0] with magnitudes for first FFT_BINS bins
+      for (let i=0;i<FFT_BINS;i++) {
+        const mag = Math.sqrt(real[i]*real[i] + imag[i]*imag[i]);
+        fftDisplays[0][i] = mag;
+      }
+      needsUpdate = true;
+    }
+
+    // Simulation
+    let simActive = false;
+    let simT = 0;
+    let simTimer = null;
+    let simFFTInterval = null;
+
+    function startSim(){
+      if(simActive) return;
+      simActive=true; btnSim.textContent='Stop Simulation'; setStatus('Simulating Device');
+      simTimer = setInterval(()=>{
+        simT += 1/60;
+        // generate different phases for each channel to make plots distinct
+        const s0 = Math.sin(simT * Math.PI*2*10) * 25 + (Math.random()-0.5)*4;
+        const s1 = Math.sin(simT * Math.PI*2*10 + 0.5) * 22 + (Math.random()-0.5)*4;
+        const s2 = Math.sin(simT * Math.PI*2*20 + 1.0) * 12 + (Math.random()-0.5)*3;
+        const s3 = Math.sin(simT * Math.PI*2*7 + 1.6) * 18 + (Math.random()-0.5)*3;
+        pushSamples([s0,s1,s2,s3]);
+      }, 1000/60);
+      // compute FFT periodically and update telemetry
+      simFFTInterval = setInterval(()=>{
+        computeFFTFromTime();
+        // derive a/b from combined channels
+        const a = averageRange(8,12); const b = averageRange(13,30);
+        updateTelemetry({focus: Math.round((b/(a+0.001))*30), alpha: Math.min(100,Math.round(a)), beta: Math.min(100,Math.round(b))});
+      }, 150);
+    }
+    function stopSim(){ if(!simActive) return; simActive=false; btnSim.textContent='Simulate Device'; setStatus('Disconnected'); clearInterval(simTimer); clearInterval(simFFTInterval); simTimer=null; }
+
+    function averageRange(a,b){ let s=0; let n=0; for(let ch=0; ch<CHANNELS.length; ch++){ for(let i=a;i<=b;i++){ s += fftDisplays[ch][i]||0; n++; } } return n? (s/n):0; }
+
+    btnSim.addEventListener('click', ()=>{ if(simActive) stopSim(); else startSim(); });
+
+    // Muse Bluetooth wiring
+    const muse = new MuseBluetooth();
+    let packetCount = 0;
+    let lastLog = '';
+    let lastRawHex = '';
+    let lastRawTime = 0;
+
+    // Log raw bytes and receive parsed samples + FFT from MuseBluetooth
+    muse.onRawData((raw)=>{
+      // show first bytes as hex for quick inspection
+      const s = Array.from(raw.slice(0,16)).map(b=>b.toString(16).padStart(2,'0')).join(' ');
+      log('RAW: ' + s + (raw.length>16 ? ' ... ('+raw.length+' bytes)':'') );
+      lastRawHex = s;
+      lastRawTime = Date.now();
+    });
+
+    muse.onEEGData((d)=>{
+      // d: {focus, alpha, beta, lastSamples: [..], fft: {mags: [Float32Array,..]}}
+      packetCount++;
+      updateTelemetry(d);
+      if (d.lastSamples) pushSamples(d.lastSamples);
+      if (d.fft && d.fft.mags) {
+        for (let ch=0; ch<CHANNELS.length; ch++){
+          const src = d.fft.mags[ch];
+          for (let i=0;i<FFT_BINS;i++) fftDisplays[ch][i] = src && src[i] ? src[i] : 0;
+        }
+        needsUpdate = true;
+      }
+    });
+
+    muse.onDisconnect(()=>{
+      setStatus('Disconnected (Hardware Timeout/Loss of Signal)');
+      log('Device disconnected — starting simulation fallback');
+      clearCharts();
+      startSim();
+    });
+
+    // Device info updater
+    setInterval(()=>{
+      const infoEl = document.getElementById('devInfo');
+      if(!infoEl) return;
+      const dev = muse.device || {};
+      const connected = !!(dev && dev.gatt && dev.gatt.connected);
+      const controlUuid = muse.controlChar ? (muse.controlChar.uuid || muse.controlChar.uuid) : 'none';
+      const eegUuid = muse.eegChar ? (muse.eegChar.uuid || muse.eegChar.uuid) : 'none';
+      const rawAge = lastRawTime ? Math.round((Date.now()-lastRawTime)/1000) + 's' : 'never';
+      infoEl.textContent = `Device: ${dev.name || dev.id || 'none'} | connected: ${connected} | control: ${controlUuid} | eeg: ${eegUuid} | lastRaw: ${rawAge}`;
+    }, 800);
+
+    async function doConnect(){
+      setStatus('Requesting device...');
+      try{
+        await muse.connect();
+        setStatus('Connected (Streaming Active)', 'ok');
+        if (simActive) stopSim();
+      }catch(err){
+        console.error(err); setStatus('Connection Failed'); log('Connection error: ' + (err && err.message));
+      }
+    }
+
+    btnConnect.addEventListener('click', () => { doConnect(); });
+    document.getElementById('btnDump').addEventListener('click', async ()=>{
+      if(!muse || !muse.server) return log('No connected device/server');
+      try{
+        const services = await muse.server.getPrimaryServices();
+        log('Found ' + services.length + ' services');
+        for(const s of services){
+          log('Service: ' + s.uuid);
+          const chars = await s.getCharacteristics();
+          for(const c of chars){
+            log('  Char: ' + c.uuid + ' props: ' + JSON.stringify(c.properties));
+          }
+        }
+      }catch(e){ log('Dump services error: ' + (e && e.message)); console.error(e); }
+    });
+
+    // UI helpers
+    function setStatus(text, kind){ statusEl.textContent = text; if (kind==='ok') statusEl.style.color='#69f0ae'; else statusEl.style.color='#fca5a5'; }
+    function log(s){ lastLog = '['+new Date().toISOString().split('T')[1].slice(0,-1)+'] '+s; logEl.innerHTML = '<div class="small">'+lastLog+'</div>' + logEl.innerHTML; }
+    function updateTelemetry(d){ if(d.focus!==undefined) tvFocus.textContent = d.focus; if(d.alpha!==undefined){ tvAlpha.textContent = Math.round(d.alpha); alphaBar.style.width = Math.min(100,d.alpha)+'%'; } if(d.beta!==undefined){ tvBeta.textContent = Math.round(d.beta); betaBar.style.width = Math.min(100,d.beta)+'%'; } }
+
+    function clearCharts(){ 
+      for(let ch=0; ch<CHANNELS.length; ch++){
+        for(let i=0;i<TIME_LEN;i++) timeBuffers[ch][i]=0;
+        for(let i=0;i<FFT_BINS;i++) fftDisplays[ch][i]=0;
+      }
+      needsUpdate=true; 
+    }
+
+    // PPS counter
+    setInterval(()=>{ tvPPS.textContent = packetCount; packetsEl.textContent = packetCount + ' pkt/s'; packetCount=0; }, 1000);
+
+    // RAF loop
+    function raf(){ if(needsUpdate) updateCharts(); requestAnimationFrame(raf); }
+    requestAnimationFrame(raf);
+
+    // Small helper to compute FFT on demand (exposed for debugging)
+    window.computeFFTFromTime = computeFFTFromTime;
+
+    // Initial status
+    setStatus('Disconnected');
+
+  </script>
+</body>
+</html>
