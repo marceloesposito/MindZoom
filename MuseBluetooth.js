@@ -18,11 +18,9 @@ class MuseBluetooth {
         // Service / Control / EEG UUIDs (fixed mapping)
         this.SERVICE_UUID = '0000fe8d-0000-1000-8000-00805f9b34fb';
         this.CONTROL_UUID = '273e0001-4c4d-454d-96be-f03bac821358';
-        // Muse S exposes only 3 EEG characteristics; map 3->4 logical channels.
+        // Per Athena (Muse S), tutto il flusso dati è multiplexato sulla sola caratteristica 0013
         this.EEG_UUIDS = [
-            '273e0013-4c4d-454d-96be-f03bac821358', // TP9
-            '273e0014-4c4d-454d-96be-f03bac821358', // AF7
-            '273e0015-4c4d-454d-96be-f03bac821358'  // AF8 (+ TP10 multiplexed on Muse S)
+            '273e0013-4c4d-454d-96be-f03bac821358'
         ];
 
         // Public callbacks
@@ -45,9 +43,33 @@ class MuseBluetooth {
         // Per-channel buffers and FFT storage (4 logical channels: TP9, AF7, AF8, TP10)
         this.channelLabels = ['TP9','AF7','AF8','TP10'];
         this.channelCount = this.channelLabels.length;
-        this.realBuffers = Array.from({length: this.channelCount}, ()=> new Float32Array(this.BUFFER_SIZE));
-        this.writeIndex = new Uint32Array(this.channelCount); // per-channel write pointer
-        this.sampleCounts = new Uint32Array(this.channelCount);
+        
+        // Inizializzazione dei buffer reali per l'EEG
+        this.realBuffers = [
+            new Float32Array(this.BUFFER_SIZE), // Ch 0: TP9
+            new Float32Array(this.BUFFER_SIZE), // Ch 1: AF7
+            new Float32Array(this.BUFFER_SIZE), // Ch 2: AF8
+            new Float32Array(this.BUFFER_SIZE)  // Ch 3: TP10
+        ];
+
+        // Inizializzazione degli indici di scrittura e conteggio campioni
+        this.writeIndex = [0, 0, 0, 0];
+        this.sampleCounts = [0, 0, 0, 0];
+
+        // Stato dei filtri per i 4 canali principali
+        this.dcPredictor = [0.0, 0.0, 0.0, 0.0];
+        
+        // Memoria per il filtro Notch 50Hz (quattro zeri stabili)
+        this.notch_x1 = [0.0, 0.0, 0.0, 0.0]; 
+        this.notch_x2 = [0.0, 0.0, 0.0, 0.0];
+        this.notch_y1 = [0.0, 0.0, 0.0, 0.0]; 
+        this.notch_y2 = [0.0, 0.0, 0.0, 0.0];
+
+        // Memoria per il filtro Passa-Basso 45Hz
+        this.lp_x1 = [0.0, 0.0, 0.0, 0.0]; 
+        this.lp_x2 = [0.0, 0.0, 0.0, 0.0];
+        this.lp_y1 = [0.0, 0.0, 0.0, 0.0]; 
+        this.lp_y2 = [0.0, 0.0, 0.0, 0.0];
 
         this.fftReals = Array.from({length: this.channelCount}, ()=> new Float32Array(this.BUFFER_SIZE));
         this.fftImags = Array.from({length: this.channelCount}, ()=> new Float32Array(this.BUFFER_SIZE));
@@ -107,48 +129,59 @@ class MuseBluetooth {
                     const dv = e.target.value;
                     const raw = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
                     const preview = Array.from(raw.slice(0,32)).map(b=>b.toString(16).padStart(2,'0')).join(' ');
-                    console.log('[MuseBluetooth] Control notify', dv.byteLength, 'bytes:', preview, dv.byteLength>32? '...':'');
+                    console.log('[MuseBluetooth] Control notify', dv.byteLength, 'bytes:', preview);
                 }catch(err){ console.warn('[MuseBluetooth] Control notify parse failed', err); }
             });
             console.log('Control notifications started', this.CONTROL_UUID);
 
-            // Subscribe to configured EEG characteristics (tolerant: Muse S exposes 3 UUIDs)
-            for(let i=0;i<this.EEG_UUIDS.length;i++){
-                const uuid = this.EEG_UUIDS[i];
-                try{
-                    const char = await service.getCharacteristic(uuid);
-                    await char.startNotifications();
-                    char.addEventListener('characteristicvaluechanged', (e)=> this.handleIncomingEEGPacket(uuid, e.target.value));
-                    this.eegChars[uuid] = char;
-                    console.log('[MuseBluetooth] EEG notifications started', uuid);
-                }catch(err){
-                    // Non-fatal: device may not expose all UUIDs; continue
-                    console.warn('[MuseBluetooth] Failed to subscribe EEG char (ignored):', uuid, err && err.name);
-                }
+            // Sottoscrizione all'unica caratteristica multiplexata effettiva di Athena
+            const uuid = this.EEG_UUIDS[0];
+            this.eegChars = {};
+            try {
+                const char = await service.getCharacteristic(uuid);
+                await char.startNotifications();
+                char.addEventListener('characteristicvaluechanged', (e) => this.handleIncomingEEGPacket(uuid, e.target.value));
+                this.eegChars[uuid] = char;
+                console.log('[MuseBluetooth] Multiplexed Athena notification started', uuid);
+            } catch(err) {
+                console.error('[MuseBluetooth] Impossibile connettersi alla caratteristica dati 0013:', err);
+                throw err;
             }
 
-            // Build mapping from characteristic UUID -> logical channel indices
-            // For Muse S (3 characteristics) we assume distribution: 0013->TP9, 0014->AF7, 0015->AF8+TP10 (interleaved)
-            this.charToChannelMap = {};
-            const availableUUIDs = Object.keys(this.eegChars);
-            if(availableUUIDs.length === 0) console.warn('[MuseBluetooth] No EEG characteristics subscribed');
-            for(let i=0;i<availableUUIDs.length;i++){
-                const u = availableUUIDs[i].toLowerCase();
-                if(i === 0) this.charToChannelMap[u] = { channels: [0], interleaved: false };
-                else if(i === 1) this.charToChannelMap[u] = { channels: [1], interleaved: false };
-                else if(i === 2) this.charToChannelMap[u] = { channels: [2,3], interleaved: true };
-                else this.charToChannelMap[u] = { channels: [i], interleaved: false };
-            }
-
-            // Handshake sequence (timed)
-            console.log('[MuseBluetooth] Starting Handshake...');
-            await this.sendControlCommand('v1');
-            await this._sleep(500);
-            await this.sendControlCommand('p1041');
-            await this._sleep(500);
+            // --- SEQUENZA DOPPIO PRESET ATHENA CRITICA ---
+            console.log('[MuseBluetooth] Starting Athena Handshake...');
+            await this.sendControlCommand('v6'); // Identificazione corretta v6 per Athena
+            await this._sleep(100);
             await this.sendControlCommand('s');
+            await this._sleep(100);
+            await this.sendControlCommand('h');
+            await this._sleep(100);
+
+            // 1. Applichiamo il preset base EEG
+            await this.sendControlCommand('p21');
             await this._sleep(200);
-            console.log('[MuseBluetooth] Stream activated successfully.');
+
+            // 2. Primo innesco per svegliare i descrittori hardware
+            await this.sendControlCommand('dc001');
+            await this.sendControlCommand('L1');
+            await this._sleep(300);
+
+            // 3. Mettiamo temporaneamente in pausa
+            await this.sendControlCommand('h');
+            await this._sleep(100);
+
+            // 4. Applichiamo il preset finale completo (p1041 abilita modalità EEG8 a 8 canali)
+            await this.sendControlCommand('p1041');
+            await this._sleep(200);
+
+            // 5. Secondo innesco definitivo obbligatorio
+            await this.sendControlCommand('dc001');
+            await this.sendControlCommand('L1');
+            await this._sleep(200);
+
+            // 6. Avvio definitivo dello streaming
+            await this.sendControlCommand('s');
+            console.log('[MuseBluetooth] Stream activated via dual-preset sequence.');
 
             console.log('Muse connected and streaming!');
         }catch(err){
@@ -209,75 +242,131 @@ class MuseBluetooth {
     }
 
     // Parse incoming EEG notification coming from a particular characteristic UUID
-    // value is expected to be a DataView (e.target.value) but we accept ArrayBuffer-like too.
     handleIncomingEEGPacket(uuid, value){
         try{
-            const u = (''+uuid).toLowerCase();
-            const chIndex = this.EEG_UUIDS.findIndex(x => x.toLowerCase() === u);
-            if(chIndex < 0) return console.warn('[MuseBluetooth] Received EEG packet from unknown UUID', uuid);
-
-            // Normalize DataView
+            // Normalizzazione del DataView in ingresso (gestisce sia ArrayBuffer che DataView)
             let dataView = value;
             if(!(dataView && typeof dataView.getUint8 === 'function')){
-                // Possibly ArrayBuffer or Uint8Array
                 const arr = new Uint8Array(value);
                 dataView = new DataView(arr.buffer);
             }
 
             const len = dataView.byteLength || 0;
-            console.debug('[MuseBluetooth] EEG notify', uuid, 'len=', len);
+            if(len < 10) return; // Pacchetto troppo corto per contenere l'header esteso Athena
 
-            // Emit raw bytes for debugging
-            try{
+            // --- PARSING STRUTTURA PACCHETTO ATHENA ---
+            // Struttura standard Athena: <len(1B)><counter(1B)><unknown(7B)><packet_id_byte(1B)>
+            const packetIdByte = dataView.getUint8(9);
+            const dataType = packetIdByte & 0x0F; // Isola gli ultimi 4 bit (il TAG del tipo dati)
+
+            // Filtro dei tipi dati: 1 = EEG 4 canali (preset p21), 2 = EEG 8 canali (preset p1041)
+            if (dataType !== 1 && dataType !== 2) {
+                // Se è un pacchetto IMU (7), Ottico/fNIRS (4/5/6) o Batteria (8), lo ignoriamo
+                return; 
+            }
+
+            // Emetti i byte grezzi per la visualizzazione di debug se la callback è attiva
+            if(typeof this.onRawDataCallback === 'function') {
                 const raw = new Uint8Array(dataView.buffer, dataView.byteOffset, len);
-                const preview = Array.from(raw.slice(0,32)).map(b=>b.toString(16).padStart(2,'0')).join(' ');
-                console.log('[MuseBluetooth] RAW ('+uuid+')', len, 'bytes:', preview, len>32? '...':'');
-                if(typeof this.onRawDataCallback === 'function') this.onRawDataCallback(new Uint8Array(raw));
-                this._lastRawAt = Date.now();
-            }catch(e){ console.warn('[MuseBluetooth] failed to emit raw data callback', e); }
+                this.onRawDataCallback(raw);
+            }
+            this._lastRawAt = Date.now();
 
-            // Minimal validation: expect at least 3 bytes (2-byte counter + 1 payload)
-            if(len < 3) return;
+            // Il payload compresso a 14-bit inizia dopo l'header esteso e i contatori di sotto-pacchetto
+            const headerOffset = 14; 
+            if(len <= headerOffset) return;
 
-            // Extract packet counter (big-endian)
-            const packetCounter = dataView.getUint16(0, false);
+            const payloadLen = len - headerOffset;
+            const payload = new Uint8Array(dataView.buffer, dataView.byteOffset + headerOffset, payloadLen);
 
-            // Payload follows the first 2 bytes
-            const payloadLen = len - 2;
-            const payload = new Uint8Array(dataView.buffer, dataView.byteOffset + 2, payloadLen);
+            // Configurazione dinamica dei canali in base al tipo di pacchetto EEG rilevato
+            const numChannels = (dataType === 2) ? 8 : 4; 
+            const numSamples = 2;  // Ogni sotto-pacchetto Athena contiene sempre 2 campioni temporali consecutivi
 
-            // Count how many 14-bit signed samples we can extract
+            let bitOffset = 0;
             const totalBits = payload.length * 8;
-            const samplesAvailable = Math.floor(totalBits / 14);
-            if(samplesAvailable <= 0) return;
 
-            // Extract sequential 14-bit signed values
-            for(let s=0; s<samplesAvailable; s++){
-                const bitOffset = s * 14;
-                const rawVal = this._get14BitSigned(payload, bitOffset);
-                // Convert to microvolts using empirical scaling used by OpenMuse/Athena
-                const uv = rawVal * (1450.0 / 16383.0);
+            // Ciclo sui campioni e sui canali multiplexati
+            for (let s = 0; s < numSamples; s++) {
+                for (let ch = 0; ch < numChannels; ch++) {
+                    // Controllo di sicurezza per non sforare i bit disponibili nel payload
+                    if (bitOffset + 14 > totalBits) break;
 
-                // Write into per-channel circular buffer
-                const idx = (this.writeIndex[chIndex] + 1) % this.BUFFER_SIZE;
-                this.writeIndex[chIndex] = idx;
-                this.realBuffers[chIndex][idx] = uv;
-                this.sampleCounts[chIndex] = Math.min(this.sampleCounts[chIndex] + 1, this.BUFFER_SIZE);
+                    // Estrazione del valore signed a 14 bit tramite la funzione helper interna
+                    const rawVal = this._get14BitSigned(payload, bitOffset);
+                    bitOffset += 14;
+
+                    // SEPARAZIONE DEI CANALI: Processiamo e filtriamo solo i primi 4 canali utili alla UI
+                    if (ch < 4) {
+                        // Verifica di sicurezza sull'inizializzazione degli array di stato dei filtri
+                        if (!this.dcPredictor || this.dcPredictor[ch] === undefined) continue;
+
+                        // Conversione matematica da valori interi grezzi a microvolt nativi
+                        const uv = rawVal * (1450.0 / 16383.0);
+
+                        // --- 1. FILTRO CC (PASSA-ALTO ~0.5Hz) ---
+                        let filtered = uv - this.dcPredictor[ch];
+                        this.dcPredictor[ch] += 0.02 * filtered;
+
+                        // --- 2. FILTRO NOTCH 50Hz (Fs=256Hz, Q=10) ---
+                        const n_b0 = 0.9391, n_b1 = -0.4024, n_b2 = 0.9391;
+                        const n_a1 = -0.4024, n_a2 = 0.8782;
+                        
+                        let x = filtered;
+                        let y = (n_b0 * x) + (n_b1 * this.notch_x1[ch]) + (n_b2 * this.notch_x2[ch])
+                                - (n_a1 * this.notch_y1[ch]) - (n_a2 * this.notch_y2[ch]);
+                        
+                        this.notch_x2[ch] = this.notch_x1[ch]; this.notch_x1[ch] = x;
+                        this.notch_y2[ch] = this.notch_y1[ch]; this.notch_y1[ch] = y;
+                        filtered = y;
+
+                        // --- 3. FILTRO PASSA-BASSO 45Hz (Butterworth 2° Ordine, Fs=256Hz) ---
+                        const lp_b0 = 0.2066, lp_b1 = 0.4132, lp_b2 = 0.2066;
+                        const lp_a1 = -0.3695, lp_a2 = 0.1958;
+                        
+                        x = filtered;
+                        y = (lp_b0 * x) + (lp_b1 * this.lp_x1[ch]) + (lp_b2 * this.lp_x2[ch])
+                            - (lp_a1 * this.lp_y1[ch]) - (lp_a2 * this.lp_y2[ch]);
+                        
+                        this.lp_x2[ch] = this.lp_x1[ch]; this.lp_x1[ch] = x;
+                        this.lp_y2[ch] = this.lp_y1[ch]; this.lp_y1[ch] = y;
+                        filtered = y;
+
+                        // --- 4. SOGLIA DI RIGETTO ARTEFATTI (Blink oculari) ---
+                        if ((ch === 1 || ch === 2) && Math.abs(filtered) > 150) {
+                            filtered = 0.0; 
+                        }
+
+                        // --- 5. SCRITTURA NEI BUFFER CIRCOLARI ---
+                        const idx = (this.writeIndex[ch] + 1) % this.BUFFER_SIZE;
+                        this.writeIndex[ch] = idx;
+                        
+                        this.realBuffers[ch][idx] = filtered; 
+                        this.sampleCounts[ch] = Math.min(this.sampleCounts[ch] + 1, this.BUFFER_SIZE);
+                    }
+                }
             }
 
-            // Decide whether to run FFT+metrics: do it when this channel has accumulated BUFFER_SIZE samples
-            if(this.sampleCounts[chIndex] >= this.BUFFER_SIZE){
+            // --- TRIGGER DI CALCOLO DELLA FFT ---
+            if(this.sampleCounts[0] >= this.BUFFER_SIZE){
                 this._runFFTAndEmit();
+                
+                // RESET DEI CONTEGGI: Previene cicli infiniti bloccanti riavviando l'accumulo sequenziale
+                for(let i = 0; i < this.channelCount; i++){
+                    this.sampleCounts[i] = 0;
+                }
             }
 
-        }catch(err){ console.error('[MuseBluetooth] handleIncomingEEGPacket failed', err); }
+        }catch(err){ 
+            console.error('[MuseBluetooth] handleIncomingEEGPacket failed', err); 
+        }
     }
 
     // Compute per-channel FFTs using the circular buffers and emit aggregated metrics
     _runFFTAndEmit(){
         const N = this.BUFFER_SIZE;
-        // For each channel, reconstruct chronological buffer and run FFT
-        for(let ch=0; ch<this.EEG_UUIDS.length; ch++){
+        // CORREZIONE: Scorre tutti i 4 canali allocati fisicamente, non la lunghezza dell'array UUIDs (che è 1)
+        for(let ch=0; ch<this.channelCount; ch++){
             const real = this.fftReals[ch];
             const imag = this.fftImags[ch];
             const src = this.realBuffers[ch];
@@ -294,15 +383,15 @@ class MuseBluetooth {
             for(let i=0; i<N/2; i++) mags[i] = Math.sqrt(real[i]*real[i] + imag[i]*imag[i]) / N;
         }
 
-        // Aggregate Alpha (8-12) and Beta (13-30) across channels
+        // Aggregate Alpha (8-12) and Beta (13-30) across all 4 channels
         let alphaSum = 0, betaSum = 0;
-        for(let ch=0; ch<this.EEG_UUIDS.length; ch++){
+        for(let ch=0; ch<this.channelCount; ch++){
             const mags = this.fftMags[ch];
             for(let b=8; b<=12; b++) alphaSum += mags[b] || 0;
             for(let b=13; b<=30; b++) betaSum += mags[b] || 0;
         }
-        const alphaMean = alphaSum / (5 * this.EEG_UUIDS.length);
-        const betaMean = betaSum / (18 * this.EEG_UUIDS.length);
+        const alphaMean = alphaSum / (5 * this.channelCount);
+        const betaMean = betaSum / (18 * this.channelCount);
 
         const alphaAmp = alphaMean;
         const betaAmp = betaMean;
@@ -314,8 +403,8 @@ class MuseBluetooth {
         const alphaPct = Math.min(100, (alphaAmp / this.MAX_UV) * 100);
         const betaPct = Math.min(100, (betaAmp / this.MAX_UV) * 100);
 
-        // Last samples per channel (most recent)
-        const lastSamples = this.EEG_UUIDS.map((_,ch)=> this.realBuffers[ch][this.writeIndex[ch]] || 0);
+        // Last samples per channel (most recent) - corretto mapping su channelCount
+        const lastSamples = Array.from({length: this.channelCount}, (_, ch) => this.realBuffers[ch][this.writeIndex[ch]] || 0);
 
         // Build FFT copy to include in callback (shallow copy per channel)
         const fftCopy = this.fftMags.map(m => new Float32Array(m));
@@ -336,17 +425,22 @@ class MuseBluetooth {
 
     // Unpacks 14-bit signed integer from continuous bit stream (payload: Uint8Array)
     _get14BitSigned(payload, bitOffset){
-        // payload: Uint8Array
         const byteOffset = bitOffset >> 3;
         const bitShift = bitOffset & 7;
+        
+        // Estrazione di 3 byte consecutivi per coprire la finestra a 14 bit cross-byte
         const b0 = payload[byteOffset] || 0;
         const b1 = payload[byteOffset + 1] || 0;
         const b2 = payload[byteOffset + 2] || 0;
 
-        // build 24-bit window and shift
-        let val = (b0 << 16) | (b1 << 8) | b2;
-        val = (val >> (10 - bitShift)) & 0x3FFF; // extract 14 bits
-        if(val > 8191) val -= 16384; // two's complement
+        // Costruzione dell'intero a 24-bit (Little-Endian a livello di byte)
+        let val = b0 | (b1 << 8) | (b2 << 16);
+        
+        // Allineamento dello shift e maschera a 14 bit (0x3FFF)
+        val = (val >> bitShift) & 0x3FFF;
+        
+        // Conversione in segno tramite Complemento a 2
+        if(val > 8191) val -= 16384; 
         return val;
     }
 
