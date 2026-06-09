@@ -5,563 +5,121 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Mind Zoom - SEM Microscope Interactive Experience</title>
     
-    <!-- TailwindCSS CDN -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    
-    <!-- PixiJS CDN (v8.x) -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/8.1.0/pixi.min.js"></script>    
+    
     <style>
-        /* Smooth transitions and animations */
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         html, body {
-            width: 100%;
-            height: 100%;
-            overflow: hidden;
-            background-color: #000;
-            background-image: url('/images/1.webp');
-            background-size: cover;
-            background-position: center;
-            background-attachment: fixed;
+            width: 100%; height: 100%; overflow: hidden;
+            background-color: #000; font-family: ui-sans-serif, system-ui, sans-serif;
         }
-
-        /* Landing page specific styles */
         #landing-container {
-            width: 100%;
-            height: 100vh;
-            overflow-y: auto;
-            scroll-behavior: smooth;
+            width: 100%; height: 100vh; overflow-y: auto;
+            background-image: linear-gradient(to bottom, rgba(0,0,0,0.4), rgba(15,23,42,0.95)), url('/images/1.webp');
+            background-size: cover; background-position: center;
         }
-
-        /* Hero section styling */
-        .hero-section {
-            height: 100vh;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            background-color: transparent;
-            position: relative;
-        }
-
-        .hero-title {
-            font-size: 4rem;
-            font-weight: 700;
-            color: #fff;
-            margin-bottom: 2rem;
-            letter-spacing: 2px;
-            text-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
-        }
-
-        .cta-buttons {
-            display: flex;
-            flex-direction: column;
-            gap: 1rem;
-            margin-top: 2rem;
-            align-items: center;
-        }
-
-        .cta-primary {
-            padding: 0.75rem 2rem;
-            background-color: #667eea;
-            background-image: 
-                radial-gradient(at 0% 0%, #764ba2 0px, transparent 70%),
-                radial-gradient(at 100% 0%, #3b82f6 0px, transparent 70%),
-                radial-gradient(at 100% 100%, #10b981 0px, transparent 70%),
-                radial-gradient(at 0% 100%, #ef4444 0px, transparent 70%);
-            background-size: 200% 200%;
-            animation: meshMove 8s ease infinite;
-            color: white;
-            border: none;
-            border-radius: 0.5rem;
-            font-size: 1rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: transform 0.3s ease, box-shadow 0.3s ease;
-            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
-        }
-
-        @keyframes meshMove {
-            0% { background-position: 0% 0%; }
-            25% { background-position: 100% 0%; }
-            50% { background-position: 100% 100%; }
-            75% { background-position: 0% 100%; }
-            100% { background-position: 0% 0%; }
-        }
-
-        .cta-primary:hover:not(:disabled) {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
-        }
-
-        .cta-secondary {
-            padding: 0.75rem 2rem;
-            background: transparent;
-            color: #667eea;
-            border: 2px solid #667eea;
-            border-radius: 0.5rem;
-            font-size: 1rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s ease;
-        }
-
-        .cta-secondary:hover:not(:disabled) {
-            background: rgba(102, 126, 234, 0.1);
-            transform: translateY(-2px);
-        }
-
-        .cta-secondary:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-
-        /* Status indicators */
-        .status-indicators {
+        .microscope-mask {
             position: absolute;
-            bottom: 2rem;
-            left: 2rem;
-            display: flex;
-            gap: 1.5rem;
-            z-index: 10;
-        }
-
-        .status-item {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            font-size: 0.9rem;
-            color: #fff;
-        }
-
-        .status-indicator {
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            transition: background-color 0.3s ease;
-        }
-
-        .status-indicator.connected {
-            background-color: #10b981;
-            box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
-        }
-
-        .status-indicator.disconnected {
-            background-color: #ef4444;
-            box-shadow: 0 0 8px rgba(239, 68, 68, 0.6);
-        }
-
-        /* Info section */
-        .info-section {
-            height: 100vh;
-            width: 100%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background: rgba(15, 23, 42, 0.85); /* Semi-transparent to let background show through */
-            padding: 4rem;
-            color: #fff;
-        }
-
-        .info-content {
-            max-width: 800px;
-            font-size: 1.1rem;
-            line-height: 1.8;
-            color: #cbd5e1;
-        }
-
-        .info-title {
-            font-size: 1.5rem;
-            font-weight: 600;
-            color: #667eea;
-            margin-bottom: 1rem;
-        }
-
-        /* Immersion view - PixiJS canvas */
-        #immersion-container {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            display: none;
-            z-index: 50;
-        }
-
-        #pixi-canvas {
-            display: block;
-            width: 100%;
-            height: 100%;
-        }
-
-        /* Back button */
-        .back-button {
-            position: absolute;
-            top: 2rem;
-            right: 2rem;
-            width: 50px;
-            height: 50px;
-            background: rgba(255, 255, 255, 0.1);
-            border: 2px solid rgba(255, 255, 255, 0.3);
-            border-radius: 50%;
-            color: white;
-            font-size: 1.5rem;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            transition: all 0.3s ease;
-            z-index: 100;
-            backdrop-filter: blur(10px);
-        }
-
-        .back-button:hover {
-            background: rgba(255, 255, 255, 0.2);
-            border-color: rgba(255, 255, 255, 0.6);
-        }
-
-        /* Magnification bar */
-        .magnification-bar {
-            position: absolute;
-            top: 2rem;
-            left: 50%;
-            transform: translateX(-50%);
-            width: 80%;
-            max-width: 600px;
-            height: 60px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 100;
-        }
-
-        #magnification-canvas {
-            display: block;
-        }
-
-        .magnification-label {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            color: white;
-            font-size: 1.2rem;
-            font-weight: 600;
-            letter-spacing: 1px;
+            inset: 0;
             pointer-events: none;
-            text-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+            background: radial-gradient(circle at center, transparent 40%, rgba(15, 23, 42, 0.7) 80%, rgba(15, 23, 42, 0.95) 100%);
+            box-shadow: inset 0 0 120px rgba(0,0,0,0.8);
+            z-index: 5;
         }
-
-        /* Waveform bar */
-        .waveform-bar {
-            position: absolute;
-            bottom: 2rem;
-            left: 50%;
-            transform: translateX(-50%);
-            width: 80%;
-            max-width: 600px;
-            height: 80px;
-            background: rgba(255, 255, 255, 0.05);
-            border: 1px solid rgba(102, 126, 234, 0.3);
-            border-radius: 0.5rem;
-            padding: 1rem;
-            z-index: 100;
-            backdrop-filter: blur(10px);
-            display: flex;
-            align-items: center;
-            overflow: hidden;
-        }
-
-        .waveform-label {
-            position: absolute;
-            top: 6px;
-            left: 10px;
-            color: #667eea;
-            font-size: 0.48rem;
-            font-weight: bold;
-            font-variant: small-caps;
-            letter-spacing: 1px;
-            text-transform: uppercase;
-            opacity: 0.35;
-            text-shadow: 0 0 8px rgba(102, 126, 234, 0.4);
-            margin: 0;
-            writing-mode: horizontal-tb;
-            transform: none;
-        }
-
-        #waveform-canvas {
-            display: block;
-            width: 100%;
-            height: 100%;
-            flex-grow: 1;
-        }
-
-        /* Modal styles */
-        .modal-overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.7);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 200;
-            backdrop-filter: blur(5px);
-        }
-
-        .modal-content {
-            background: #1e1e2e;
-            border-radius: 1rem;
-            padding: 2rem;
-            max-width: 500px;
-            color: white;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8);
-            border: 1px solid rgba(102, 126, 234, 0.2);
-        }
-
-        .modal-title {
-            font-size: 1.5rem;
-            font-weight: 700;
-            margin-bottom: 1rem;
-            color: #667eea;
-        }
-
-        .modal-text {
-            font-size: 1rem;
-            line-height: 1.6;
-            margin-bottom: 1.5rem;
-            color: #cbd5e1;
-        }
-
-        .modal-buttons {
-            display: flex;
-            gap: 1rem;
-            justify-content: flex-end;
-        }
-
-        .modal-button {
-            padding: 0.5rem 1.5rem;
-            border-radius: 0.5rem;
-            border: none;
-            font-size: 1rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s ease;
-        }
-
-        .modal-button-primary {
-            background: #667eea;
-            color: white;
-        }
-
-        .modal-button-primary:hover {
-            background: #764ba2;
-        }
-
-        .modal-button-secondary {
-            background: transparent;
-            color: #667eea;
-            border: 2px solid #667eea;
-        }
-
-        .modal-button-secondary:hover {
-            background: rgba(102, 126, 234, 0.1);
-        }
-
-        .setup-guide {
-            background: rgba(102, 126, 234, 0.1);
-            border-left: 4px solid #667eea;
-            padding: 1rem;
-            margin-bottom: 1.5rem;
-            border-radius: 0.25rem;
-        }
-
-        .setup-guide-title {
-            font-weight: 600;
-            color: #667eea;
-            margin-bottom: 0.5rem;
-        }
-
-        .setup-guide-text {
-            font-size: 0.9rem;
-            line-height: 1.6;
-            color: #cbd5e1;
-        }
-
-        /* Hidden state */
-        .hidden {
-            display: none !important;
-        }
+        .led-indicator { width: 10px; height: 10px; border-radius: 50%; display: inline-block; transition: all 0.3s ease; }
+        .led-red { background-color: #ef4444; box-shadow: 0 0 8px #ef4444; }
+        .led-green { background-color: #22c55e; box-shadow: 0 0 8px #22c55e; }
     </style>
 </head>
-<body>
-    <!-- LANDING VIEW -->
-    <div id="landing-container" class="landing-view">
-        <!-- Hero Section -->
-        <section class="hero-section">
-            <!-- Status Indicators (Bottom-Left) -->
-            <div class="status-indicators">
-                <div class="status-item">
-                    <div class="status-indicator disconnected" id="muse-indicator"></div>
-                    <span>Muse Athena</span>
-                </div>
-                <div class="status-item">
-                    <div class="status-indicator disconnected" id="mindmonitor-indicator"></div>
-                    <span>Mind Monitor</span>
-                </div>
-            </div>
+<body class="text-white select-none">
 
-            <!-- Hero Title and CTA -->
-            <div class="text-center">
-                <h1 class="hero-title">Mind Zoom</h1>
-                
-                <div class="cta-buttons">
-                    <!-- Primary CTA -->
-                    <button id="begin-immersion-btn" class="cta-primary">
-                        Begin the immersion
-                    </button>
-                    
-                    <!-- Establish Connection CTA -->
-                    <button id="establish-connection-btn" class="cta-secondary">
-                        Establish connection
-                    </button>
-                    
-                    <!-- Know More CTA -->
-                    <button id="know-more-btn" class="cta-secondary">
-                        Know more
-                    </button>
+    <div id="landing-container">
+        <div class="min-h-screen flex flex-col justify-between p-8 lg:p-16">
+            <header class="flex justify-between items-center">
+                <div class="flex items-center space-x-3 bg-black/40 backdrop-blur-md px-4 py-2 rounded-full border border-gray-800">
+                    <span id="home-led" class="led-indicator led-red"></span>
+                    <span id="home-device-string" class="text-xs font-mono uppercase tracking-wider text-gray-300">Nessun dispositivo connesso</span>
                 </div>
-            </div>
-        </section>
+                <button id="establish-connection-btn" class="bg-blue-600 hover:bg-blue-500 text-white font-medium px-5 py-2.5 rounded-lg transition-all text-sm shadow-lg shadow-blue-600/20">
+                    Hardware Setup
+                </button>
+            </header>
 
-        <!-- Info Section (at +80vh) -->
-        <section class="info-section">
-            <div class="info-content">
-                <div class="info-title">Progetto studentesco sviluppato nell'ambito dell'Hybrid Design Lab.</div>
-                <p>
-                    Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. 
-                    Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. 
-                    Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. 
-                    Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
+            <main class="max-w-3xl my-auto pt-16">
+                <h1 class="text-5xl lg:text-7xl font-light tracking-tight mb-4 text-gray-100 uppercase">
+                    Mind <span class="font-semibold text-blue-500">Zoom</span>
+                </h1>
+                <p class="text-lg lg:text-xl text-gray-400 mb-8 font-light leading-relaxed">
+                    Esplora la materia a livello atomico. Un'esperienza immersiva guidata dalle tue onde cerebrali o da sistemi simulati che connette gli input alla profondità focale di un microscopio elettronico a scansione.
                 </p>
-                <p style="margin-top: 1.5rem;">
-                    Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque laudantium, totam rem aperiam, 
-                    eaque ipsa quae ab illo inventore veritatis et quasi architecto beatae vitae dicta sunt explicabo. Nemo enim ipsam 
-                    voluptatem quia voluptas sit aspernatur aut odit aut fugit, sed quia consequuntur magni dolores.
-                </p>
-            </div>
-        </section>
-    </div>
-
-    <!-- IMMERSION VIEW -->
-    <div id="immersion-container">
-        <!-- PixiJS Canvas (rendered by app.js) -->
-        <canvas id="pixi-canvas"></canvas>
-
-        <!-- Back Button -->
-        <button class="back-button" id="back-button" title="Return to landing">←</button>
-
-        <!-- Magnification Bar (Top Center) -->
-        <div class="magnification-bar">
-            <canvas id="magnification-canvas" width="500" height="50"></canvas>
-            <div class="magnification-label" id="magnification-label">1x</div>
-        </div>
-
-        <!-- Waveform Bar (Bottom Center) -->
-        <div class="waveform-bar">
-            <div class="waveform-label">Alpha Waves</div>
-            <canvas id="waveform-canvas" width="560" height="48"></canvas>
-        </div>
-    </div>
-
-    <!-- MODALS (hidden by default) -->
-    <!-- Alert Modal: Connection Failed or Not Established -->
-    <div id="alert-modal" class="modal-overlay hidden">
-        <div class="modal-content">
-            <div class="modal-title">Connessione non stabilita</div>
-            <div class="modal-text">
-                L'esperienza può essere vissuta simulando la concentrazione tramite lo scroll del mouse.
-            </div>
-            <div class="modal-buttons">
-                <button id="modal-go-back-btn" class="modal-button modal-button-secondary">
-                    Torna indietro
-                </button>
-                <button id="modal-continue-simulation-btn" class="modal-button modal-button-primary">
-                    Prosegui con simulazione
-                </button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Setup Guide Modal: Device Connection -->
-    <!-- Setup Guide Modal: Device Connection -->
-    <!-- Setup Guide Modal: Device Connection -->
-    <!-- Setup Guide Modal: Device Connection -->
-    <div id="setup-modal" class="modal-overlay hidden">
-        <div class="modal-content" style="max-width: 600px; width: 90%; background-color: #111827; border: 1px solid #374151;">
-            <div class="modal-title text-center text-white mb-4">Muse Device Diagnostics</div>
-            
-            <div class="flex justify-between items-center mb-6 px-4">
-                <div class="flex space-x-6">
-                    <div class="flex items-center space-x-2">
-                        <div id="signal-af7-led" class="w-4 h-4 rounded-full bg-gray-600 transition-colors duration-300"></div>
-                        <span class="text-sm text-gray-300 font-mono">Signal AF7</span>
-                    </div>
-                    <div class="flex items-center space-x-2">
-                        <div id="signal-af8-led" class="w-4 h-4 rounded-full bg-gray-600 transition-colors duration-300"></div>
-                        <span class="text-sm text-gray-300 font-mono">Signal AF8</span>
-                    </div>
+                <div class="flex flex-wrap gap-4">
+                    <button id="begin-immersion-btn" class="bg-white hover:bg-gray-100 text-black font-semibold px-8 py-4 rounded-xl transition-all shadow-xl text-md tracking-wide">
+                        Inizia Immersione
+                    </button>
                 </div>
-                <div id="connection-status-badge" class="px-3 py-1 rounded-full text-xs font-bold bg-blue-900/50 text-blue-400 border border-blue-500/30 animate-pulse">
-                    Awaiting Connection...
+            </main>
+        </div>
+    </div>
+
+    <div id="immersion-container" class="w-full h-screen relative bg-slate-900" style="display: none;">
+        <canvas id="pixi-canvas" class="absolute inset-0 w-full h-full z-0"></canvas>
+        
+        <div class="microscope-mask"></div>
+
+        <div class="absolute inset-0 z-10 pointer-events-none flex flex-col justify-between p-6">
+            <header class="w-full flex justify-between items-center pointer-events-auto">
+                <div class="flex items-center space-x-3 bg-black/60 backdrop-blur-md px-4 py-2 rounded-full border border-gray-800">
+                    <span id="immersion-status-led" class="led-indicator led-red"></span>
+                    <span id="immersion-mag-label" class="text-xs font-mono uppercase tracking-widest text-gray-300">MAGNIFICATION: 32x</span>
                 </div>
+                <div class="flex items-center space-x-2">
+                    <button id="toggle-input-mode-btn" class="bg-blue-600/80 hover:bg-blue-500 backdrop-blur-md border border-blue-500 text-white font-mono text-xs uppercase tracking-wider px-4 py-2.5 rounded-xl transition-all shadow-md">
+                        MODE: BCI (MUSE)
+                    </button>
+                    <button id="hamburger-menu-btn" class="bg-black/60 backdrop-blur-md border border-gray-800 hover:bg-gray-900 p-2.5 rounded-xl transition-all">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 6h16M4 12h16M4 18h16"/></svg>
+                    </button>
+                </div>
+            </header>
+
+            <div id="debug-panel" class="absolute top-24 left-6 bg-black/80 text-gray-300 font-mono text-xs p-4 rounded-lg border border-gray-700 shadow-2xl w-64 pointer-events-none backdrop-blur-sm">
+                <div class="mb-3 border-b border-gray-700 pb-2 text-gray-400 tracking-wider">DIAGNOSTICA TELEMETRIA</div>
+                <div class="flex justify-between mb-2"><span>Input Source:</span> <span id="debug-input-source" class="font-bold text-blue-400">BCI</span></div>
+                <div class="flex justify-between mb-2"><span>Velocity:</span> <span id="debug-velocity" class="font-bold">0.00</span></div>
+                <div class="flex justify-between mb-1"><span>Target (Input):</span> <span id="debug-target" class="text-blue-400 font-bold">0.00</span></div>
+                <div class="w-full bg-gray-900 h-1.5 rounded mb-3 overflow-hidden"><div id="debug-bar-target" class="bg-blue-500 h-full transition-all duration-75" style="width: 0%"></div></div>
+                <div class="flex justify-between mb-1"><span>Current (Render):</span> <span id="debug-current" class="text-green-400 font-bold">0.00</span></div>
+                <div class="w-full bg-gray-900 h-1.5 rounded overflow-hidden"><div id="debug-bar-current" class="bg-green-500 h-full transition-all duration-75" style="width: 0%"></div></div>
             </div>
 
-            <div class="chart-container bg-black rounded-lg border border-gray-800 p-2 mb-6" style="height: 200px; position: relative;">
-                <canvas id="eeg-chart-canvas" style="width: 100%; height: 100%;"></canvas>
-                <div class="absolute top-2 right-2 text-xs font-mono text-gray-500">FFT Spectrum 0-40Hz</div>
+            <footer class="w-full flex justify-end items-center">
+                <button id="end-immersion-btn" class="pointer-events-auto bg-red-600/90 hover:bg-red-500 text-white text-xs font-semibold tracking-widest uppercase px-6 py-3.5 rounded-xl transition-all">Esci</button>
+            </footer>
+        </div>
+    </div>
+
+    <div id="connection-modal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-md hidden">
+        <div class="bg-gray-900 border border-gray-800 rounded-2xl max-w-sm w-full p-6 shadow-2xl">
+            <h3 class="text-lg font-semibold text-gray-100 mb-2">Web Bluetooth Driver</h3>
+            <div class="space-y-3">
+                <button id="modal-find-device-btn" class="w-full py-3 bg-blue-600 text-white font-semibold rounded-lg">Scansiona BLE</button>
+                <button id="modal-terminate-btn" class="w-full py-3 bg-slate-800 text-slate-500 rounded-lg" disabled>Scollega</button>
             </div>
-            
-            <div class="modal-buttons flex justify-between">
-                <button id="modal-cancel-btn" class="px-6 py-2 rounded-lg bg-gray-700 text-gray-300 font-semibold opacity-50 cursor-not-allowed transition-all" disabled>
-                    Cancel connection
-                </button>
-                <button id="modal-connect-btn" class="px-6 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold shadow-[0_0_15px_rgba(37,99,235,0.5)] transition-all">
-                    Connetti Fascia
-                </button>
-            </div>
-            
-            <div class="mt-4 text-center">
-                 <button id="modal-setup-close-btn" class="text-xs text-gray-500 hover:text-white underline">
-                    Chiudi e simula (Mouse)
-                </button>
+            <button id="modal-close-conn-btn" class="mt-6 w-full text-xs text-gray-500 hover:text-white underline">Chiudi</button>
+        </div>
+    </div>
+
+    <div id="hamburger-modal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm hidden">
+        <div class="bg-slate-900 border border-slate-800 rounded-xl max-w-xs w-full p-4 shadow-2xl">
+            <div class="space-y-2">
+                <button id="menu-reconnect-btn" class="w-full py-2.5 text-left px-4 bg-indigo-600 text-white rounded-md text-sm font-medium">Connetti Hardware</button>
+                <button id="menu-close-btn" class="w-full py-2 text-center text-xs text-slate-500">Chiudi</button>
             </div>
         </div>
     </div>
 
-    <!-- EEG Status UI (Testing) -->
-    <div id="eeg-testing-ui" class="fixed top-4 left-4 z-50 bg-black/50 p-4 rounded-lg text-white hidden">
-        <h3 class="font-bold mb-2 text-sm text-gray-300">BLE Testing</h3>
-        <div class="mb-2">
-            <div class="text-xs flex justify-between"><span>Alpha</span><span id="telemetry-alpha-val">0%</span></div>
-            <div class="w-32 h-2 bg-gray-700 rounded overflow-hidden">
-                <div id="telemetry-alpha-bar" class="h-full bg-blue-500 transition-all duration-100" style="width: 0%"></div>
-            </div>
-        </div>
-        <div>
-            <div class="text-xs flex justify-between"><span>Beta</span><span id="telemetry-beta-val">0%</span></div>
-            <div class="w-32 h-2 bg-gray-700 rounded overflow-hidden">
-                <div id="telemetry-beta-bar" class="h-full bg-red-500 transition-all duration-100" style="width: 0%"></div>
-            </div>
-        </div>
-    </div>
-    <script src="MuseBluetooth.js"></script>
-    <script src="app.js"></script>
+    <script src="MuseBluetooth.js" defer></script>
+    <script src="app.js" defer></script>
 </body>
 </html>

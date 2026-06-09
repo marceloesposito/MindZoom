@@ -1,5 +1,5 @@
 /*
-  MuseBluetooth.js (Versione Ottimizzata High-Performance)
+  MuseBluetooth.js (Versione Ottimizzata High-Performance - Raw FFT Solo)
 */
 
 class MuseBluetooth {
@@ -19,8 +19,6 @@ class MuseBluetooth {
 
         this.FS = 256;
         this.BUFFER_SIZE = 256; 
-        this.MAX_UV = 50;
-        this.FOCUS_SCALE = 150;
 
         this.channelLabels = ['TP9','AF7','AF8','TP10'];
         this.channelCount = this.channelLabels.length;
@@ -47,19 +45,14 @@ class MuseBluetooth {
         this.fftImags = Array.from({length: this.channelCount}, ()=> new Float32Array(this.BUFFER_SIZE));
         this.fftMags = Array.from({length: this.channelCount}, ()=> new Float32Array(this.BUFFER_SIZE/2));
 
-        // --- OPTIMIZATION 1: MEMORY POOLING (Zero allocazioni a runtime) ---
         this.outFFTMags = Array.from({length: this.channelCount}, () => new Float32Array(this.BUFFER_SIZE / 2));
         this.outLastSamples = new Float32Array(this.channelCount);
         this.brainDataPayload = {
             timestamp: 0,
-            focus: 0,
-            alpha: 0,
-            beta: 0,
             lastSamples: this.outLastSamples,
             fft: { mags: this.outFFTMags, bins: this.BUFFER_SIZE / 2, fs: this.FS }
         };
 
-        // --- OPTIMIZATION 2: LOOK-UP TABLE TRIGONOMETRICA PER FFT ---
         this.fftLookUpTable = new Float32Array(this.BUFFER_SIZE * 2);
         const PI2 = -2 * Math.PI;
         for (let i = 0; i < this.BUFFER_SIZE; i++) {
@@ -67,7 +60,6 @@ class MuseBluetooth {
             this.fftLookUpTable[i * 2 + 1] = Math.sin(i * (PI2 / this.BUFFER_SIZE));
         }
 
-        this.focusEMA = 0;
         this._lastRawAt = 0;
         this._lastFFTAt = 0;
 
@@ -98,7 +90,6 @@ class MuseBluetooth {
             char.addEventListener('characteristicvaluechanged', (e) => this.handleIncomingEEGPacket(uuid, e.target.value));
             this.eegChars[uuid] = char;
 
-            // Handshake sequenza doppio preset Athena obbligatoria
             await this.sendControlCommand('v6'); await this._sleep(100);
             await this.sendControlCommand('s'); await this._sleep(100);
             await this.sendControlCommand('h'); await this._sleep(100);
@@ -182,11 +173,9 @@ class MuseBluetooth {
 
                         const uv = rawVal * (1450.0 / 16383.0);
 
-                        // 1. Filtro CC
                         let filtered = uv - this.dcPredictor[ch];
                         this.dcPredictor[ch] += 0.02 * filtered;
 
-                        // 2. Notch 50Hz
                         const n_b0 = 0.9391, n_b1 = -0.4024, n_b2 = 0.9391;
                         const n_a1 = -0.4024, n_a2 = 0.8782;
                         let x = filtered;
@@ -195,7 +184,6 @@ class MuseBluetooth {
                         this.notch_y2[ch] = this.notch_y1[ch]; this.notch_y1[ch] = y;
                         filtered = y;
 
-                        // 3. Passa-Basso 45Hz
                         const lp_b0 = 0.2066, lp_b1 = 0.4132, lp_b2 = 0.2066;
                         const lp_a1 = -0.3695, lp_a2 = 0.1958;
                         x = filtered;
@@ -204,12 +192,6 @@ class MuseBluetooth {
                         this.lp_y2[ch] = this.lp_y1[ch]; this.lp_y1[ch] = y;
                         filtered = y;
 
-                        // 4. Artefatti Oculari
-                        if ((ch === 1 || ch === 2) && Math.abs(filtered) > 150) {
-                            filtered = 0.0; 
-                        }
-
-                        // 5. Scrittura Buffer Circolare
                         const idx = (this.writeIndex[ch] + 1) % this.BUFFER_SIZE;
                         this.writeIndex[ch] = idx;
                         this.realBuffers[ch][idx] = filtered; 
@@ -243,30 +225,12 @@ class MuseBluetooth {
             for(let i=0; i<N/2; i++) mags[i] = Math.sqrt(real[i]*real[i] + imag[i]*imag[i]) / N;
         }
 
-        let alphaSum = 0, betaSum = 0;
-        for(let ch=0; ch<this.channelCount; ch++){
-            const mags = this.fftMags[ch];
-            for(let b=8; b<=12; b++) alphaSum += mags[b] || 0;
-            for(let b=13; b<=30; b++) betaSum += mags[b] || 0;
-        }
-        const alphaMean = alphaSum / (5 * this.channelCount);
-        const betaMean = betaSum / (18 * this.channelCount);
-
-        const focusRatio = betaMean / (alphaMean + 0.001);
-        let newFocus = focusRatio * this.FOCUS_SCALE;
-        newFocus = Math.max(0, Math.min(255, newFocus));
-        this.focusEMA = this.focusEMA * 0.8 + newFocus * 0.2;
-
-        // --- SCRITTURA NEI BUFFER STATICI DEL POOL (ZERO ALLOCATIONS) ---
         for (let ch = 0; ch < this.channelCount; ch++) {
             this.outFFTMags[ch].set(this.fftMags[ch]);
             this.outLastSamples[ch] = this.realBuffers[ch][this.writeIndex[ch]] || 0;
         }
 
         this.brainDataPayload.timestamp = Date.now();
-        this.brainDataPayload.focus = Math.round(this.focusEMA);
-        this.brainDataPayload.alpha = Math.min(100, (alphaMean / this.MAX_UV) * 100);
-        this.brainDataPayload.beta = Math.min(100, (betaMean / this.MAX_UV) * 100);
 
         if(typeof this.onEEGDataCallback === 'function'){
             this.onEEGDataCallback(this.brainDataPayload);
@@ -300,7 +264,6 @@ class MuseBluetooth {
         for(let size=2; size<=n; size<<=1){
             let half = size >> 1;
             for(let m=0;m<half;m++){
-                // --- UTILIZZO DELLA LUT PRE-CALCOLATA ---
                 const lutIdx = (m * (this.BUFFER_SIZE / size)) * 2;
                 const wReal = this.fftLookUpTable[lutIdx];
                 const wImag = this.fftLookUpTable[lutIdx + 1];
