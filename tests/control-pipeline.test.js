@@ -22,7 +22,12 @@ const sandbox = {
     },
     window: { addEventListener: () => {} },
     PIXI: {},
-    MuseBluetooth: class { onEEGData(cb) { this._cb = cb; } connect() {} }
+    MuseBluetooth: class {
+        onEEGData(cb) { this._cb = cb; }
+        onDisconnect(cb) { this._onDisc = cb; }
+        sendControlCommand() { return Promise.resolve(null); }
+        connect() {}
+    }
 };
 sandbox.window.CONFIG = null;
 vm.createContext(sandbox);

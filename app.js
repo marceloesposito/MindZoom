@@ -64,6 +64,9 @@ const AppState = {
     isGated: false,        // artefatto d'ampiezza sulla finestra corrente
     contactOk: true,       // proxy qualità contatto
     gatedWindows: 0,       // finestre consecutive scartate
+    lastEEGAt: 0,          // timestamp dell'ultimo dato EEG ricevuto
+    eegStalled: false,     // flusso EEG fermo (vedi checkEEGWatchdog)
+    watchdogRetries: 0,
     seeded: false,         // semina mediana/MAD riuscita
 
     // --- Hold / select ---
@@ -76,6 +79,7 @@ let lastRenderedMagnification = -1;
 let pixiApp = null;
 let spritePool = [];
 let hudTimer = 0.0;
+let watchdogTimer = 0.0;
 
 const DOM = {};
 
@@ -265,12 +269,26 @@ function initUIEventListeners() {
     }
 
     muse.onEEGData((brainData) => {
+        // Timbrato sempre, anche in modalità rotella: è il segnale di vita del flusso.
+        AppState.lastEEGAt = Date.now();
+        if (AppState.eegStalled) {
+            console.log('[EEG] flusso ripristinato');
+            AppState.eegStalled = false;
+        }
+        AppState.watchdogRetries = 0;
+
         if (!brainData.fft || AppState.inputMode !== "BCI") return;
         if (CONFIG.USE_ADAPTIVE_PIPELINE) {
             processAdaptiveIndex(brainData);
         } else {
             calculateScientificFocusLegacy(brainData.fft);
         }
+    });
+
+    muse.onDisconnect(() => {
+        console.warn('[MUSE] disconnesso');
+        updateSynchronizedLEDs(false);
+        AppState.eegVelocity = 0.0;
     });
 }
 
@@ -318,12 +336,48 @@ function computePopeIndex(fftData) {
     return totalBeta / denom;
 }
 
+/**
+ * Il flusso BLE può fermarsi senza che venga emesso alcun evento di disconnessione:
+ * il GATT resta nominalmente connesso ma le notifiche non arrivano più. Senza
+ * watchdog l'esperienza si congela in silenzio, che è esattamente ciò che è successo
+ * durante i test. Qui lo si segnala, si azzera la velocità (meglio fermo che
+ * incollato sull'ultimo valore) e si tenta di far ripartire lo streaming.
+ */
+function checkEEGWatchdog() {
+    if (AppState.inputMode !== "BCI" || !AppState.isMuseConnected) return;
+    if (AppState.lastEEGAt === 0) return;   // non è mai partito: niente da diagnosticare
+
+    const silentFor = (Date.now() - AppState.lastEEGAt) / 1000;
+    if (silentFor < CONFIG.EEG_WATCHDOG_S) return;
+
+    if (!AppState.eegStalled) {
+        AppState.eegStalled = true;
+        console.warn(`[EEG] nessun dato da ${silentFor.toFixed(1)}s: flusso fermo. ` +
+                     `Zoom congelato in attesa.`);
+    }
+
+    // Meglio fermo che alla deriva sull'ultimo valore letto.
+    AppState.eegVelocity = 0.0;
+
+    if (CONFIG.EEG_WATCHDOG_RESUME && AppState.watchdogRetries < CONFIG.EEG_WATCHDOG_MAX_RETRY) {
+        const attempt = AppState.watchdogRetries + 1;
+        AppState.watchdogRetries = attempt;
+        console.warn(`[EEG] tentativo di ripresa dello streaming (${attempt}/${CONFIG.EEG_WATCHDOG_MAX_RETRY})`);
+        // 'd' è il comando di resume dello streaming nel protocollo Muse.
+        muse.sendControlCommand('d').catch(() => {
+            console.warn('[EEG] comando di ripresa fallito: probabile disconnessione BLE');
+        });
+    }
+}
+
 /** Rate di aggiornamento del controllo, derivato dall'hop della STFT. */
 function controlRateHz() {
     return 256 / (CONFIG.STFT_HOP || 48);
 }
 
 let debugLogCounter = 0;
+let lastLogAt = 0;
+let measuredHz = 0;
 
 /**
  * Log periodico di cosa sta effettivamente leggendo il sensore.
@@ -335,6 +389,15 @@ function logSensorState(quality, index) {
 
     const every = Math.max(1, Math.round(controlRateHz() / CONFIG.DEBUG_LOG_HZ));
     if (++debugLogCounter % every !== 0) return;
+
+    // Rate realmente osservato: se scende sotto il nominale il collo di bottiglia
+    // è il flusso BLE, non il DSP.
+    const now = Date.now();
+    if (lastLogAt !== 0) {
+        const dtLog = (now - lastLogAt) / 1000;
+        if (dtLog > 0) measuredHz = every / dtLog;
+    }
+    lastLogAt = now;
 
     let gate = 'OK';
     if (!quality.contactOk) gate = 'CONTATTO SCARSO';
@@ -349,7 +412,8 @@ function logSensorState(quality, index) {
         ` | θ=${Bands.theta.toFixed(2)} α=${Bands.alpha.toFixed(2)} β=${Bands.beta.toFixed(2)}` +
         ` | ring=${Normalizer.count}/${Normalizer.capacity} IQRrel=${iqr.toFixed(3)}` +
         ` | ampiezza=${quality.maxAbsRaw.toFixed(0)}µV gate=${gate}` +
-        ` | adc=[${(quality.adcMin || 0).toFixed(0)}..${(quality.adcMax || 0).toFixed(0)}] µ=${(quality.adcMean || 0).toFixed(0)}`
+        ` | adc=[${(quality.adcMin || 0).toFixed(0)}..${(quality.adcMax || 0).toFixed(0)}] µ=${(quality.adcMean || 0).toFixed(0)}` +
+        ` | ${measuredHz.toFixed(1)}Hz`
     );
 }
 
@@ -393,15 +457,18 @@ function processAdaptiveIndex(brainData) {
     AppState.gatedWindows = 0;
     if (index === null) return;
 
-    // Durante ONBOARDING conta solo la finestra pulita: si scartano il transitorio
-    // iniziale e la zona del gesto di chiusura (saccade verso il pulsante, blink,
-    // micro-movimento della testa). Quelle finestre non devono inquinare nemmeno
-    // il riferimento percentile.
+    // Durante ONBOARDING si scarta il transitorio iniziale di reazione allo stimolo.
+    // Oltre quello si distinguono due cose:
+    //  - la SEMINA (mediana/MAD) usa solo la finestra stretta [start, end], che esclude
+    //    anche la zona del gesto di chiusura (saccade verso il pulsante, blink);
+    //  - il RING percentile continua a riempirsi per tutta la durata della modale,
+    //    perché la modale può restare aperta molto più a lungo del minimo e servono
+    //    ~69 campioni per un percentile stabile. Le finestre sporche del gesto di
+    //    chiusura sono già gestite dal gating relativo degli artefatti.
     if (AppState.phase === PHASE.ONBOARDING) {
-        const start = CONFIG.CALIB_START_S;
+        if (AppState.phaseElapsed < CONFIG.CALIB_START_S) return;
         const end = CONFIG.MODAL_UNLOCK_S - CONFIG.CALIB_END_OFFSET_S;
-        if (AppState.phaseElapsed < start || AppState.phaseElapsed > end) return;
-        calibWindowBuffer.push(index);
+        if (AppState.phaseElapsed <= end) calibWindowBuffer.push(index);
     }
 
     // Il percentile si calcola PRIMA di inserire il campione corrente: altrimenti il
@@ -702,6 +769,14 @@ function updateExperienceFrame() {
 
     const dt = pixiApp.ticker.deltaMS / 1000;
     updatePhase(dt);
+
+    // Il watchdog va valutato a bassa frequenza: a 60 Hz esaurirebbe i tentativi
+    // di ripresa in tre frame.
+    watchdogTimer += dt;
+    if (watchdogTimer >= 1.0) {
+        watchdogTimer = 0;
+        checkEEGWatchdog();
+    }
 
     // --- Accumulo velocità sul target zoom ---
     if (AppState.phase === PHASE.OUTRO || AppState.phase === PHASE.DONE) {

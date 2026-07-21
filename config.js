@@ -85,6 +85,13 @@ const CONFIG = {
     CONTACT_STD_MIN: 0.5,       // TUNE - proxy contatto: sotto = canale piatto/staccato
     CONTACT_STD_MAX: 60.0,      // TUNE - proxy contatto: sopra = rumore/contatto instabile
 
+    // --- Watchdog del flusso EEG ---
+    // Il flusso BLE può fermarsi senza emettere alcun evento: senza watchdog
+    // l'esperienza si congela in silenzio e non si capisce perché.
+    EEG_WATCHDOG_S: 3.0,        // secondi senza dati prima di segnalare
+    EEG_WATCHDOG_RESUME: true,  // prova a rimandare il comando di streaming
+    EEG_WATCHDOG_MAX_RETRY: 3,
+
     // --- HUD / debug ---
     HUD_UPDATE_HZ: 12,          // throttling degli update DOM
     DEBUG_SENSOR_LOG: true,     // log in console di ciò che il sensore sta leggendo
