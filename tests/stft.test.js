@@ -50,8 +50,11 @@ function uvToRaw(uv) {
     return v;
 }
 
-/** Invia `nSamples` campioni di una sinusoide, restituendo gli emit osservati. */
-function runSignal(muse, nSamples, ampUv, freqHz, spikeAt = -1, spikeUv = 0) {
+/**
+ * Invia `nSamples` campioni di una sinusoide, restituendo gli emit osservati.
+ * `dcLsb` simula l'offset DC reale del Muse (valori unsigned centrati su 8192).
+ */
+function runSignal(muse, nSamples, ampUv, freqHz, spikeAt = -1, spikeUv = 0, dcLsb = 0) {
     const emits = [];
     muse.onEEGData(d => emits.push({
         t: muse.totalSamples,
@@ -66,7 +69,8 @@ function runSignal(muse, nSamples, ampUv, freqHz, spikeAt = -1, spikeUv = 0) {
             const n = s + k;
             let uv = ampUv * Math.sin(2 * Math.PI * freqHz * n / 256);
             if (spikeAt >= 0 && n >= spikeAt && n < spikeAt + 8) uv = spikeUv;
-            for (let ch = 0; ch < CHANNELS; ch++) values.push(uvToRaw(uv));
+            const lsb = dcLsb ? dcLsb + Math.round(uv / UV_PER_LSB) : uvToRaw(uv);
+            for (let ch = 0; ch < CHANNELS; ch++) values.push(lsb);
         }
         muse.handleIncomingEEGPacket('x', buildPacket(values));
     }
@@ -115,6 +119,31 @@ check('le finestre pulite restano sotto soglia',
 const lastEmits = emits.slice(-5);
 check('il gating si libera quando lo spike esce dalla finestra',
       lastEmits.every(e => !e.artifact), `coda: ${lastEmits.map(e => e.artifact).join(',')}`);
+
+// ---------------------------------------------------------------
+// REGRESSIONE: il Muse invia valori unsigned centrati su 8192, che
+// _get14BitSigned interpreta come signed -> il riposo vale ~-725 µV. Applicare il
+// gating d'ampiezza a quel valore marcava OGNI finestra come artefatto, congelando
+// per sempre la velocità: lo zoom restava incollato e l'interazione non rispondeva.
+// Il gating deve quindi guardare il segnale dopo la rimozione della DC.
+// Nota: l'offset è scelto lontano da 8192, che è la soglia di flip del segno in
+// _get14BitSigned. Un segnale a cavallo di quel confine viene ricostruito come
+// un'onda quadra da ±700 µV (vedi REFACTOR-NOTES.md, punto aperto sul decode).
+console.log('\n[2b] Regressione: offset DC non deve marcare artefatti');
+muse = new MuseBluetooth();
+emits = runSignal(muse, 256 * 6, 30, 10, -1, 0, 6000);   // offset DC di ~531 µV + 30 µV
+const falsePositives = emits.filter(e => e.artifact).length;
+check('segnale pulito con offset DC realistico -> nessun artefatto',
+      falsePositives === 0, `falsi positivi: ${falsePositives}/${emits.length}`);
+check('ampiezza misurata coerente con il segnale, non con l\'offset',
+      emits[emits.length - 1].maxAbsRaw < 100,
+      `maxAbsRaw=${emits[emits.length - 1].maxAbsRaw.toFixed(1)} µV`);
+
+// Con l'offset DC presente, un vero artefatto deve comunque essere rilevato.
+muse = new MuseBluetooth();
+emits = runSignal(muse, 256 * 6, 30, 10, 256 * 3, 400, 6000);
+check('con offset DC un vero artefatto viene comunque rilevato',
+      emits.some(e => e.artifact), `artefatti=${emits.filter(e => e.artifact).length}`);
 
 // ---------------------------------------------------------------
 console.log('\n[3] Proxy qualità contatto');

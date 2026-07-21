@@ -33,7 +33,7 @@ vm.runInContext(configSrc, sandbox);
 vm.runInContext(appSrc + `
 globalThis.__x = { AppState, PHASE, Normalizer, CONFIG,
     computeAdaptiveVelocity, applyHoldSelect, updatePhase, enterPhase,
-    resolveAuthorityVelocity, median, medianAbsoluteDeviation };
+    resolveAuthorityVelocity, median, medianAbsoluteDeviation, phaseAfterOnboarding };
 `, sandbox);
 domReady();
 
@@ -72,13 +72,18 @@ AppState.eegVelocity = 0;
 const vMid = S.computeAdaptiveVelocity(spread[30]);   // ~mediana -> dead zone
 check('valore centrale -> velocità nulla', Math.abs(vMid) < 1e-6, `v=${vMid}`);
 
+// Il mapping satura a ZOOM_GAIN, non a 1.0: le attese sono relative al gain.
+const GAIN = CONFIG.ZOOM_GAIN;
+
 AppState.eegVelocity = 0;
 const vHigh = drive(spread[59], 40);   // converge lo smoothing
-check('valore alto -> velocità positiva (zoom in)', vHigh > 0.5, `v=${vHigh.toFixed(3)}`);
+check('valore alto -> velocità positiva (zoom in)', vHigh > GAIN * 0.9,
+      `v=${vHigh.toFixed(3)} gain=${GAIN}`);
 
 AppState.eegVelocity = 0;
 const vLow = drive(spread[0], 40);
-check('valore basso -> velocità negativa', vLow < -0.5, `v=${vLow.toFixed(3)}`);
+check('valore basso -> velocità negativa', vLow < -GAIN * 0.9,
+      `v=${vLow.toFixed(3)} gain=${GAIN}`);
 
 // ---------------------------------------------------------------
 console.log('\n[2] Dispersion guard (buffer piatto)');
@@ -101,49 +106,64 @@ for (let i = 0; i < 60; i++) Normalizer.push(1.0 + Math.random() * 0.3);
 AppState.eegVelocity = 0;
 const vAfter = drive(1.15, 40);
 check('dopo l\'assestamento il riferimento si è spostato (non pinnato in alto)',
-      Math.abs(vAfter) < 0.35, `v=${vAfter.toFixed(3)}`);
+      Math.abs(vAfter) < GAIN * 0.5, `v=${vAfter.toFixed(3)}`);
 
 AppState.eegVelocity = 0;
 const vSpikeAfter = drive(1.45, 40);
-check('la modulazione fasica torna a pilotare', vSpikeAfter > 0.2, `v=${vSpikeAfter.toFixed(3)}`);
+check('la modulazione fasica torna a pilotare', vSpikeAfter > GAIN * 0.5,
+      `v=${vSpikeAfter.toFixed(3)}`);
 
 // ---------------------------------------------------------------
 console.log('\n[4] Hold / select: detent + isteresi');
 AppState.targetFocus = 0.46;   // fra due livelli (step = 1/11 = 0.0909)
 AppState.locked = false;
 AppState.lockTimer = 0;
+AppState.inputMode = 'BCI';
 const step = 1 / 11;
+// Le soglie sono frazioni della velocità massima di input (ZOOM_GAIN in BCI).
+const maxInput = CONFIG.ZOOM_GAIN;
+const enterHold = CONFIG.ENTER_HOLD_FRAC * maxInput;
+const breakHold = CONFIG.BREAK_HOLD_FRAC * maxInput;
 
 // Velocità bassa -> aggancio
-let out = S.applyHoldSelect(0.02, 1 / 60);
+let out = S.applyHoldSelect(enterHold * 0.2, 1 / 60);
 check('velocità sotto ENTER_HOLD -> aggancio e velocità soppressa',
       AppState.locked && out === 0, `locked=${AppState.locked} out=${out}`);
 
 // Iterazioni con velocità sotto BREAK_HOLD -> resta agganciato e converge al livello
-for (let i = 0; i < 400; i++) S.applyHoldSelect(0.10, 1 / 60);
+for (let i = 0; i < 400; i++) S.applyHoldSelect(breakHold * 0.8, 1 / 60);
 const nearest = Math.round(AppState.targetFocus / step) * step;
 check('resta agganciato sotto BREAK_HOLD', AppState.locked === true);
 check('converge sul livello (nessun jitter)', Math.abs(AppState.targetFocus - nearest) < 1e-3,
       `focus=${AppState.targetFocus.toFixed(5)} nearest=${nearest.toFixed(5)}`);
 
 const focusWhileHeld = AppState.targetFocus;
-for (let i = 0; i < 200; i++) S.applyHoldSelect(0.05, 1 / 60);
+for (let i = 0; i < 200; i++) S.applyHoldSelect(breakHold * 0.5, 1 / 60);
 check('nessuna deriva mentre è tenuto', Math.abs(AppState.targetFocus - focusWhileHeld) < 1e-4,
       `drift=${Math.abs(AppState.targetFocus - focusWhileHeld)}`);
 
 // Superare BREAK_HOLD -> sgancio
-out = S.applyHoldSelect(0.5, 1 / 60);
-check('sopra BREAK_HOLD -> sgancio e velocità passa', !AppState.locked && out === 0.5,
+out = S.applyHoldSelect(maxInput, 1 / 60);
+check('sopra BREAK_HOLD -> sgancio e velocità passa', !AppState.locked && out === maxInput,
       `locked=${AppState.locked} out=${out}`);
 
 // Dwell-to-lock: dopo LOCK_DWELL_S serve più sforzo
 AppState.locked = true;
 AppState.lockedLevel = 0.5;
 AppState.lockTimer = CONFIG.LOCK_DWELL_S + 1;
-const justAboveBreak = CONFIG.BREAK_HOLD * 1.1;   // sopra BREAK, sotto BREAK*MULT
+const justAboveBreak = breakHold * 1.1;   // sopra BREAK, sotto BREAK*MULT
 out = S.applyHoldSelect(justAboveBreak, 1 / 60);
 check('dopo il dwell la soglia di sgancio è più alta', AppState.locked === true && out === 0,
       `locked=${AppState.locked} out=${out}`);
+
+// Un detent deve restare sganciabile qualunque sia il gain: alla velocità massima
+// che l'input può produrre lo sgancio deve sempre avvenire.
+AppState.locked = true;
+AppState.lockedLevel = 0.5;
+AppState.lockTimer = CONFIG.LOCK_DWELL_S + 1;
+out = S.applyHoldSelect(maxInput, 1 / 60);
+check('alla velocità massima il detent è sempre sganciabile', !AppState.locked,
+      `locked=${AppState.locked}`);
 
 // ---------------------------------------------------------------
 console.log('\n[5] FSM: conclusione garantita nel budget');
@@ -155,7 +175,9 @@ const dt = 1 / 60;
 // L'utente chiude la modale appena possibile.
 let guard = 0;
 while (AppState.phaseElapsed < CONFIG.MODAL_UNLOCK_S && guard++ < 100000) S.updatePhase(dt);
-S.enterPhase(PHASE.HOOK);
+check("senza hook si va dritti all'interazione",
+      S.phaseAfterOnboarding() === PHASE.INTERACTIVE, S.phaseAfterOnboarding());
+S.enterPhase(S.phaseAfterOnboarding());
 
 const phasesSeen = [];
 guard = 0;
@@ -165,8 +187,7 @@ while (AppState.phase !== PHASE.DONE && guard++ < 1000000) {
     if (AppState.phase !== before) phasesSeen.push(AppState.phase);
 }
 const total = AppState.sessionElapsed;
-check('sequenza fasi corretta',
-      phasesSeen.join(',') === 'HANDOVER,INTERACTIVE,OUTRO,DONE', phasesSeen.join(','));
+check('sequenza fasi corretta', phasesSeen.join(',') === 'OUTRO,DONE', phasesSeen.join(','));
 check(`durata totale entro 90-120s (${total.toFixed(1)}s)`, total >= 90 && total <= 120,
       `total=${total.toFixed(1)}`);
 

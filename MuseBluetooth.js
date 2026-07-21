@@ -38,13 +38,21 @@ class MuseBluetooth {
             new Float32Array(this.BUFFER_SIZE)
         ];
 
-        // Ring paralleli con il segnale grezzo in µV (pre-filtro), per il gating d'ampiezza.
-        this.rawBuffers = Array.from({length: this.channelCount}, () => new Float32Array(this.BUFFER_SIZE));
+        // Ring paralleli con il segnale in µV dopo la sola rimozione della DC e prima
+        // di notch/passa-basso: è questo il segnale su cui ha senso il gating d'ampiezza.
+        // NON si può usare il valore ADC grezzo: _get14BitSigned interpreta come signed
+        // valori che il Muse invia centrati su 8192, quindi il riposo vale ~-725 µV e
+        // sfonderebbe qualunque soglia da letteratura in modo permanente.
+        this.dcFreeBuffers = Array.from({length: this.channelCount}, () => new Float32Array(this.BUFFER_SIZE));
 
         this.writeIndex = [0, 0, 0, 0];
         this.sampleCounts = [0, 0, 0, 0];
 
         this.dcPredictor = [0.0, 0.0, 0.0, 0.0];
+        // Il predittore DC parte da 0 e impiegherebbe ~0.5 s a raggiungere l'offset
+        // reale dell'ADC: in quel transitorio il segnale sembra enorme e il gating lo
+        // scarterebbe. Si inizializza col primo campione visto, così converge subito.
+        this.dcInitialized = [false, false, false, false];
         
         this.notch_x1 = [0.0, 0.0, 0.0, 0.0]; this.notch_x2 = [0.0, 0.0, 0.0, 0.0];
         this.notch_y1 = [0.0, 0.0, 0.0, 0.0]; this.notch_y2 = [0.0, 0.0, 0.0, 0.0];
@@ -199,8 +207,14 @@ class MuseBluetooth {
 
                         const uv = rawVal * (1450.0 / 16383.0);
 
+                        if (!this.dcInitialized[ch]) {
+                            this.dcPredictor[ch] = uv;
+                            this.dcInitialized[ch] = true;
+                        }
+
                         let filtered = uv - this.dcPredictor[ch];
                         this.dcPredictor[ch] += 0.02 * filtered;
+                        const dcFree = filtered;   // per il gating d'ampiezza
 
                         const n_b0 = 0.9391, n_b1 = -0.4024, n_b2 = 0.9391;
                         const n_a1 = -0.4024, n_a2 = 0.8782;
@@ -221,7 +235,7 @@ class MuseBluetooth {
                         const idx = (this.writeIndex[ch] + 1) % this.BUFFER_SIZE;
                         this.writeIndex[ch] = idx;
                         this.realBuffers[ch][idx] = filtered;
-                        this.rawBuffers[ch][idx] = uv;
+                        this.dcFreeBuffers[ch][idx] = dcFree;
                         this.sampleCounts[ch] = Math.min(this.sampleCounts[ch] + 1, this.BUFFER_SIZE);
                     }
                 }
@@ -272,8 +286,9 @@ class MuseBluetooth {
     /**
      * Valuta la finestra corrente e popola this.qualityPayload.
      *
-     * - artifact: gating d'ampiezza sul segnale GREZZO dei canali frontali (AF7/AF8).
-     *   Blink e serramento mascella sforano ampiamente ARTIFACT_UV_RAW.
+     * - artifact: gating d'ampiezza sul segnale dei canali frontali (AF7/AF8) dopo la
+     *   rimozione della DC ma prima del filtraggio in banda. Blink e serramento mascella
+     *   sforano ampiamente ARTIFACT_UV_RAW.
      * - contactOk: PROXY di qualità contatto basato sulla deviazione standard del
      *   segnale filtrato. NON è l'Horseshoe Indicator del Muse: leggere l'HSI reale
      *   richiede di sottoscrivere una characteristic dedicata (non ancora implementata).
@@ -294,7 +309,7 @@ class MuseBluetooth {
 
         for(let k = 0; k < frontal.length; k++){
             const ch = frontal[k];
-            const raw = this.rawBuffers[ch];
+            const raw = this.dcFreeBuffers[ch];
             const filt = this.realBuffers[ch];
 
             let sum = 0;

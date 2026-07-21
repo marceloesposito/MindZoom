@@ -18,6 +18,7 @@ Il documento di handover usava nomi indicativi. Mappature effettive:
 | baseline / scale       | `Normalizer.seedMedian` / `Normalizer.seedMAD`          |
 | gating artefatti       | `MuseBluetooth._assessQuality()` -> `payload.quality`   |
 | FSM                    | `AppState.phase` + `updatePhase()` / `enterPhase()`     |
+| log sensore            | `logSensorState()` (`CONFIG.DEBUG_SENSOR_LOG`)          |
 | crossfade autorità     | `resolveAuthorityVelocity()`                            |
 | hold/select            | `applyHoldSelect()`                                     |
 
@@ -45,6 +46,54 @@ Snappare il valore renderizzato avrebbe combattuto contro l'easing.
 - **Matematica di rate control invariata** (§11): `ZOOM_SPEED_FACTOR` e `FOCUS_EASING`
   restano per-frame come prima. Il `deltaMS` del ticker è usato **solo** per i timer della FSM.
 
+## Bug trovati in test sul campo (primo giro con hardware)
+
+### 1. Gating permanente -> zoom incollato (risolto)
+
+Sintomo: dopo la calibrazione lo zoom entrava da solo e non rispondeva più a nulla.
+
+Causa: il gating d'ampiezza leggeva `uv`, cioè il valore ADC **prima** della rimozione
+della DC. `_get14BitSigned` interpreta come signed dei valori che il Muse manda centrati
+in alto, quindi il segnale a riposo vale ~-725 µV: sopra la soglia di 100 µV **sempre**.
+Ogni finestra veniva marcata come artefatto, `processAdaptiveIndex` usciva subito e
+`eegVelocity` restava congelata sull'ultimo valore -> zoom bloccato in una direzione.
+
+Fix: il gating guarda `dcFreeBuffers`, cioè il segnale dopo la rimozione della DC e prima
+del filtraggio in banda. Aggiunto anche un **timeout di gating** (`ARTIFACT_HOLD_MAX_S`):
+oltre 1 s di gating continuo la velocità decade verso 0 invece di restare congelata, così
+nessun errore di questo tipo può più incollare lo zoom.
+
+Il test sintetico non l'aveva preso perché generava una sinusoide centrata su zero, cioè
+senza offset DC: irrealistico. Ora c'è la regressione `[2b]` con offset esplicito.
+
+### 2. Transitorio del predittore DC all'avvio (risolto)
+
+`dcPredictor` partiva da 0 e impiegava ~0.5 s a raggiungere l'offset reale. In quel
+transitorio il segnale sembra enorme. Ora si inizializza col primo campione visto.
+
+### 3. Sensibilità: saturazione del mapping (risolto)
+
+Con `ZOOM_GAIN = 1.0` si attraversavano tutti i 12 livelli in ~5.5 s, e il percentile
+satura facilmente (p = 1.0 ogni volta che il campione corrente è il massimo del ring).
+Gain portato a **0.25** (~22 s a velocità piena) e dead-zone allargata a 0.35–0.65.
+
+Le soglie di hold sono ora **frazioni** della velocità massima di input invece che valori
+assoluti: con soglie assolute, abbassare il gain avrebbe reso i detent inescapabili
+(`BREAK_HOLD * LOCK_DWELL_MULT` = 0.35 > velocità massima 0.25). C'è anche un clamp
+esplicito che garantisce lo sgancio a velocità piena.
+
+### 4. PUNTO APERTO: interpretazione signed del campione a 14 bit
+
+`_get14BitSigned` fa il flip del segno sopra 8191. Se i valori reali del Muse oscillano
+**a cavallo** di quella soglia, il segnale ricostruito diventa un'onda quadra da ±700 µV
+invece che EEG — il che falserebbe completamente le band power. Non è verificabile senza
+dati reali e **non è stato modificato**: è la decodifica preesistente.
+
+**Come diagnosticarlo:** nei log `[EEG]` il campo `ampiezza=` mostra il picco µV dopo la
+rimozione della DC. Su segnale sano ci si aspetta indicativamente **10–80 µV**. Se mostra
+stabilmente **centinaia di µV** con la cuffia ferma e ben posizionata, il problema è la
+decodifica, non il gating.
+
 ## NON implementato in questo passaggio
 
 1. **DSP in Web Worker (§8.1).** Rimandato di proposito, come da ordine suggerito in §12:
@@ -57,6 +106,26 @@ Snappare il valore renderizzato avrebbe combattuto contro l'easing.
    attualmente non gestita dal driver.
 3. **Audit VRAM / texture KTX2 (§8.3).** Fatti solo i due interventi a costo zero: preload
    parallelo e `renderable = false` sugli sprite non visibili (compreso quello con alpha ~0).
+
+## Fase HOOK disattivata
+
+`CONFIG.ENABLE_HOOK_PHASE = false`: chiusa la modale si va **dritti all'interazione**.
+HOOK (auto-zoom di aggancio) e HANDOVER (crossfade di autorità) restano implementati e
+testati, riattivabili col flag. Con hook disattivo `PHASE_INTERACTIVE_S` sale a 80 s,
+mantenendo il totale a ~104 s.
+
+## Log di diagnostica
+
+Con `CONFIG.DEBUG_SENSOR_LOG` (default true) la console stampa a `DEBUG_LOG_HZ` (2 Hz):
+
+```
+[EEG] INTERACTIVE idx=1.234 p=0.72 v=+0.180 | θ=0.41 α=0.33 β=0.61 | ring=69/69 IQRrel=0.184 | ampiezza=42µV gate=OK
+```
+
+`idx` indice di Pope, `p` percentile nel ring, `v` velocità, `θ/α/β` band power frontali,
+`ring` riempimento del buffer percentile, `IQRrel` dispersione (sotto `IQR_MIN_REL` il
+controllo si congela), `ampiezza` picco µV, `gate` motivo dell'eventuale blocco.
+Il log avviene **prima** delle decisioni di gating, così si vede perché il controllo è fermo.
 
 ## Costanti ancora da tarare
 

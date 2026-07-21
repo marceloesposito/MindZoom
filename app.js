@@ -63,6 +63,7 @@ const AppState = {
     percentile: 0.5,
     isGated: false,        // artefatto d'ampiezza sulla finestra corrente
     contactOk: true,       // proxy qualità contatto
+    gatedWindows: 0,       // finestre consecutive scartate
     seeded: false,         // semina mediana/MAD riuscita
 
     // --- Hold / select ---
@@ -222,7 +223,7 @@ function initUIEventListeners() {
             if (AppState.phase !== PHASE.ONBOARDING) return;
             if (AppState.phaseElapsed < CONFIG.MODAL_UNLOCK_S) return;
             closeOnboardingModal();
-            enterPhase(PHASE.HOOK);
+            enterPhase(phaseAfterOnboarding());
         });
     }
 
@@ -288,6 +289,9 @@ function initMouseWheelController() {
  *  Indice di engagement (Pope 1995): beta / (alpha + theta)
  * ------------------------------------------------------------------ */
 
+// Preallocato: popolato ad ogni finestra, usato dai log di debug (zero allocazioni).
+const Bands = { theta: 0, alpha: 0, beta: 0 };
+
 function computePopeIndex(fftData) {
     if (!fftData || !fftData.mags) return null;
 
@@ -305,9 +309,47 @@ function computePopeIndex(fftData) {
         for (let b = 13; b <= 30; b++) totalBeta  += channelMags[b] || 0;
     }
 
+    Bands.theta = totalTheta;
+    Bands.alpha = totalAlpha;
+    Bands.beta = totalBeta;
+
     const denom = totalAlpha + totalTheta;
     if (denom === 0) return null;
     return totalBeta / denom;
+}
+
+/** Rate di aggiornamento del controllo, derivato dall'hop della STFT. */
+function controlRateHz() {
+    return 256 / (CONFIG.STFT_HOP || 48);
+}
+
+let debugLogCounter = 0;
+
+/**
+ * Log periodico di cosa sta effettivamente leggendo il sensore.
+ * Viene chiamato PRIMA delle decisioni di gating, così si vede anche il motivo
+ * per cui il controllo eventualmente non si muove.
+ */
+function logSensorState(quality, index) {
+    if (!CONFIG.DEBUG_SENSOR_LOG) return;
+
+    const every = Math.max(1, Math.round(controlRateHz() / CONFIG.DEBUG_LOG_HZ));
+    if (++debugLogCounter % every !== 0) return;
+
+    let gate = 'OK';
+    if (!quality.contactOk) gate = 'CONTATTO SCARSO';
+    else if (quality.artifact) gate = 'ARTEFATTO';
+
+    const idx = (index === null) ? '  n/a' : index.toFixed(3);
+    const pct = (Normalizer.count >= 16) ? AppState.percentile.toFixed(2) : ' --ph';
+    const iqr = Normalizer.relativeIQR();
+
+    console.log(
+        `[EEG] ${AppState.phase.padEnd(11)} idx=${idx} p=${pct} v=${AppState.eegVelocity >= 0 ? '+' : ''}${AppState.eegVelocity.toFixed(3)}` +
+        ` | θ=${Bands.theta.toFixed(2)} α=${Bands.alpha.toFixed(2)} β=${Bands.beta.toFixed(2)}` +
+        ` | ring=${Normalizer.count}/${Normalizer.capacity} IQRrel=${iqr.toFixed(3)}` +
+        ` | ampiezza=${quality.maxAbsRaw.toFixed(0)}µV gate=${gate}`
+    );
 }
 
 /* ------------------------------------------------------------------ *
@@ -317,25 +359,38 @@ function computePopeIndex(fftData) {
 let calibWindowBuffer = [];
 
 function processAdaptiveIndex(brainData) {
-    const quality = brainData.quality || { artifact: false, contactOk: true };
+    const quality = brainData.quality || { artifact: false, contactOk: true, maxAbsRaw: 0 };
+
+    // L'indice si calcola sempre: serve anche solo per la diagnostica, così quando
+    // il controllo è fermo si vede in console *perché* è fermo.
+    const index = computePopeIndex(brainData.fft);
+    if (index !== null) AppState.rawRatio = index;
+
+    AppState.contactOk = quality.contactOk;
+    AppState.isGated = quality.artifact || !quality.contactOk;
+    logSensorState(quality, index);
 
     // Gating qualità contatto: meglio uno zoom fermo che uno impazzito.
-    AppState.contactOk = quality.contactOk;
     if (!quality.contactOk) {
         AppState.eegVelocity = 0.0;
-        AppState.isGated = true;
+        AppState.gatedWindows++;
         return;
     }
 
     // Gating artefatti: la finestra sporca non viene data in pasto all'indice.
     // Si mantiene la velocità precedente invece di azzerarla, per non introdurre
-    // uno scatto ad ogni blink.
-    AppState.isGated = quality.artifact;
-    if (quality.artifact) return;
+    // uno scatto ad ogni blink. Ma un gating che dura troppo non deve incollare lo
+    // zoom: oltre ARTIFACT_HOLD_MAX_S la velocità decade verso 0.
+    if (quality.artifact) {
+        AppState.gatedWindows++;
+        if (AppState.gatedWindows > CONFIG.ARTIFACT_HOLD_MAX_S * controlRateHz()) {
+            AppState.eegVelocity *= 0.85;
+        }
+        return;
+    }
 
-    const index = computePopeIndex(brainData.fft);
+    AppState.gatedWindows = 0;
     if (index === null) return;
-    AppState.rawRatio = index;
 
     // Durante ONBOARDING conta solo la finestra pulita: si scartano il transitorio
     // iniziale e la zona del gesto di chiusura (saccade verso il pulsante, blink,
@@ -348,11 +403,13 @@ function processAdaptiveIndex(brainData) {
         calibWindowBuffer.push(index);
     }
 
+    // Il percentile si calcola PRIMA di inserire il campione corrente: altrimenti il
+    // campione conterebbe sé stesso e p non potrebbe mai valere 0.
+    AppState.eegVelocity = computeAdaptiveVelocity(index);
+
     // Il ring buffer percentile si riempie già da ONBOARDING (finestra pulita),
     // così alla chiusura della modale il sistema è già reattivo.
     Normalizer.push(index);
-
-    AppState.eegVelocity = computeAdaptiveVelocity(index);
 }
 
 function computeAdaptiveVelocity(index) {
@@ -409,8 +466,13 @@ function finalizeCalibration() {
  *  Macchina a stati a fasi
  * ------------------------------------------------------------------ */
 
+/** Fase che segue l'onboarding: dritti all'interazione salvo hook riabilitato. */
+function phaseAfterOnboarding() {
+    return CONFIG.ENABLE_HOOK_PHASE ? PHASE.HOOK : PHASE.INTERACTIVE;
+}
+
 function enterPhase(phase) {
-    if (phase === PHASE.HOOK && AppState.phase === PHASE.ONBOARDING) {
+    if (AppState.phase === PHASE.ONBOARDING && phase !== PHASE.ONBOARDING) {
         finalizeCalibration();
     }
     AppState.phase = phase;
@@ -432,6 +494,7 @@ function updatePhase(dt) {
         case PHASE.HOOK:
             if (AppState.phaseElapsed >= CONFIG.PHASE_HOOK_S) enterPhase(PHASE.HANDOVER);
             break;
+
         case PHASE.HANDOVER:
             if (AppState.phaseElapsed >= CONFIG.PHASE_HANDOVER_S) enterPhase(PHASE.INTERACTIVE);
             break;
@@ -477,11 +540,20 @@ function applyHoldSelect(velocity, dt) {
     const step = 1 / (TOTAL_IMAGES - 1);
     const nearest = Math.round(AppState.targetFocus / step) * step;
 
+    // Le soglie sono relative alla velocità massima che l'input può produrre:
+    // in BCI il mapping percentile satura a ZOOM_GAIN, con la rotella a 1.0.
+    const maxInput = (AppState.inputMode === "SIMULATION") ? 1.0 : CONFIG.ZOOM_GAIN;
+    const enterHold = CONFIG.ENTER_HOLD_FRAC * maxInput;
+    const snapThreshold = CONFIG.SNAP_VEL_FRAC * maxInput;
+
     // Dwell-to-lock: dopo LOCK_DWELL_S su un livello serve uno sforzo maggiore
     // per uscirne, così l'utente può rilassarsi del tutto senza scivolare.
-    const breakThreshold = (AppState.lockTimer >= CONFIG.LOCK_DWELL_S)
-        ? CONFIG.BREAK_HOLD * CONFIG.LOCK_DWELL_MULT
-        : CONFIG.BREAK_HOLD;
+    // Il clamp garantisce che un detent resti sempre sganciabile: senza, una
+    // combinazione sfortunata di gain e moltiplicatore lo renderebbe definitivo.
+    const rawBreak = (AppState.lockTimer >= CONFIG.LOCK_DWELL_S)
+        ? CONFIG.BREAK_HOLD_FRAC * maxInput * CONFIG.LOCK_DWELL_MULT
+        : CONFIG.BREAK_HOLD_FRAC * maxInput;
+    const breakThreshold = Math.min(rawBreak, maxInput * 0.95);
 
     if (AppState.locked) {
         if (absV >= breakThreshold) {
@@ -495,14 +567,14 @@ function applyHoldSelect(velocity, dt) {
         return 0.0;
     }
 
-    if (absV < CONFIG.ENTER_HOLD) {
+    if (absV < enterHold) {
         AppState.locked = true;
         AppState.lockedLevel = nearest;
         AppState.lockTimer = 0.0;
         return 0.0;
     }
 
-    if (absV < CONFIG.SNAP_VEL_THRESHOLD) {
+    if (absV < snapThreshold) {
         AppState.targetFocus += (nearest - AppState.targetFocus) * CONFIG.SNAP_STRENGTH;
     }
 
@@ -598,6 +670,8 @@ function startSession() {
     AppState.locked = false;
     AppState.lockTimer = 0.0;
     AppState.seeded = false;
+    AppState.gatedWindows = 0;
+    debugLogCounter = 0;
     calibWindowBuffer.length = 0;
     Normalizer.reset();
     lastRenderedMagnification = -1;
