@@ -11,6 +11,11 @@ class MuseBluetooth {
         this.onEEGDataCallback = null;
         this.onRawDataCallback = null;
         this.onDisconnectCallback = null;
+        this.onReconnectCallback = null;
+
+        this.autoReconnect = true;
+        this.reconnectAttempts = 0;
+        this.maxReconnectAttempts = 5;
 
         this.device = null;
         this.server = null;
@@ -56,6 +61,15 @@ class MuseBluetooth {
         this.peakScratch = new Float32Array(this.peakHistorySize);
         this.peakCount = 0;
         this.peakWriteIdx = 0;
+
+        // Diagnostica del flusso: campioni/secondo realmente ricevuti dall'hardware.
+        // Devono essere ~256; valori molto più bassi indicano che si stanno perdendo
+        // campioni nel parsing o che il device non sta streammando a pieno rate.
+        this._spsCount = 0;
+        this._spsAt = 0;
+        this._spsMeasured = 0;
+        this._diagPacketLen = 0;
+        this._diagSamplesPerPacket = 0;
 
         this.writeIndex = [0, 0, 0, 0];
         this.sampleCounts = [0, 0, 0, 0];
@@ -117,16 +131,27 @@ class MuseBluetooth {
     }
 
     onEEGData(cb){ this.onEEGDataCallback = cb; }
+    onReconnect(cb){ this.onReconnectCallback = cb; }
     onRawData(cb){ this.onRawDataCallback = cb; }
     onDisconnect(cb){ this.onDisconnectCallback = cb; }
     _sleep(ms){ return new Promise(resolve => setTimeout(resolve, ms)); }
     async sendControlCommand(cmd){ return await this._sendCommand(cmd); }
 
     async connect(){
+        console.log('Requesting Muse Device...');
+        this.device = await navigator.bluetooth.requestDevice({ filters: [{ services: [this.SERVICE_UUID] }] });
+        this.device.addEventListener('gattserverdisconnected', this._handleDisconnect);
+        this.reconnectAttempts = 0;
+        await this._establishSession();
+    }
+
+    /**
+     * Apre la sessione GATT e configura lo streaming. Separato da connect() perché
+     * la riconnessione deve poterlo rifare senza richiedere un nuovo gesto utente
+     * (il device resta autorizzato finché l'oggetto BluetoothDevice è vivo).
+     */
+    async _establishSession(){
         try{
-            console.log('Requesting Muse Device...');
-            this.device = await navigator.bluetooth.requestDevice({ filters: [{ services: [this.SERVICE_UUID] }] });
-            this.device.addEventListener('gattserverdisconnected', this._handleDisconnect);
             this.server = await this.device.gatt.connect();
             const service = await this.server.getPrimaryService(this.SERVICE_UUID);
 
@@ -156,8 +181,40 @@ class MuseBluetooth {
         }
     }
 
-    async disconnect(){ if(this.device && this.device.gatt && this.device.gatt.connected) this.device.gatt.disconnect(); }
-    _handleDisconnect(){ if(typeof this.onDisconnectCallback === 'function') this.onDisconnectCallback(); }
+    async disconnect(){
+        this.autoReconnect = false;   // disconnessione voluta: non ritentare
+        if(this.device && this.device.gatt && this.device.gatt.connected) this.device.gatt.disconnect();
+    }
+
+    /**
+     * Il Muse cade da solo con una certa frequenza. Senza riaggancio automatico
+     * l'esperienza finisce lì e l'utente deve rifare tutto il giro di pairing.
+     */
+    _handleDisconnect(){
+        if(typeof this.onDisconnectCallback === 'function') this.onDisconnectCallback();
+
+        if(!this.autoReconnect || !this.device) return;
+        if(this.reconnectAttempts >= this.maxReconnectAttempts){
+            console.warn(`[MuseBluetooth] riaggancio esaurito dopo ${this.reconnectAttempts} tentativi`);
+            return;
+        }
+
+        const attempt = ++this.reconnectAttempts;
+        const delay = Math.min(500 * Math.pow(2, attempt - 1), 4000);   // backoff
+        console.warn(`[MuseBluetooth] riaggancio automatico fra ${delay}ms (${attempt}/${this.maxReconnectAttempts})`);
+
+        setTimeout(async () => {
+            try{
+                await this._establishSession();
+                this.reconnectAttempts = 0;
+                console.log('[MuseBluetooth] riagganciato');
+                if(typeof this.onReconnectCallback === 'function') this.onReconnectCallback();
+            }catch(e){
+                console.warn('[MuseBluetooth] riaggancio fallito:', e.message || e);
+                this._handleDisconnect();   // ritenta finché restano tentativi
+            }
+        }, delay);
+    }
 
     async _sendCommand(cmd){
         if(!this.controlChar) return null;
@@ -205,11 +262,20 @@ class MuseBluetooth {
             if(len <= headerOffset) return;
 
             const payload = new Uint8Array(dataView.buffer, dataView.byteOffset + headerOffset, len - headerOffset);
-            const numChannels = (dataType === 2) ? 8 : 4; 
-            const numSamples = 2;  
+            const numChannels = (dataType === 2) ? 8 : 4;
 
             let bitOffset = 0;
             const totalBits = payload.length * 8;
+
+            // Il numero di campioni per pacchetto NON è fisso: si ricava da quanti ne
+            // stanno nel payload. Con un valore hardcoded a 2 si scartavano tutti i
+            // campioni successivi, riducendo il rate effettivo a una frazione dei 256 Hz
+            // dell'hardware (misurato sul campo: ~38 campioni/s, cioè 1/6).
+            const numSamples = Math.floor(totalBits / (14 * numChannels));
+            if (numSamples <= 0) return;
+
+            this._diagPacketLen = len;
+            this._diagSamplesPerPacket = numSamples;
 
             for (let s = 0; s < numSamples; s++) {
                 for (let ch = 0; ch < numChannels; ch++) {
@@ -260,6 +326,7 @@ class MuseBluetooth {
                 // Un tick di hop per campione (non per canale): i 4 canali avanzano insieme.
                 this.totalSamples++;
                 this.hopCounter++;
+                this._spsCount++;
 
                 if(this.totalSamples >= this.BUFFER_SIZE && this.hopCounter >= this.STFT_HOP){
                     this.hopCounter = 0;
@@ -293,7 +360,21 @@ class MuseBluetooth {
         }
 
         this._assessQuality();
-        this.brainDataPayload.timestamp = Date.now();
+
+        // Misura del sample rate reale su finestra di 1 s.
+        const now = Date.now();
+        if (this._spsAt === 0) {
+            this._spsAt = now;
+        } else if (now - this._spsAt >= 1000) {
+            this._spsMeasured = this._spsCount * 1000 / (now - this._spsAt);
+            this._spsCount = 0;
+            this._spsAt = now;
+        }
+        this.qualityPayload.sps = this._spsMeasured;
+        this.qualityPayload.packetLen = this._diagPacketLen;
+        this.qualityPayload.samplesPerPacket = this._diagSamplesPerPacket;
+
+        this.brainDataPayload.timestamp = now;
 
         if(typeof this.onEEGDataCallback === 'function'){
             this.onEEGDataCallback(this.brainDataPayload);

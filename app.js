@@ -290,6 +290,12 @@ function initUIEventListeners() {
         updateSynchronizedLEDs(false);
         AppState.eegVelocity = 0.0;
     });
+
+    muse.onReconnect(() => {
+        console.log('[MUSE] riconnesso');
+        updateSynchronizedLEDs(true, muse.device?.name || '');
+        AppState.watchdogRetries = 0;
+    });
 }
 
 function initMouseWheelController() {
@@ -413,7 +419,8 @@ function logSensorState(quality, index) {
         ` | ring=${Normalizer.count}/${Normalizer.capacity} IQRrel=${iqr.toFixed(3)}` +
         ` | ampiezza=${quality.maxAbsRaw.toFixed(0)}µV gate=${gate}` +
         ` | adc=[${(quality.adcMin || 0).toFixed(0)}..${(quality.adcMax || 0).toFixed(0)}] µ=${(quality.adcMean || 0).toFixed(0)}` +
-        ` | ${measuredHz.toFixed(1)}Hz`
+        ` | ${measuredHz.toFixed(1)}Hz sps=${(quality.sps || 0).toFixed(0)}/256` +
+        ` pkt=${quality.packetLen || 0}B/${quality.samplesPerPacket || 0}smp`
     );
 }
 

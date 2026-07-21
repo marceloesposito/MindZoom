@@ -25,6 +25,7 @@ const sandbox = {
     MuseBluetooth: class {
         onEEGData(cb) { this._cb = cb; }
         onDisconnect(cb) { this._onDisc = cb; }
+        onReconnect(cb) { this._onRecon = cb; }
         sendControlCommand() { return Promise.resolve(null); }
         connect() {}
     }
