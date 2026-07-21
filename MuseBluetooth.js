@@ -17,18 +17,29 @@ class MuseBluetooth {
         this.controlChar = null;
         this.eegChars = {};
 
+        const CFG = (typeof window !== 'undefined' && window.CONFIG) ? window.CONFIG : {};
+
         this.FS = 256;
-        this.BUFFER_SIZE = 256; 
+        this.BUFFER_SIZE = CFG.STFT_WINDOW || 256;
+
+        // STFT a finestra scorrevole: la finestra resta di BUFFER_SIZE campioni,
+        // ma la FFT viene rieseguita ogni STFT_HOP campioni -> update a ~FS/HOP Hz.
+        this.STFT_HOP = CFG.STFT_HOP || 48;
+        this.hopCounter = 0;
+        this.totalSamples = 0;
 
         this.channelLabels = ['TP9','AF7','AF8','TP10'];
         this.channelCount = this.channelLabels.length;
-        
+
         this.realBuffers = [
             new Float32Array(this.BUFFER_SIZE),
             new Float32Array(this.BUFFER_SIZE),
             new Float32Array(this.BUFFER_SIZE),
             new Float32Array(this.BUFFER_SIZE)
         ];
+
+        // Ring paralleli con il segnale grezzo in µV (pre-filtro), per il gating d'ampiezza.
+        this.rawBuffers = Array.from({length: this.channelCount}, () => new Float32Array(this.BUFFER_SIZE));
 
         this.writeIndex = [0, 0, 0, 0];
         this.sampleCounts = [0, 0, 0, 0];
@@ -47,11 +58,26 @@ class MuseBluetooth {
 
         this.outFFTMags = Array.from({length: this.channelCount}, () => new Float32Array(this.BUFFER_SIZE / 2));
         this.outLastSamples = new Float32Array(this.channelCount);
+
+        // Oggetto qualità riusato ad ogni emit (zero allocazioni per-frame).
+        this.qualityPayload = {
+            maxAbsRaw: 0,     // picco µV grezzo sui canali frontali
+            artifact: false,  // true -> finestra da scartare (blink, serramento mascella, movimento)
+            contactOk: true   // proxy di qualità contatto (vedi _assessQuality)
+        };
+
         this.brainDataPayload = {
             timestamp: 0,
             lastSamples: this.outLastSamples,
+            quality: this.qualityPayload,
             fft: { mags: this.outFFTMags, bins: this.BUFFER_SIZE / 2, fs: this.FS }
         };
+
+        // Finestra di Hann: necessaria con finestre sovrapposte per contenere lo spectral leakage.
+        this.hannWindow = new Float32Array(this.BUFFER_SIZE);
+        for (let i = 0; i < this.BUFFER_SIZE; i++) {
+            this.hannWindow[i] = 0.5 * (1 - Math.cos(2 * Math.PI * i / (this.BUFFER_SIZE - 1)));
+        }
 
         this.fftLookUpTable = new Float32Array(this.BUFFER_SIZE * 2);
         const PI2 = -2 * Math.PI;
@@ -194,15 +220,20 @@ class MuseBluetooth {
 
                         const idx = (this.writeIndex[ch] + 1) % this.BUFFER_SIZE;
                         this.writeIndex[ch] = idx;
-                        this.realBuffers[ch][idx] = filtered; 
+                        this.realBuffers[ch][idx] = filtered;
+                        this.rawBuffers[ch][idx] = uv;
                         this.sampleCounts[ch] = Math.min(this.sampleCounts[ch] + 1, this.BUFFER_SIZE);
                     }
                 }
-            }
 
-            if(this.sampleCounts[0] >= this.BUFFER_SIZE){
-                this._runFFTAndEmit();
-                for(let i = 0; i < this.channelCount; i++) this.sampleCounts[i] = 0;
+                // Un tick di hop per campione (non per canale): i 4 canali avanzano insieme.
+                this.totalSamples++;
+                this.hopCounter++;
+
+                if(this.totalSamples >= this.BUFFER_SIZE && this.hopCounter >= this.STFT_HOP){
+                    this.hopCounter = 0;
+                    this._runFFTAndEmit();
+                }
             }
         }catch(err){ console.error('[MuseBluetooth] Error', err); }
     }
@@ -216,7 +247,7 @@ class MuseBluetooth {
             const tail = this.writeIndex[ch];
             const head = (tail + 1) % N;
             for(let i=0; i<N; i++){
-                real[i] = src[(head + i) % N];
+                real[i] = src[(head + i) % N] * this.hannWindow[i];
                 imag[i] = 0.0;
             }
             this._computeRadix2FFT(real, imag);
@@ -230,11 +261,61 @@ class MuseBluetooth {
             this.outLastSamples[ch] = this.realBuffers[ch][this.writeIndex[ch]] || 0;
         }
 
+        this._assessQuality();
         this.brainDataPayload.timestamp = Date.now();
 
         if(typeof this.onEEGDataCallback === 'function'){
             this.onEEGDataCallback(this.brainDataPayload);
         }
+    }
+
+    /**
+     * Valuta la finestra corrente e popola this.qualityPayload.
+     *
+     * - artifact: gating d'ampiezza sul segnale GREZZO dei canali frontali (AF7/AF8).
+     *   Blink e serramento mascella sforano ampiamente ARTIFACT_UV_RAW.
+     * - contactOk: PROXY di qualità contatto basato sulla deviazione standard del
+     *   segnale filtrato. NON è l'Horseshoe Indicator del Muse: leggere l'HSI reale
+     *   richiede di sottoscrivere una characteristic dedicata (non ancora implementata).
+     *   Un canale piatto (std ~0) indica elettrodo staccato; uno std enorme indica
+     *   contatto instabile. Entrambi i casi -> freeze del controllo.
+     */
+    _assessQuality(){
+        const CFG = (typeof window !== 'undefined' && window.CONFIG) ? window.CONFIG : {};
+        const uvLimit = CFG.ARTIFACT_UV_RAW || 100;
+        const stdMin = (CFG.CONTACT_STD_MIN !== undefined) ? CFG.CONTACT_STD_MIN : 0.5;
+        const stdMax = (CFG.CONTACT_STD_MAX !== undefined) ? CFG.CONTACT_STD_MAX : 60.0;
+
+        const N = this.BUFFER_SIZE;
+        const frontal = [1, 2]; // AF7, AF8
+
+        let maxAbsRaw = 0;
+        let contactOk = true;
+
+        for(let k = 0; k < frontal.length; k++){
+            const ch = frontal[k];
+            const raw = this.rawBuffers[ch];
+            const filt = this.realBuffers[ch];
+
+            let sum = 0;
+            let sumSq = 0;
+            for(let i = 0; i < N; i++){
+                const a = raw[i] < 0 ? -raw[i] : raw[i];
+                if(a > maxAbsRaw) maxAbsRaw = a;
+                const f = filt[i];
+                sum += f;
+                sumSq += f * f;
+            }
+
+            const mean = sum / N;
+            const variance = (sumSq / N) - (mean * mean);
+            const std = Math.sqrt(variance > 0 ? variance : 0);
+            if(std < stdMin || std > stdMax) contactOk = false;
+        }
+
+        this.qualityPayload.maxAbsRaw = maxAbsRaw;
+        this.qualityPayload.artifact = maxAbsRaw > uvLimit;
+        this.qualityPayload.contactOk = contactOk;
     }
 
     _get14BitSigned(payload, bitOffset){
