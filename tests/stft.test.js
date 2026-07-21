@@ -25,7 +25,7 @@ const HEADER = 14;
 const SAMPLES_PER_PACKET = 2;
 const CHANNELS = 4;
 
-/** Impacchetta 8 valori a 14 bit nel formato letto da _get14BitSigned. */
+/** Impacchetta 8 valori a 14 bit nel formato letto da _get14BitRaw. */
 function buildPacket(values) {
     const payloadBytes = 14;                 // 8 * 14 bit = 112 bit
     const buf = new Uint8Array(HEADER + payloadBytes);
@@ -44,10 +44,10 @@ function buildPacket(values) {
 }
 
 const UV_PER_LSB = 1450.0 / 16383.0;
+// L'ADC emette valori unsigned centrati su 8192 (vedi _centerSample).
+const ADC_CENTER = 8192;
 function uvToRaw(uv) {
-    let v = Math.round(uv / UV_PER_LSB);
-    if (v < 0) v += 16384;
-    return v;
+    return ADC_CENTER + Math.round(uv / UV_PER_LSB);
 }
 
 /**
@@ -122,12 +122,12 @@ check('il gating si libera quando lo spike esce dalla finestra',
 
 // ---------------------------------------------------------------
 // REGRESSIONE: il Muse invia valori unsigned centrati su 8192, che
-// _get14BitSigned interpreta come signed -> il riposo vale ~-725 µV. Applicare il
+// _get14BitRaw interpreta come signed -> il riposo vale ~-725 µV. Applicare il
 // gating d'ampiezza a quel valore marcava OGNI finestra come artefatto, congelando
 // per sempre la velocità: lo zoom restava incollato e l'interazione non rispondeva.
 // Il gating deve quindi guardare il segnale dopo la rimozione della DC.
 // Nota: l'offset è scelto lontano da 8192, che è la soglia di flip del segno in
-// _get14BitSigned. Un segnale a cavallo di quel confine viene ricostruito come
+// _get14BitRaw. Un segnale a cavallo di quel confine viene ricostruito come
 // un'onda quadra da ±700 µV (vedi REFACTOR-NOTES.md, punto aperto sul decode).
 console.log('\n[2b] Regressione: offset DC non deve marcare artefatti');
 muse = new MuseBluetooth();

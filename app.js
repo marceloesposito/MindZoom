@@ -348,7 +348,8 @@ function logSensorState(quality, index) {
         `[EEG] ${AppState.phase.padEnd(11)} idx=${idx} p=${pct} v=${AppState.eegVelocity >= 0 ? '+' : ''}${AppState.eegVelocity.toFixed(3)}` +
         ` | θ=${Bands.theta.toFixed(2)} α=${Bands.alpha.toFixed(2)} β=${Bands.beta.toFixed(2)}` +
         ` | ring=${Normalizer.count}/${Normalizer.capacity} IQRrel=${iqr.toFixed(3)}` +
-        ` | ampiezza=${quality.maxAbsRaw.toFixed(0)}µV gate=${gate}`
+        ` | ampiezza=${quality.maxAbsRaw.toFixed(0)}µV gate=${gate}` +
+        ` | adc=[${(quality.adcMin || 0).toFixed(0)}..${(quality.adcMax || 0).toFixed(0)}] µ=${(quality.adcMean || 0).toFixed(0)}`
     );
 }
 

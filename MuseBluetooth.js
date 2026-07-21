@@ -45,6 +45,11 @@ class MuseBluetooth {
         // sfonderebbe qualunque soglia da letteratura in modo permanente.
         this.dcFreeBuffers = Array.from({length: this.channelCount}, () => new Float32Array(this.BUFFER_SIZE));
 
+        // Valori ADC unsigned grezzi (0..16383): servono a diagnosticare il decode.
+        this.adcBuffers = Array.from({length: this.channelCount}, () => new Float32Array(this.BUFFER_SIZE));
+
+        this.decodeMode = CFG.EEG_DECODE_MODE || 'unsigned-centered';
+
         this.writeIndex = [0, 0, 0, 0];
         this.sampleCounts = [0, 0, 0, 0];
 
@@ -71,7 +76,10 @@ class MuseBluetooth {
         this.qualityPayload = {
             maxAbsRaw: 0,     // picco µV grezzo sui canali frontali
             artifact: false,  // true -> finestra da scartare (blink, serramento mascella, movimento)
-            contactOk: true   // proxy di qualità contatto (vedi _assessQuality)
+            contactOk: true,  // proxy di qualità contatto (vedi _assessQuality)
+            adcMin: 0,        // diagnostica decode: statistiche ADC unsigned su AF7
+            adcMax: 0,
+            adcMean: 0
         };
 
         this.brainDataPayload = {
@@ -199,7 +207,8 @@ class MuseBluetooth {
             for (let s = 0; s < numSamples; s++) {
                 for (let ch = 0; ch < numChannels; ch++) {
                     if (bitOffset + 14 > totalBits) break;
-                    const rawVal = this._get14BitSigned(payload, bitOffset);
+                    const rawUnsigned = this._get14BitRaw(payload, bitOffset);
+                    const rawVal = this._centerSample(rawUnsigned);
                     bitOffset += 14;
 
                     if (ch < 4) {
@@ -236,6 +245,7 @@ class MuseBluetooth {
                         this.writeIndex[ch] = idx;
                         this.realBuffers[ch][idx] = filtered;
                         this.dcFreeBuffers[ch][idx] = dcFree;
+                        this.adcBuffers[ch][idx] = rawUnsigned;
                         this.sampleCounts[ch] = Math.min(this.sampleCounts[ch] + 1, this.BUFFER_SIZE);
                     }
                 }
@@ -331,18 +341,48 @@ class MuseBluetooth {
         this.qualityPayload.maxAbsRaw = maxAbsRaw;
         this.qualityPayload.artifact = maxAbsRaw > uvLimit;
         this.qualityPayload.contactOk = contactOk;
+
+        // Statistiche ADC su AF7: dicono se il decode è corretto.
+        // Valori stretti attorno a ~8192 -> l'ADC è unsigned centrato (decode ok).
+        // Valori sparsi su tutto 0..16383 -> disallineamento dei bit / layout pacchetto.
+        const adc = this.adcBuffers[1];
+        let mn = Infinity, mx = -Infinity, sum = 0;
+        for(let i = 0; i < N; i++){
+            const v = adc[i];
+            if(v < mn) mn = v;
+            if(v > mx) mx = v;
+            sum += v;
+        }
+        this.qualityPayload.adcMin = mn;
+        this.qualityPayload.adcMax = mx;
+        this.qualityPayload.adcMean = sum / N;
     }
 
-    _get14BitSigned(payload, bitOffset){
+    /** Estrae il campione a 14 bit come intero UNSIGNED (0..16383). */
+    _get14BitRaw(payload, bitOffset){
         const byteOffset = bitOffset >> 3;
         const bitShift = bitOffset & 7;
         const b0 = payload[byteOffset] || 0;
         const b1 = payload[byteOffset + 1] || 0;
         const b2 = payload[byteOffset + 2] || 0;
-        let val = (b0 | (b1 << 8) | (b2 << 16)) >> bitShift;
-        val &= 0x3FFF;
-        if(val > 8191) val -= 16384; 
-        return val;
+        return ((b0 | (b1 << 8) | (b2 << 16)) >> bitShift) & 0x3FFF;
+    }
+
+    /**
+     * Converte il campione unsigned in valore centrato sullo zero.
+     *
+     * 'unsigned-centered' (default): l'ADC emette valori unsigned centrati sul
+     *   fondo scala / 2, come nel decode di riferimento del Muse (che a 12 bit
+     *   sottrae 0x800). A 14 bit il centro è 8192.
+     * 'signed': interpretazione in complemento a due (comportamento originale).
+     *   Se i valori reali oscillano attorno a 8192 questa produce un'onda quadra
+     *   da ±725 µV invece che EEG, perché il segno si ribalta ad ogni attraversamento.
+     */
+    _centerSample(raw){
+        if(this.decodeMode === 'signed'){
+            return (raw > 8191) ? raw - 16384 : raw;
+        }
+        return raw - 8192;
     }
 
     _computeRadix2FFT(real, imag){

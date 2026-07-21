@@ -28,6 +28,13 @@ const CONFIG = {
     OUTRO_TARGET_FOCUS: 1.0,    // discesa finale; 0.0 = ritiro in superficie
     OUTRO_EASING: 0.012,        // TUNE - easing lungo dell'outro
 
+    // --- Decodifica dei campioni EEG ---
+    // 'unsigned-centered': l'ADC emette unsigned centrati su 8192 (come il decode di
+    //   riferimento del Muse, che a 12 bit sottrae 0x800).
+    // 'signed': complemento a due (comportamento originale). Se i valori reali stanno
+    //   attorno a 8192 produce un'onda quadra da ±725 µV invece che EEG.
+    EEG_DECODE_MODE: 'unsigned-centered',
+
     // --- STFT a finestra scorrevole ---
     STFT_WINDOW: 256,           // campioni (1 s @256 Hz) - risolve theta a 4 Hz
     STFT_HOP: 48,               // -> ~5.3 Hz di update del controllo
