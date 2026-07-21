@@ -500,7 +500,10 @@ function updatePhase(dt) {
             if (AppState.phaseElapsed >= CONFIG.PHASE_HANDOVER_S) enterPhase(PHASE.INTERACTIVE);
             break;
         case PHASE.INTERACTIVE:
-            if (AppState.phaseElapsed >= CONFIG.PHASE_INTERACTIVE_S) enterPhase(PHASE.OUTRO);
+            // Senza limite di tempo l'interazione non scade: l'uscita è dell'utente.
+            if (CONFIG.ENABLE_TIME_LIMIT && AppState.phaseElapsed >= CONFIG.PHASE_INTERACTIVE_S) {
+                enterPhase(PHASE.OUTRO);
+            }
             break;
         case PHASE.OUTRO:
             if (AppState.phaseElapsed >= CONFIG.PHASE_OUTRO_S) enterPhase(PHASE.DONE);
@@ -644,6 +647,9 @@ async function initPixiApp() {
     } catch (err) {
         console.error('[ERROR] Impossibile caricare gli asset:', err);
     }
+
+    refreshBaseScales();
+    window.addEventListener('resize', refreshBaseScales);
 
     pixiApp.ticker.add(updateExperienceFrame);
 }
@@ -805,10 +811,26 @@ function updateSynchronizedLEDs(connected, name = "") {
     if (name && DOM.homeDeviceString) DOM.homeDeviceString.innerText = name;
 }
 
+/**
+ * Lo scale di base dipende solo da viewport e texture: ricalcolarlo ad ogni frame
+ * costringeva a leggere window.innerWidth/innerHeight due volte per frame (layout
+ * sincrono, ~120 letture/s). Si calcola una volta e si ricalcola solo al resize.
+ */
+function refreshBaseScales() {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    for (let i = 0; i < spritePool.length; i++) {
+        const sprite = spritePool[i];
+        if (!sprite.texture || !sprite.texture.width) continue;
+        sprite._baseScale = Math.max(w / sprite.texture.width, h / sprite.texture.height);
+        sprite.x = w / 2;
+        sprite.y = h / 2;
+    }
+}
+
 function applyBaseScale(sprite, additionalZoom) {
-    if (!sprite.texture || !sprite.texture.valid) return;
-    const baseScale = Math.max(window.innerWidth / sprite.texture.width, window.innerHeight / sprite.texture.height);
-    sprite.scale.set(baseScale * additionalZoom);
+    if (!sprite._baseScale) return;
+    sprite.scale.set(sprite._baseScale * additionalZoom);
 }
 
 /* ------------------------------------------------------------------ *

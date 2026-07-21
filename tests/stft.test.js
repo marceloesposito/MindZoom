@@ -110,10 +110,10 @@ const dirty = emits.filter(e => e.artifact);
 check('lo spike da 400 µV marca finestre come artefatto', dirty.length > 0,
       `dirty=${dirty.length}`);
 check('esistono finestre pulite non marcate', clean.length > 0, `clean=${clean.length}`);
-check('le finestre marcate superano la soglia µV',
-      dirty.every(e => e.maxAbsRaw > CONFIG.ARTIFACT_UV_RAW));
-check('le finestre pulite restano sotto soglia',
-      clean.every(e => e.maxAbsRaw <= CONFIG.ARTIFACT_UV_RAW));
+check('le finestre marcate superano il pavimento assoluto',
+      dirty.every(e => e.maxAbsRaw > CONFIG.ARTIFACT_UV_FLOOR));
+check('le finestre pulite restano sotto il pavimento',
+      clean.every(e => e.maxAbsRaw <= CONFIG.ARTIFACT_UV_FLOOR));
 
 // L'artefatto deve uscire dalla finestra scorrevole: il gating non resta appiccicato.
 const lastEmits = emits.slice(-5);
@@ -121,14 +121,10 @@ check('il gating si libera quando lo spike esce dalla finestra',
       lastEmits.every(e => !e.artifact), `coda: ${lastEmits.map(e => e.artifact).join(',')}`);
 
 // ---------------------------------------------------------------
-// REGRESSIONE: il Muse invia valori unsigned centrati su 8192, che
-// _get14BitRaw interpreta come signed -> il riposo vale ~-725 µV. Applicare il
-// gating d'ampiezza a quel valore marcava OGNI finestra come artefatto, congelando
-// per sempre la velocità: lo zoom restava incollato e l'interazione non rispondeva.
-// Il gating deve quindi guardare il segnale dopo la rimozione della DC.
-// Nota: l'offset è scelto lontano da 8192, che è la soglia di flip del segno in
-// _get14BitRaw. Un segnale a cavallo di quel confine viene ricostruito come
-// un'onda quadra da ±700 µV (vedi REFACTOR-NOTES.md, punto aperto sul decode).
+// REGRESSIONE: il gating d'ampiezza leggeva il valore ADC prima della rimozione
+// della DC, che porta l'offset dell'ADC. Ogni finestra veniva marcata come
+// artefatto, congelando per sempre la velocità: lo zoom restava incollato e
+// l'interazione non rispondeva. Il gating deve guardare il segnale DC-free.
 console.log('\n[2b] Regressione: offset DC non deve marcare artefatti');
 muse = new MuseBluetooth();
 emits = runSignal(muse, 256 * 6, 30, 10, -1, 0, 6000);   // offset DC di ~531 µV + 30 µV
@@ -143,6 +139,26 @@ check('ampiezza misurata coerente con il segnale, non con l\'offset',
 muse = new MuseBluetooth();
 emits = runSignal(muse, 256 * 6, 30, 10, 256 * 3, 400, 6000);
 check('con offset DC un vero artefatto viene comunque rilevato',
+      emits.some(e => e.artifact), `artefatti=${emits.filter(e => e.artifact).length}`);
+
+// ---------------------------------------------------------------
+// Gating RELATIVO: con elettrodi dry il picco su 1 s sta normalmente su centinaia
+// di µV (misurato sul campo: 130-800 µV). Una soglia assoluta da letteratura
+// marcava tutto come artefatto e il controllo non partiva mai.
+console.log('\n[2c] Gating relativo: ampiezza alta ma stabile non è artefatto');
+muse = new MuseBluetooth();
+emits = runSignal(muse, 256 * 8, 300, 10);        // 300 µV stabili
+const steady = emits.slice(10);
+const steadyFlagged = steady.filter(e => e.artifact).length;
+check('ampiezza alta ma stabile -> nessun artefatto a regime',
+      steadyFlagged === 0, `marcate=${steadyFlagged}/${steady.length}`);
+
+// Sulla stessa base, un picco molto più grande deve comunque essere rilevato.
+// Nota: il fondo scala a 14 bit è ±725 µV, valori oltre wrappano - il picco di
+// test deve stare dentro il range rappresentabile.
+muse = new MuseBluetooth();
+emits = runSignal(muse, 256 * 8, 200, 10, 256 * 5, 700);
+check('su base alta un vero picco viene comunque rilevato',
       emits.some(e => e.artifact), `artefatti=${emits.filter(e => e.artifact).length}`);
 
 // ---------------------------------------------------------------

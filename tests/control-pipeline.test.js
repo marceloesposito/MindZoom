@@ -166,7 +166,7 @@ check('alla velocità massima il detent è sempre sganciabile', !AppState.locked
       `locked=${AppState.locked}`);
 
 // ---------------------------------------------------------------
-console.log('\n[5] FSM: conclusione garantita nel budget');
+console.log('\n[5] FSM: durata illimitata e budget opzionale');
 AppState.phase = PHASE.ONBOARDING;
 AppState.phaseElapsed = 0;
 AppState.sessionElapsed = 0;
@@ -177,6 +177,22 @@ let guard = 0;
 while (AppState.phaseElapsed < CONFIG.MODAL_UNLOCK_S && guard++ < 100000) S.updatePhase(dt);
 check("senza hook si va dritti all'interazione",
       S.phaseAfterOnboarding() === PHASE.INTERACTIVE, S.phaseAfterOnboarding());
+S.enterPhase(S.phaseAfterOnboarding());
+
+// Default: nessun limite di tempo, l'interazione non scade mai da sola.
+CONFIG.ENABLE_TIME_LIMIT = false;
+for (let i = 0; i < 60 * 60 * 10; i++) S.updatePhase(dt);   // 10 minuti simulati
+check('senza limite di tempo si resta in INTERACTIVE',
+      AppState.phase === PHASE.INTERACTIVE,
+      `phase=${AppState.phase} dopo ${AppState.phaseElapsed.toFixed(0)}s`);
+
+// Con il limite attivo la conclusione resta garantita entro il budget.
+CONFIG.ENABLE_TIME_LIMIT = true;
+AppState.phase = PHASE.ONBOARDING;
+AppState.phaseElapsed = 0;
+AppState.sessionElapsed = 0;
+guard = 0;
+while (AppState.phaseElapsed < CONFIG.MODAL_UNLOCK_S && guard++ < 100000) S.updatePhase(dt);
 S.enterPhase(S.phaseAfterOnboarding());
 
 const phasesSeen = [];

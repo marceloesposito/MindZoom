@@ -20,7 +20,10 @@ const CONFIG = {
     ENABLE_HOOK_PHASE: false,
     PHASE_HOOK_S: 5.5,          // auto-zoom di aggancio (solo se ENABLE_HOOK_PHASE)
     PHASE_HANDOVER_S: 5.0,      // crossfade di autorità auto -> EEG (idem)
-    PHASE_INTERACTIVE_S: 80.0,  // core interattivo
+    // ENABLE_TIME_LIMIT = false: la fase interattiva non scade mai e l'outro non
+    // parte da solo. L'esperienza dura finché l'utente non esce.
+    ENABLE_TIME_LIMIT: false,
+    PHASE_INTERACTIVE_S: 80.0,  // usato solo se ENABLE_TIME_LIMIT
     PHASE_OUTRO_S: 18.0,        // conclusione scriptata
 
     // --- Velocità scriptate ---
@@ -53,7 +56,9 @@ const CONFIG = {
     // spesso (p=1.0 ogni volta che il campione è il massimo del ring). A 0.25 la
     // traversata completa a velocità piena richiede ~22 s.
     ZOOM_GAIN: 0.25,            // TUNE
-    VEL_SMOOTHING: 0.25,        // TUNE - EMA sulla velocità, smussa gli step a 5.3 Hz
+    // EMA sulla velocità: il controllo aggiorna a 5.3 Hz mentre il render gira a 60,
+    // quindi senza smoothing si vedono gli scalini. Più basso = più fluido, più lento.
+    VEL_SMOOTHING: 0.15,        // TUNE
 
     // --- Detent / isteresi / hold ---
     // Le soglie sono FRAZIONI della velocità di input massima, non valori assoluti:
@@ -65,9 +70,15 @@ const CONFIG = {
     LOCK_DWELL_S: 3.0,          // dwell-to-lock
     LOCK_DWELL_MULT: 1.5,       // TUNE - moltiplicatore della soglia di sgancio dopo il dwell
 
-    // --- Gating artefatti (µV) ---
-    // Soglia sul segnale dopo rimozione della DC, prima del filtraggio in banda.
-    ARTIFACT_UV_RAW: 100,
+    // --- Gating artefatti ---
+    // Il gating è RELATIVO, non assoluto: una soglia fissa in µV non funziona con
+    // elettrodi dry di livello consumer, dove il picco su 1 s sta normalmente su
+    // centinaia di µV e varia con la persona e con la qualità del contatto.
+    // Una finestra è artefatto se il suo picco supera ARTIFACT_REL_MULT volte la
+    // mediana dei picchi recenti E sta sopra un pavimento assoluto di sicurezza.
+    ARTIFACT_REL_MULT: 2.5,     // TUNE
+    ARTIFACT_UV_FLOOR: 150,     // TUNE - sotto questo non si marca mai artefatto
+    ARTIFACT_PEAK_HISTORY: 48,  // ~9 s di picchi a 5.3 Hz
     // Dopo questo tempo di gating continuo la velocità decade verso 0 invece di
     // restare congelata: un gating permanente non deve poter incollare lo zoom.
     ARTIFACT_HOLD_MAX_S: 1.0,

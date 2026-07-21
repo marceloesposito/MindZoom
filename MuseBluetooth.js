@@ -50,6 +50,13 @@ class MuseBluetooth {
 
         this.decodeMode = CFG.EEG_DECODE_MODE || 'unsigned-centered';
 
+        // Storico dei picchi per finestra: base del gating relativo agli artefatti.
+        this.peakHistorySize = CFG.ARTIFACT_PEAK_HISTORY || 48;
+        this.peakHistory = new Float32Array(this.peakHistorySize);
+        this.peakScratch = new Float32Array(this.peakHistorySize);
+        this.peakCount = 0;
+        this.peakWriteIdx = 0;
+
         this.writeIndex = [0, 0, 0, 0];
         this.sampleCounts = [0, 0, 0, 0];
 
@@ -307,9 +314,9 @@ class MuseBluetooth {
      */
     _assessQuality(){
         const CFG = (typeof window !== 'undefined' && window.CONFIG) ? window.CONFIG : {};
-        const uvLimit = CFG.ARTIFACT_UV_RAW || 100;
+        const relMult = CFG.ARTIFACT_REL_MULT || 2.5;
+        const uvFloor = (CFG.ARTIFACT_UV_FLOOR !== undefined) ? CFG.ARTIFACT_UV_FLOOR : 150;
         const stdMin = (CFG.CONTACT_STD_MIN !== undefined) ? CFG.CONTACT_STD_MIN : 0.5;
-        const stdMax = (CFG.CONTACT_STD_MAX !== undefined) ? CFG.CONTACT_STD_MAX : 60.0;
 
         const N = this.BUFFER_SIZE;
         const frontal = [1, 2]; // AF7, AF8
@@ -335,11 +342,24 @@ class MuseBluetooth {
             const mean = sum / N;
             const variance = (sumSq / N) - (mean * mean);
             const std = Math.sqrt(variance > 0 ? variance : 0);
-            if(std < stdMin || std > stdMax) contactOk = false;
+            // Solo il canale piatto è diagnosticabile in assoluto: significa elettrodo
+            // staccato. Un limite superiore fisso boccerebbe un contatto dry normale.
+            if(std < stdMin) contactOk = false;
         }
 
+        // Gating relativo: artefatto se il picco sfonda rispetto ai picchi recenti.
+        const medianPeak = this._medianPeak();
+        const artifact = (this.peakCount >= 8) &&
+                         (maxAbsRaw > uvFloor) &&
+                         (maxAbsRaw > relMult * medianPeak);
+
+        this.peakHistory[this.peakWriteIdx] = maxAbsRaw;
+        this.peakWriteIdx = (this.peakWriteIdx + 1) % this.peakHistorySize;
+        if(this.peakCount < this.peakHistorySize) this.peakCount++;
+
         this.qualityPayload.maxAbsRaw = maxAbsRaw;
-        this.qualityPayload.artifact = maxAbsRaw > uvLimit;
+        this.qualityPayload.medianPeak = medianPeak;
+        this.qualityPayload.artifact = artifact;
         this.qualityPayload.contactOk = contactOk;
 
         // Statistiche ADC su AF7: dicono se il decode è corretto.
@@ -356,6 +376,15 @@ class MuseBluetooth {
         this.qualityPayload.adcMin = mn;
         this.qualityPayload.adcMax = mx;
         this.qualityPayload.adcMean = sum / N;
+    }
+
+    /** Mediana dei picchi recenti: riferimento per il gating relativo. */
+    _medianPeak(){
+        if(this.peakCount === 0) return 0;
+        const s = this.peakScratch.subarray(0, this.peakCount);
+        s.set(this.peakHistory.subarray(0, this.peakCount));
+        s.sort();
+        return s[this.peakCount >> 1];
     }
 
     /** Estrae il campione a 14 bit come intero UNSIGNED (0..16383). */
