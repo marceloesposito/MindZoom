@@ -87,6 +87,10 @@
             <div id="debug-panel" class="absolute top-24 left-6 bg-black/80 text-gray-300 font-mono text-xs p-4 rounded-lg border border-gray-700 shadow-2xl w-64 pointer-events-none backdrop-blur-sm">
                 <div class="mb-3 border-b border-gray-700 pb-2 text-gray-400 tracking-wider">DIAGNOSTICA TELEMETRIA</div>
                 <div class="flex justify-between mb-2"><span>Input Source:</span> <span id="debug-input-source" class="font-bold text-blue-400">BCI</span></div>
+                <div class="flex justify-between mb-2"><span>Phase:</span> <span id="debug-phase" class="font-bold text-purple-400">IDLE</span></div>
+                <div class="flex justify-between mb-2"><span>Signal:</span> <span id="debug-gate" class="font-bold text-green-400">OK</span></div>
+                <div class="flex justify-between mb-2"><span>Percentile:</span> <span id="debug-percentile" class="font-bold text-amber-400">0.50</span></div>
+                <div class="flex justify-between mb-2"><span>Raw Index:</span> <span id="debug-raw-ratio" class="font-bold">0.000</span></div>
                 <div class="flex justify-between mb-2"><span>Velocity:</span> <span id="debug-velocity" class="font-bold">0.00</span></div>
                 <div class="flex justify-between mb-1"><span>Target (Input):</span> <span id="debug-target" class="text-blue-400 font-bold">0.00</span></div>
                 <div class="w-full bg-gray-900 h-1.5 rounded mb-3 overflow-hidden"><div id="debug-bar-target" class="bg-blue-500 h-full transition-all duration-75" style="width: 0%"></div></div>
@@ -97,6 +101,24 @@
             <footer class="w-full flex justify-end items-center">
                 <button id="end-immersion-btn" class="pointer-events-auto bg-red-600/90 hover:bg-red-500 text-white text-xs font-semibold tracking-widest uppercase px-6 py-3.5 rounded-xl transition-all">Esci</button>
             </footer>
+        </div>
+    </div>
+
+    <!--
+      Modale di onboarding: finestra di segnale pulita e ripetibile (utente fermo,
+      occhi aperti, compito identico per tutti). Sotto di essa viene seminata la
+      calibrazione mediana/MAD. Il pulsante si sblocca dopo CONFIG.MODAL_UNLOCK_S.
+    -->
+    <div id="onboarding-modal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md hidden">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-8 shadow-2xl text-center">
+            <h3 class="text-2xl font-light text-gray-100 mb-4 tracking-tight uppercase">Preparazione</h3>
+            <p id="onboarding-hint" class="text-sm text-gray-400 leading-relaxed mb-6">
+                Siediti comodo e resta fermo, con lo sguardo al centro dello schermo.
+                Stiamo osservando il tuo stato di partenza: non devi fare nulla di particolare.
+            </p>
+            <button id="onboarding-start-btn" class="w-full py-3 bg-slate-800 text-slate-500 font-semibold rounded-lg cursor-not-allowed transition-all" disabled>
+                Attendi... 6s
+            </button>
         </div>
     </div>
 
@@ -120,6 +142,7 @@
         </div>
     </div>
 
+    <script src="config.js" defer></script>
     <script src="MuseBluetooth.js" defer></script>
     <script src="app.js" defer></script>
 </body>
