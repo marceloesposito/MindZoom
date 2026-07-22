@@ -8,7 +8,33 @@ const CONFIG = {
     // --- Selettore pipeline (A/B con il percorso legacy a snapshot 5s) ---
     USE_ADAPTIVE_PIPELINE: true,
 
-    // --- Fase ONBOARDING / calibrazione sotto la modale ---
+    // --- Calibrazione ATTIVA (scheda con quadratino su binario) ---
+    // Due fasi guidate: l'utente spinge il quadratino verso l'alto concentrandosi
+    // (registra il picco -> absMax) e poi lo lascia scendere rilassandosi
+    // (registra il minimo -> absMin). Da questi due estremi si ricava la legge di
+    // controllo dello zoom (vedi computeExtremaVelocity). Niente moving-average.
+    CALIB_INTRO_MIN_S: 1.0,     // tempo minimo sulla schermata introduttiva
+    CALIB_CONCENTRATE_S: 15.0,  // durata fase di concentrazione
+    CALIB_RELAX_S: 15.0,        // durata fase di rilassamento
+    CALIB_LEADIN_S: 1.5,        // scarto iniziale di ogni fase (transitorio di reazione)
+    CALIB_INDEX_EMA: 0.30,      // TUNE - EMA di denoise sull'indice (NON normalizzazione)
+    CALIB_DISPLAY_EMA: 0.20,    // TUNE - EMA di posizione del quadratino a 60 Hz
+    CALIB_CONC_FRACTION: 0.75,  // la velocità piena si raggiunge al 75% del tragitto M->estremo
+    CALIB_DONE_HOLD_S: 1.6,     // schermata "completata" prima dell'auto-avanzo all'interazione
+    // Span minima accettabile fra i due estremi, relativa al neutro M: sotto questa
+    // la calibrazione è considerata fallita (segnale piatto / utente non modulante).
+    CALIB_MIN_SPAN_REL: 0.08,   // TUNE
+
+    // --- Controllo dello zoom a estremi (post-calibrazione) ---
+    // Velocità di zoom in funzione della concentrazione relativa agli estremi
+    // assoluti (calibrazione) e a una banda locale di isteresi.
+    EXTREMA_GAIN: 0.25,         // TUNE - velocità normalizzata massima (ex ZOOM_GAIN)
+    // Quanto in fretta gli estremi LOCALI seguono il segnale, in frazioni di span/s.
+    // Piccolo -> un plateau ferma lo zoom, bisogna spingere ancora (fasico).
+    // Grande -> controllo più continuo.
+    LOCAL_DECAY: 0.35,          // TUNE
+
+    // --- Onboarding legacy (percorso passivo, USE_ADAPTIVE_PIPELINE con semina 5s) ---
     MODAL_UNLOCK_S: 6.0,        // quando il pulsante diventa cliccabile
     CALIB_START_S: 1.0,         // scarto del transitorio di reazione iniziale
     CALIB_END_OFFSET_S: 0.5,    // chiusura buffer prima dell'unlock (zona gesto di chiusura)

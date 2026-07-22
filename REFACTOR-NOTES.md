@@ -5,6 +5,41 @@ Branch: `feature/adaptive-calibration-testing` (da `feature/muse-ble-testing`).
 Tutto il comportamento nuovo è dietro `CONFIG.USE_ADAPTIVE_PIPELINE` (`config.js`).
 Con `false` si torna al percorso legacy (snapshot 5 s + z-score/sigmoide) per confronto A/B.
 
+## AGGIORNAMENTO — Calibrazione attiva + controllo a estremi (no moving-average)
+
+Il percorso adattivo è stato ri-progettato dopo i test sul campo. **Il ring buffer
+percentile è stato rimosso dall'interazione** perché aveva due difetti bloccanti:
+
+1. **Partenza lenta:** serviva ~13 s per riempire il ring prima che il percentile avesse
+   autorità → l'interazione di fatto non partiva.
+2. **Auto-cancellazione:** essendo una finestra scorrevole, la concentrazione sostenuta
+   riempiva il buffer di valori alti e il percentile regrediva a 0.5 → lo zoom si fermava
+   proprio quando l'utente spingeva.
+
+**Nuovo modello.** Una **scheda di calibrazione attiva** sostituisce la semina passiva
+mediana/MAD: un quadratino su un binario verticale che l'utente spinge in alto
+concentrandosi (fase CONCENTRATE, registra il **picco** `absMax`) e lascia scendere
+rilassandosi (fase RELAX, registra il **minimo** `absMin`). Da questi due estremi:
+
+- neutro `M = (absMax + absMin) / 2` = zero (sopra = concentrazione/zoom in, sotto =
+  distrazione/zoom out);
+- una **banda locale di isteresi** (`localMin`/`localMax`) che decade verso il segnale a
+  `LOCAL_DECAY` frazioni di span/s: la velocità va a 0 sotto il massimo locale (ferma lo
+  zoom in) e diventa negativa sotto il minimo locale (zoom out) → controllo **fasico**;
+- saturazione a `CALIB_CONC_FRACTION` (0.75) del tragitto `M`→estremo, così non serve
+  ritoccare il picco assoluto per raggiungere la velocità piena.
+
+Codice: `computeExtremaVelocity(c, dt)` sostituisce `computeAdaptiveVelocity` (percentile);
+la scheda è la sotto-FSM `CALIB` (INTRO/CONCENTRATE/RELAX/DONE/FAILED) dentro
+`PHASE.ONBOARDING`, gestita da `updateOnboardingModal` / `finalizeActiveCalibration`.
+Il quadratino usa un feedback **diretto/proporzionale** (altezza ∝ indice smussato), con
+una sola EMA di denoise sull'indice (`CALIB_INDEX_EMA`), non una normalizzazione a finestra.
+`Normalizer` resta nel file ma non è più nel percorso interattivo (solo legacy).
+
+L'interazione ora **parte subito** dopo la calibrazione (nessun warm-up). In SIMULATION la
+rotella pilota il quadratino per testare la scheda senza hardware. Fallimenti (contatto mai
+OK, span < `CALIB_MIN_SPAN_REL`) → schermata "Riprova".
+
 ## Mappatura nomi: documento -> codice reale
 
 Il documento di handover usava nomi indicativi. Mappature effettive:
@@ -119,22 +154,28 @@ mantenendo il totale a ~104 s.
 Con `CONFIG.DEBUG_SENSOR_LOG` (default true) la console stampa a `DEBUG_LOG_HZ` (2 Hz):
 
 ```
-[EEG] INTERACTIVE idx=1.234 p=0.72 v=+0.180 | θ=0.41 α=0.33 β=0.61 | ring=69/69 IQRrel=0.184 | ampiezza=42µV gate=OK
+[EEG] INTERACTIVE idx=1.234 c=1.180 v=+0.180 | θ=0.41 α=0.33 β=0.61 | M=1.050 lo=0.900 hi=1.240 [0.700..1.400] | ampiezza=42µV gate=OK
 ```
 
-`idx` indice di Pope, `p` percentile nel ring, `v` velocità, `θ/α/β` band power frontali,
-`ring` riempimento del buffer percentile, `IQRrel` dispersione (sotto `IQR_MIN_REL` il
-controllo si congela), `ampiezza` picco µV, `gate` motivo dell'eventuale blocco.
+`idx` indice di Pope grezzo, `c` indice smussato (denoise), `v` velocità, `θ/α/β` band power
+frontali, `M` neutro, `lo/hi` estremi **locali** (banda di isteresi), `[..]` estremi
+**assoluti** dalla calibrazione, `ampiezza` picco µV, `gate` motivo dell'eventuale blocco.
+Durante la calibrazione il blocco centrale mostra invece `calib=STAGE peak=.. trough=..`.
 Il log avviene **prima** delle decisioni di gating, così si vede perché il controllo è fermo.
 
 ## Costanti ancora da tarare
 
-Marcate `// TUNE` in `config.js`. Le più sensibili all'esperienza reale:
-`ZOOM_GAIN`, `IQR_MIN_REL`, `ENTER_HOLD`/`BREAK_HOLD`, `HOOK_AUTO_VELOCITY`,
-`CONTACT_STD_MIN`/`CONTACT_STD_MAX`.
+Marcate `// TUNE` in `config.js`. Per il controllo a estremi, le più sensibili:
 
-`P_LOW`/`P_HIGH` a 0.40/0.60 danno una dead-zone del 20% del range: se l'utente fatica a
-fermarsi, allargarla prima di toccare il gain.
+- **`LOCAL_DECAY`** — manopola principale del *feel*. Piccolo → un plateau ferma lo zoom e
+  bisogna *spingere ancora* per proseguire (fasico); grande → controllo più continuo.
+- **`EXTREMA_GAIN`** — velocità normalizzata massima (ex `ZOOM_GAIN`).
+- **`CALIB_CONC_FRACTION`** — a quale frazione del tragitto `M`→estremo si satura (0.75).
+- **`CALIB_INDEX_EMA`** — denoise sull'indice: più basso = più fluido ma più lento.
+- **`CALIB_MIN_SPAN_REL`** — soglia di fallimento della calibrazione (span troppo debole).
+
+Legacy/percentile (`P_LOW`/`P_HIGH`, `IQR_MIN_REL`, `ZOOM_GAIN`) restano solo per il ramo
+`USE_ADAPTIVE_PIPELINE = false`.
 
 ## Test
 
@@ -142,7 +183,7 @@ Nessun hardware richiesto: verificano la logica di controllo e la catena DSP con
 sintetici e pacchetti BLE costruiti a mano.
 
 ```bash
-node tests/control-pipeline.test.js   # FSM, percentile, dead-zone, detent/isteresi, budget durata
+node tests/control-pipeline.test.js   # controllo a estremi, banda locale, calibrazione, FSM, detent, budget
 node tests/stft.test.js               # rate STFT, gating artefatti/contatto, picco spettrale
 ```
 

@@ -31,6 +31,42 @@
         .led-indicator { width: 10px; height: 10px; border-radius: 50%; display: inline-block; transition: all 0.3s ease; }
         .led-red { background-color: #ef4444; box-shadow: 0 0 8px #ef4444; }
         .led-green { background-color: #22c55e; box-shadow: 0 0 8px #22c55e; }
+
+        /* --- Scheda di calibrazione attiva: binario verticale + quadratino --- */
+        .calib-rail {
+            position: relative;
+            width: 64px;
+            height: 300px;
+            margin: 0 auto;
+            border-radius: 12px;
+            background: linear-gradient(to top, rgba(59,130,246,0.06), rgba(59,130,246,0.16));
+            border: 1px solid rgba(148,163,184,0.25);
+            box-shadow: inset 0 0 24px rgba(0,0,0,0.5);
+            overflow: hidden;
+        }
+        /* Zona-obiettivo evidenziata (in alto per concentrazione, in basso per rilassamento) */
+        .calib-target {
+            position: absolute;
+            left: 0; right: 0;
+            height: 44px;
+            background: repeating-linear-gradient(45deg, rgba(34,197,94,0.28) 0 8px, rgba(34,197,94,0.14) 8px 16px);
+            border-top: 1px dashed rgba(34,197,94,0.8);
+            border-bottom: 1px dashed rgba(34,197,94,0.8);
+            transition: none;
+        }
+        .calib-square {
+            position: absolute;
+            left: 50%;
+            width: 40px; height: 40px;
+            margin-left: -20px;
+            bottom: 0;              /* pilotato via JS: 0% (base) .. 100% (cima) */
+            border-radius: 8px;
+            background: #38bdf8;
+            box-shadow: 0 0 16px rgba(56,189,248,0.8);
+            will-change: bottom;
+        }
+        .calib-square.reached { background: #22c55e; box-shadow: 0 0 20px rgba(34,197,94,0.9); }
+        .calib-square.paused  { background: #64748b; box-shadow: none; opacity: 0.6; }
     </style>
 </head>
 <body class="text-white select-none">
@@ -89,7 +125,7 @@
                 <div class="flex justify-between mb-2"><span>Input Source:</span> <span id="debug-input-source" class="font-bold text-blue-400">BCI</span></div>
                 <div class="flex justify-between mb-2"><span>Phase:</span> <span id="debug-phase" class="font-bold text-purple-400">IDLE</span></div>
                 <div class="flex justify-between mb-2"><span>Signal:</span> <span id="debug-gate" class="font-bold text-green-400">OK</span></div>
-                <div class="flex justify-between mb-2"><span>Percentile:</span> <span id="debug-percentile" class="font-bold text-amber-400">0.50</span></div>
+                <div class="flex justify-between mb-2"><span>c / M:</span> <span id="debug-percentile" class="font-bold text-amber-400">--</span></div>
                 <div class="flex justify-between mb-2"><span>Raw Index:</span> <span id="debug-raw-ratio" class="font-bold">0.000</span></div>
                 <div class="flex justify-between mb-2"><span>Velocity:</span> <span id="debug-velocity" class="font-bold">0.00</span></div>
                 <div class="flex justify-between mb-1"><span>Target (Input):</span> <span id="debug-target" class="text-blue-400 font-bold">0.00</span></div>
@@ -105,20 +141,55 @@
     </div>
 
     <!--
-      Modale di onboarding: finestra di segnale pulita e ripetibile (utente fermo,
-      occhi aperti, compito identico per tutti). Sotto di essa viene seminata la
-      calibrazione mediana/MAD. Il pulsante si sblocca dopo CONFIG.MODAL_UNLOCK_S.
+      Scheda di calibrazione ATTIVA. Due fasi (concentrazione, rilassamento): l'utente
+      spinge un quadratino su un binario verticale verso un obiettivo, modulando la
+      propria concentrazione. Dai due estremi registrati si ricava la legge di controllo
+      dello zoom. Vedi app.js: updateOnboardingModal / finalizeActiveCalibration.
     -->
     <div id="onboarding-modal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md hidden">
         <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-8 shadow-2xl text-center">
-            <h3 class="text-2xl font-light text-gray-100 mb-4 tracking-tight uppercase">Preparazione</h3>
-            <p id="onboarding-hint" class="text-sm text-gray-400 leading-relaxed mb-6">
-                Siediti comodo e resta fermo, con lo sguardo al centro dello schermo.
-                Stiamo osservando il tuo stato di partenza: non devi fare nulla di particolare.
-            </p>
-            <button id="onboarding-start-btn" class="w-full py-3 bg-slate-800 text-slate-500 font-semibold rounded-lg cursor-not-allowed transition-all" disabled>
-                Attendi... 6s
-            </button>
+
+            <!-- Stage INTRO -->
+            <div id="calib-intro">
+                <h3 class="text-2xl font-light text-gray-100 mb-4 tracking-tight uppercase">Calibrazione</h3>
+                <p class="text-sm text-gray-400 leading-relaxed mb-2">
+                    Due brevi fasi, circa 30 secondi in tutto.
+                </p>
+                <p class="text-sm text-gray-400 leading-relaxed mb-6">
+                    Prima ti chiederemo di <span class="text-sky-400 font-medium">concentrarti</span>
+                    per spingere il quadratino in alto, poi di
+                    <span class="text-emerald-400 font-medium">rilassarti</span> per lasciarlo scendere.
+                    Serve a tarare l'esperienza sul tuo segnale.
+                </p>
+                <button id="calib-start-btn" class="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-lg transition-all">
+                    Inizia
+                </button>
+            </div>
+
+            <!-- Stage ATTIVO (CONCENTRATE / RELAX) -->
+            <div id="calib-active" class="hidden">
+                <h3 id="calib-title" class="text-xl font-light text-gray-100 mb-1 tracking-tight uppercase">Concentrazione</h3>
+                <p id="calib-prompt" class="text-sm text-gray-400 leading-relaxed mb-5 min-h-[2.5rem]">
+                    Concentrati per spingere il quadratino verso l'obiettivo in alto.
+                </p>
+                <div class="calib-rail" id="calib-rail">
+                    <div id="calib-target" class="calib-target"></div>
+                    <div id="calib-square" class="calib-square"></div>
+                </div>
+                <div id="calib-countdown" class="mt-5 text-3xl font-mono font-light text-gray-200 tabular-nums">15</div>
+                <p id="calib-contact-hint" class="hidden text-xs text-amber-400 mt-2">
+                    Contatto scarso: sistema il sensore sulla fronte…
+                </p>
+            </div>
+
+            <!-- Stage DONE / FAIL -->
+            <div id="calib-done" class="hidden">
+                <h3 id="calib-done-title" class="text-2xl font-light text-gray-100 mb-4 tracking-tight uppercase">Fatto</h3>
+                <p id="calib-done-msg" class="text-sm text-gray-400 leading-relaxed mb-6"></p>
+                <button id="calib-retry-btn" class="hidden w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-lg transition-all">
+                    Riprova
+                </button>
+            </div>
         </div>
     </div>
 

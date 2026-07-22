@@ -44,6 +44,17 @@ const PHASE = {
     DONE: "DONE"
 };
 
+// Sotto-stati della scheda di calibrazione attiva, interni a PHASE.ONBOARDING.
+const CALIB = {
+    INTRO: "INTRO",             // schermata introduttiva, attende il click
+    CONCENTRATE: "CONCENTRATE", // l'utente spinge il quadratino in alto (registra absMax)
+    RELAX: "RELAX",             // l'utente lo lascia scendere (registra absMin)
+    DONE: "DONE",               // calibrazione riuscita, breve conferma poi auto-avanzo
+    FAILED: "FAILED"            // segnale assente o modulazione troppo debole -> Riprova
+};
+
+function clamp01(x) { return x < 0 ? 0 : (x > 1 ? 1 : x); }
+
 const AppState = {
     currentView: "LANDING",
     inputMode: "BCI",
@@ -60,14 +71,36 @@ const AppState = {
 
     // --- Pipeline adattiva ---
     eegVelocity: 0.0,      // velocità derivata dall'EEG (autorità gestita dalla FSM)
-    percentile: 0.5,
+    percentile: 0.5,       // solo diagnostica/legacy
     isGated: false,        // artefatto d'ampiezza sulla finestra corrente
     contactOk: true,       // proxy qualità contatto
     gatedWindows: 0,       // finestre consecutive scartate
     lastEEGAt: 0,          // timestamp dell'ultimo dato EEG ricevuto
     eegStalled: false,     // flusso EEG fermo (vedi checkEEGWatchdog)
     watchdogRetries: 0,
-    seeded: false,         // semina mediana/MAD riuscita
+
+    // --- Indice smussato (denoise EMA, condiviso calibrazione/interazione) ---
+    smoothedIndex: 0.0,
+    smoothedInit: false,
+
+    // --- Calibrazione attiva ---
+    calibStage: CALIB.INTRO,
+    calibStageElapsed: 0.0,
+    calibRunMin: Infinity,     // min corrente della fase (auto-scala il binario)
+    calibRunMax: -Infinity,    // max corrente della fase
+    calibPeak: -Infinity,      // picco assoluto della fase CONCENTRATE  -> absMax
+    calibTrough: Infinity,     // minimo assoluto della fase RELAX        -> absMin
+    calibDisplayPos: 0.0,      // posizione renderizzata del quadratino [0,1]
+    calibDisplayTarget: 0.5,   // altezza normalizzata verso cui il quadratino si muove
+    calibDoneTimer: 0.0,       // tempo sulla schermata di conferma
+    calibValid: false,         // estremi validi -> controllo a estremi attivo
+
+    // --- Estremi della legge di controllo (da calibrazione) ---
+    absMax: 0.0,
+    absMin: 0.0,
+    neutralM: 0.0,
+    localMax: 0.0,             // banda locale di isteresi (decade verso il segnale)
+    localMin: 0.0,
 
     // --- Hold / select ---
     locked: false,
@@ -194,8 +227,20 @@ document.addEventListener("DOMContentLoaded", () => {
     DOM.toggleInputModeBtn = document.getElementById('toggle-input-mode-btn');
 
     DOM.onboardingModal = document.getElementById('onboarding-modal');
-    DOM.onboardingStartBtn = document.getElementById('onboarding-start-btn');
-    DOM.onboardingHint = document.getElementById('onboarding-hint');
+    DOM.calibIntro = document.getElementById('calib-intro');
+    DOM.calibStartBtn = document.getElementById('calib-start-btn');
+    DOM.calibActive = document.getElementById('calib-active');
+    DOM.calibTitle = document.getElementById('calib-title');
+    DOM.calibPrompt = document.getElementById('calib-prompt');
+    DOM.calibRail = document.getElementById('calib-rail');
+    DOM.calibTarget = document.getElementById('calib-target');
+    DOM.calibSquare = document.getElementById('calib-square');
+    DOM.calibCountdown = document.getElementById('calib-countdown');
+    DOM.calibContactHint = document.getElementById('calib-contact-hint');
+    DOM.calibDone = document.getElementById('calib-done');
+    DOM.calibDoneTitle = document.getElementById('calib-done-title');
+    DOM.calibDoneMsg = document.getElementById('calib-done-msg');
+    DOM.calibRetryBtn = document.getElementById('calib-retry-btn');
 
     DOM.debugInputSource = document.getElementById('debug-input-source');
     DOM.debugVelocity = document.getElementById('debug-velocity');
@@ -222,12 +267,19 @@ function initUIEventListeners() {
     if (DOM.hamburgerMenuBtn) DOM.hamburgerMenuBtn.addEventListener('click', () => DOM.hamburgerModal?.classList.remove('hidden'));
     if (DOM.menuCloseBtn) DOM.menuCloseBtn.addEventListener('click', () => DOM.hamburgerModal?.classList.add('hidden'));
 
-    if (DOM.onboardingStartBtn) {
-        DOM.onboardingStartBtn.addEventListener('click', () => {
+    if (DOM.calibStartBtn) {
+        DOM.calibStartBtn.addEventListener('click', () => {
             if (AppState.phase !== PHASE.ONBOARDING) return;
-            if (AppState.phaseElapsed < CONFIG.MODAL_UNLOCK_S) return;
-            closeOnboardingModal();
-            enterPhase(phaseAfterOnboarding());
+            if (AppState.calibStage !== CALIB.INTRO) return;
+            startCalibration();
+        });
+    }
+
+    if (DOM.calibRetryBtn) {
+        DOM.calibRetryBtn.addEventListener('click', () => {
+            if (AppState.phase !== PHASE.ONBOARDING) return;
+            if (AppState.calibStage !== CALIB.FAILED) return;
+            startCalibration();
         });
     }
 
@@ -410,13 +462,22 @@ function logSensorState(quality, index) {
     else if (quality.artifact) gate = 'ARTEFATTO';
 
     const idx = (index === null) ? '  n/a' : index.toFixed(3);
-    const pct = (Normalizer.count >= 16) ? AppState.percentile.toFixed(2) : ' --ph';
-    const iqr = Normalizer.relativeIQR();
+    const c = AppState.smoothedInit ? AppState.smoothedIndex.toFixed(3) : ' --';
+
+    // Stato del controllo a estremi (quando calibrato) o della calibrazione in corso.
+    let ctrl;
+    if (AppState.calibValid) {
+        ctrl = `M=${AppState.neutralM.toFixed(3)} lo=${AppState.localMin.toFixed(3)} hi=${AppState.localMax.toFixed(3)}` +
+               ` [${AppState.absMin.toFixed(3)}..${AppState.absMax.toFixed(3)}]`;
+    } else {
+        ctrl = `calib=${AppState.calibStage} peak=${isFinite(AppState.calibPeak) ? AppState.calibPeak.toFixed(3) : '--'}` +
+               ` trough=${isFinite(AppState.calibTrough) ? AppState.calibTrough.toFixed(3) : '--'}`;
+    }
 
     console.log(
-        `[EEG] ${AppState.phase.padEnd(11)} idx=${idx} p=${pct} v=${AppState.eegVelocity >= 0 ? '+' : ''}${AppState.eegVelocity.toFixed(3)}` +
+        `[EEG] ${AppState.phase.padEnd(11)} idx=${idx} c=${c} v=${AppState.eegVelocity >= 0 ? '+' : ''}${AppState.eegVelocity.toFixed(3)}` +
         ` | θ=${Bands.theta.toFixed(2)} α=${Bands.alpha.toFixed(2)} β=${Bands.beta.toFixed(2)}` +
-        ` | ring=${Normalizer.count}/${Normalizer.capacity} IQRrel=${iqr.toFixed(3)}` +
+        ` | ${ctrl}` +
         ` | ampiezza=${quality.maxAbsRaw.toFixed(0)}µV gate=${gate}` +
         ` | adc=[${(quality.adcMin || 0).toFixed(0)}..${(quality.adcMax || 0).toFixed(0)}] µ=${(quality.adcMean || 0).toFixed(0)}` +
         ` | ${measuredHz.toFixed(1)}Hz sps=${(quality.sps || 0).toFixed(0)}/256` +
@@ -427,8 +488,6 @@ function logSensorState(quality, index) {
 /* ------------------------------------------------------------------ *
  *  Pipeline adattiva
  * ------------------------------------------------------------------ */
-
-let calibWindowBuffer = [];
 
 function processAdaptiveIndex(brainData) {
     const quality = brainData.quality || { artifact: false, contactOk: true, maxAbsRaw: 0 };
@@ -442,7 +501,8 @@ function processAdaptiveIndex(brainData) {
     AppState.isGated = quality.artifact || !quality.contactOk;
     logSensorState(quality, index);
 
-    // Gating qualità contatto: meglio uno zoom fermo che uno impazzito.
+    // Gating qualità contatto: meglio uno zoom fermo che uno impazzito. Durante la
+    // calibrazione questo mette anche in pausa il conteggio (vedi updateOnboardingModal).
     if (!quality.contactOk) {
         AppState.eegVelocity = 0.0;
         AppState.gatedWindows++;
@@ -464,77 +524,100 @@ function processAdaptiveIndex(brainData) {
     AppState.gatedWindows = 0;
     if (index === null) return;
 
-    // Durante ONBOARDING si scarta il transitorio iniziale di reazione allo stimolo.
-    // Oltre quello si distinguono due cose:
-    //  - la SEMINA (mediana/MAD) usa solo la finestra stretta [start, end], che esclude
-    //    anche la zona del gesto di chiusura (saccade verso il pulsante, blink);
-    //  - il RING percentile continua a riempirsi per tutta la durata della modale,
-    //    perché la modale può restare aperta molto più a lungo del minimo e servono
-    //    ~69 campioni per un percentile stabile. Le finestre sporche del gesto di
-    //    chiusura sono già gestite dal gating relativo degli artefatti.
+    // Denoise EMA sull'indice (NON una normalizzazione a finestra): riduce solo il
+    // rumore finestra-a-finestra del Pope ratio. È la stessa `c` usata dal quadratino
+    // in calibrazione e dalla legge di controllo a estremi in interazione.
+    const c = updateSmoothedIndex(index);
+
     if (AppState.phase === PHASE.ONBOARDING) {
-        if (AppState.phaseElapsed < CONFIG.CALIB_START_S) return;
-        const end = CONFIG.MODAL_UNLOCK_S - CONFIG.CALIB_END_OFFSET_S;
-        if (AppState.phaseElapsed <= end) calibWindowBuffer.push(index);
+        updateCalibrationSample(c);   // registra estremi + posizione del quadratino
+        return;                       // in ONBOARDING lo zoom resta fermo (autorità = 0)
     }
 
-    // Il percentile si calcola PRIMA di inserire il campione corrente: altrimenti il
-    // campione conterebbe sé stesso e p non potrebbe mai valere 0.
-    AppState.eegVelocity = computeAdaptiveVelocity(index);
-
-    // Il ring buffer percentile si riempie già da ONBOARDING (finestra pulita),
-    // così alla chiusura della modale il sistema è già reattivo.
-    Normalizer.push(index);
+    // Interazione: velocità dallo scostamento della concentrazione rispetto agli
+    // estremi (assoluti dalla calibrazione + banda locale di isteresi).
+    AppState.eegVelocity = computeExtremaVelocity(c, 1 / controlRateHz());
 }
 
-function computeAdaptiveVelocity(index) {
-    // Serve un minimo di storia prima di dare autorità al percentile.
-    if (Normalizer.count < 16) return 0.0;
-
-    // Dispersion guard: buffer troppo piatto -> il percentile diventa nervoso
-    // su micro-variazioni prive di significato. Meglio congelare.
-    const relIQR = Normalizer.relativeIQR();
-    if (relIQR < CONFIG.IQR_MIN_REL) {
-        AppState.percentile = 0.5;
-        return smoothVelocity(0.0);
-    }
-
-    const p = Normalizer.percentileOf(index);
-    AppState.percentile = p;
-
-    let target;
-    if (p >= CONFIG.P_LOW && p <= CONFIG.P_HIGH) {
-        target = 0.0;                                                     // DEAD ZONE -> hold
-    } else if (p > CONFIG.P_HIGH) {
-        target = CONFIG.ZOOM_GAIN * (p - CONFIG.P_HIGH) / (1 - CONFIG.P_HIGH);
+/** EMA di denoise sull'indice Pope; inizializza al primo campione (niente transitorio). */
+function updateSmoothedIndex(index) {
+    if (!AppState.smoothedInit) {
+        AppState.smoothedIndex = index;
+        AppState.smoothedInit = true;
     } else {
-        target = -CONFIG.ZOOM_GAIN * (CONFIG.P_LOW - p) / CONFIG.P_LOW;
+        AppState.smoothedIndex += (index - AppState.smoothedIndex) * CONFIG.CALIB_INDEX_EMA;
     }
-
-    target = Math.max(-1.0, Math.min(1.0, target));
-    return smoothVelocity(target);
+    return AppState.smoothedIndex;
 }
 
-function smoothVelocity(target) {
-    const a = CONFIG.VEL_SMOOTHING;
-    return AppState.eegVelocity + (target - AppState.eegVelocity) * a;
+/* ------------------------------------------------------------------ *
+ *  Legge di controllo a estremi (post-calibrazione, niente moving-average)
+ * ------------------------------------------------------------------ */
+
+/**
+ * Velocità di zoom dalla concentrazione `c` relativa agli estremi.
+ * - Neutro M = media dei due estremi assoluti: sopra = concentrazione (zoom in),
+ *   sotto = distrazione (zoom out).
+ * - Una banda LOCALE di isteresi (localMin, localMax) che segue lentamente il segnale
+ *   rende il controllo fasico: la velocità va a 0 appena `c` scende sotto il massimo
+ *   locale (ferma lo zoom in) e diventa negativa sotto il minimo locale (zoom out).
+ * - Gli estremi ASSOLUTI (dalla calibrazione) delimitano la banda e definiscono la
+ *   saturazione: piena velocità al `CALIB_CONC_FRACTION` del tragitto M->estremo.
+ */
+function computeExtremaVelocity(c, dt) {
+    if (!AppState.calibValid) return 0.0;
+
+    const absMax = AppState.absMax, absMin = AppState.absMin, M = AppState.neutralM;
+    const span = absMax - absMin;
+    if (span <= 0) return 0.0;
+
+    // Gli estremi locali decadono verso il segnale a LOCAL_DECAY frazioni di span/s.
+    const stepv = CONFIG.LOCAL_DECAY * dt * span;
+    AppState.localMax = Math.min(absMax, Math.max(c, AppState.localMax - stepv));
+    AppState.localMin = Math.max(absMin, Math.min(c, AppState.localMin + stepv));
+
+    const gain = CONFIG.EXTREMA_GAIN;
+    const frac = CONFIG.CALIB_CONC_FRACTION;
+
+    if (c >= AppState.localMax) {
+        const denom = frac * (absMax - M);
+        return (denom > 0) ? gain * clamp01((c - M) / denom) : 0.0;      // zoom in
+    }
+    if (c <= AppState.localMin) {
+        const denom = frac * (M - absMin);
+        return (denom > 0) ? -gain * clamp01((M - c) / denom) : 0.0;     // zoom out
+    }
+    return 0.0;                                                          // hold
 }
 
-function finalizeCalibration() {
-    if (calibWindowBuffer.length >= CONFIG.CALIB_MIN_SAMPLES) {
-        const med = median(calibWindowBuffer);
-        const mad = medianAbsoluteDeviation(calibWindowBuffer, med);
-        Normalizer.seed(med, mad);
-        AppState.seeded = true;
-        console.log(`[BCI] Semina calibrazione: mediana=${med.toFixed(3)} MAD=${mad.toFixed(3)} ` +
-                    `(${calibWindowBuffer.length} campioni, finestra ` +
-                    `[${CONFIG.CALIB_START_S}, ${(CONFIG.MODAL_UNLOCK_S - CONFIG.CALIB_END_OFFSET_S)}] s)`);
+/* ------------------------------------------------------------------ *
+ *  Registrazione dei campioni durante la calibrazione attiva
+ * ------------------------------------------------------------------ */
+
+/**
+ * Aggiorna gli estremi (run min/max per il display, picco/minimo per gli assoluti)
+ * e l'altezza-target del quadratino. Chiamata sia dal flusso EEG (BCI) sia dal
+ * percorso rotella (SIMULATION). Lo scarto iniziale di CALIB_LEADIN_S evita di
+ * registrare il transitorio di reazione al prompt.
+ */
+function updateCalibrationSample(c) {
+    const stage = AppState.calibStage;
+    if (stage !== CALIB.CONCENTRATE && stage !== CALIB.RELAX) return;
+
+    // Il display si auto-scala sul range visto nella fase, così il binario resta
+    // leggibile anche prima di conoscere gli estremi assoluti.
+    if (c < AppState.calibRunMin) AppState.calibRunMin = c;
+    if (c > AppState.calibRunMax) AppState.calibRunMax = c;
+    const lo = AppState.calibRunMin, hi = AppState.calibRunMax;
+    AppState.calibDisplayTarget = (hi > lo) ? clamp01((c - lo) / (hi - lo)) : 0.5;
+
+    // Gli estremi ASSOLUTI si registrano solo dopo il lead-in.
+    if (AppState.calibStageElapsed < CONFIG.CALIB_LEADIN_S) return;
+    if (stage === CALIB.CONCENTRATE) {
+        if (c > AppState.calibPeak) AppState.calibPeak = c;
     } else {
-        AppState.seeded = false;
-        console.warn(`[BCI] Semina insufficiente (${calibWindowBuffer.length} campioni): ` +
-                     `il percentile prenderà autorità appena il ring buffer si riempie.`);
+        if (c < AppState.calibTrough) AppState.calibTrough = c;
     }
-    calibWindowBuffer.length = 0;
 }
 
 /* ------------------------------------------------------------------ *
@@ -547,9 +630,8 @@ function phaseAfterOnboarding() {
 }
 
 function enterPhase(phase) {
-    if (AppState.phase === PHASE.ONBOARDING && phase !== PHASE.ONBOARDING) {
-        finalizeCalibration();
-    }
+    // La calibrazione attiva finalizza da sé (finalizeActiveCalibration); qui non
+    // c'è più la semina passiva agganciata all'uscita da ONBOARDING.
     AppState.phase = phase;
     AppState.phaseElapsed = 0.0;
     console.log(`[FSM] -> ${phase} (t=${AppState.sessionElapsed.toFixed(1)}s)`);
@@ -563,8 +645,8 @@ function updatePhase(dt) {
 
     switch (AppState.phase) {
         case PHASE.ONBOARDING:
-            // Avanza solo alla chiusura della modale (gesto esplicito dell'utente).
-            updateOnboardingModal();
+            // La scheda di calibrazione guida l'avanzamento (concentrate/relax/done).
+            updateOnboardingModal(dt);
             break;
         case PHASE.HOOK:
             if (AppState.phaseElapsed >= CONFIG.PHASE_HOOK_S) enterPhase(PHASE.HANDOVER);
@@ -619,8 +701,8 @@ function applyHoldSelect(velocity, dt) {
     const nearest = Math.round(AppState.targetFocus / step) * step;
 
     // Le soglie sono relative alla velocità massima che l'input può produrre:
-    // in BCI il mapping percentile satura a ZOOM_GAIN, con la rotella a 1.0.
-    const maxInput = (AppState.inputMode === "SIMULATION") ? 1.0 : CONFIG.ZOOM_GAIN;
+    // in BCI il controllo a estremi satura a EXTREMA_GAIN, con la rotella a 1.0.
+    const maxInput = (AppState.inputMode === "SIMULATION") ? 1.0 : CONFIG.EXTREMA_GAIN;
     const enterHold = CONFIG.ENTER_HOLD_FRAC * maxInput;
     const snapThreshold = CONFIG.SNAP_VEL_FRAC * maxInput;
 
@@ -660,33 +742,160 @@ function applyHoldSelect(velocity, dt) {
 }
 
 /* ------------------------------------------------------------------ *
- *  Modale di onboarding
+ *  Scheda di calibrazione attiva (modale)
  * ------------------------------------------------------------------ */
+
+const CALIB_RAIL_H = 300;   // deve combaciare con .calib-rail height in index.html
+const CALIB_SQUARE_H = 40;  // .calib-square
+
+/** Mostra uno dei tre stage della modale (intro / active / done). */
+function showCalibStage(which) {
+    DOM.calibIntro?.classList.toggle('hidden', which !== 'intro');
+    DOM.calibActive?.classList.toggle('hidden', which !== 'active');
+    DOM.calibDone?.classList.toggle('hidden', which !== 'done');
+}
 
 function openOnboardingModal() {
     if (!DOM.onboardingModal) return;
     DOM.onboardingModal.classList.remove('hidden');
-    if (DOM.onboardingStartBtn) {
-        DOM.onboardingStartBtn.disabled = true;
-        DOM.onboardingStartBtn.className = "w-full py-3 bg-slate-800 text-slate-500 font-semibold rounded-lg cursor-not-allowed transition-all";
-    }
+    AppState.calibStage = CALIB.INTRO;
+    showCalibStage('intro');
 }
 
 function closeOnboardingModal() {
     DOM.onboardingModal?.classList.add('hidden');
 }
 
-function updateOnboardingModal() {
-    if (!DOM.onboardingStartBtn) return;
-    const remaining = CONFIG.MODAL_UNLOCK_S - AppState.phaseElapsed;
+/** INTRO -> CONCENTRATE: azzera gli accumulatori e avvia la prima fase. */
+function startCalibration() {
+    AppState.calibPeak = -Infinity;
+    AppState.calibTrough = Infinity;
+    AppState.smoothedInit = false;
+    AppState.calibValid = false;
+    AppState.calibDisplayPos = 0.0;
+    AppState.calibDisplayTarget = 0.5;
+    showCalibStage('active');
+    enterCalibStage(CALIB.CONCENTRATE);
+    console.log('[CALIB] avvio: fase CONCENTRATE');
+}
 
-    if (remaining > 0) {
-        DOM.onboardingStartBtn.innerText = `Attendi... ${Math.ceil(remaining)}s`;
-    } else if (DOM.onboardingStartBtn.disabled) {
-        DOM.onboardingStartBtn.disabled = false;
-        DOM.onboardingStartBtn.innerText = "Inizia";
-        DOM.onboardingStartBtn.className = "w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-lg transition-all";
+/** Entra in una fase attiva (CONCENTRATE/RELAX): reset run min/max e prompt/obiettivo. */
+function enterCalibStage(stage) {
+    AppState.calibStage = stage;
+    AppState.calibStageElapsed = 0.0;
+    AppState.calibRunMin = Infinity;
+    AppState.calibRunMax = -Infinity;
+
+    const concentrate = (stage === CALIB.CONCENTRATE);
+    if (DOM.calibTitle) DOM.calibTitle.innerText = concentrate ? "Concentrazione" : "Rilassamento";
+    if (DOM.calibPrompt) {
+        DOM.calibPrompt.innerText = concentrate
+            ? "Concentrati per spingere il quadratino verso l'obiettivo in alto."
+            : "Ora rilassati e lascia scendere il quadratino verso il basso.";
     }
+    // Zona-obiettivo in alto per la concentrazione, in basso per il rilassamento.
+    if (DOM.calibTarget) DOM.calibTarget.style.top = concentrate ? "8px" : `${CALIB_RAIL_H - 44 - 8}px`;
+}
+
+function updateOnboardingModal(dt) {
+    switch (AppState.calibStage) {
+        case CALIB.INTRO:
+        case CALIB.FAILED:
+            return;   // attende un click (Inizia / Riprova)
+
+        case CALIB.DONE:
+            // Breve conferma, poi auto-avanzo all'interazione.
+            AppState.calibDoneTimer += dt;
+            if (AppState.calibDoneTimer >= CONFIG.CALIB_DONE_HOLD_S) {
+                closeOnboardingModal();
+                enterPhase(phaseAfterOnboarding());
+            }
+            return;
+
+        case CALIB.CONCENTRATE:
+        case CALIB.RELAX:
+            updateActiveCalibStage(dt);
+            return;
+    }
+}
+
+function updateActiveCalibStage(dt) {
+    const stage = AppState.calibStage;
+    const contactOk = (AppState.inputMode === "SIMULATION") ? true : AppState.contactOk;
+
+    // In SIMULATION la rotella pilota un indice sintetico, per testare a secco.
+    if (AppState.inputMode === "SIMULATION") {
+        const c = updateSmoothedIndex((AppState.smoothedInit ? AppState.smoothedIndex : 0) +
+                                      AppState.targetVelocity * 0.05);
+        updateCalibrationSample(c);
+    }
+
+    // Contatto scarso: si mette in pausa il conteggio e si segnala.
+    if (DOM.calibContactHint) DOM.calibContactHint.classList.toggle('hidden', contactOk);
+    DOM.calibSquare?.classList.toggle('paused', !contactOk);
+    if (contactOk) AppState.calibStageElapsed += dt;
+
+    // Posizione del quadratino: EMA a 60 Hz verso l'altezza-target normalizzata.
+    AppState.calibDisplayPos += (AppState.calibDisplayTarget - AppState.calibDisplayPos) * CONFIG.CALIB_DISPLAY_EMA;
+    const pos = clamp01(AppState.calibDisplayPos);
+    if (DOM.calibSquare) {
+        DOM.calibSquare.style.bottom = `${pos * (CALIB_RAIL_H - CALIB_SQUARE_H)}px`;
+        const reached = (stage === CALIB.CONCENTRATE) ? (pos > 0.8) : (pos < 0.2);
+        DOM.calibSquare.classList.toggle('reached', reached && contactOk);
+    }
+
+    // Countdown della fase.
+    const dur = (stage === CALIB.CONCENTRATE) ? CONFIG.CALIB_CONCENTRATE_S : CONFIG.CALIB_RELAX_S;
+    if (DOM.calibCountdown) DOM.calibCountdown.innerText = Math.ceil(Math.max(0, dur - AppState.calibStageElapsed));
+
+    if (AppState.calibStageElapsed >= dur) {
+        if (stage === CALIB.CONCENTRATE) {
+            console.log(`[CALIB] CONCENTRATE fine: picco=${isFinite(AppState.calibPeak) ? AppState.calibPeak.toFixed(3) : '--'}`);
+            enterCalibStage(CALIB.RELAX);
+        } else {
+            finalizeActiveCalibration();
+        }
+    }
+}
+
+/** Calcola gli estremi assoluti e valida la calibrazione. */
+function finalizeActiveCalibration() {
+    const peak = AppState.calibPeak, trough = AppState.calibTrough;
+
+    if (!isFinite(peak) || !isFinite(trough)) {
+        return failCalibration("Segnale assente durante la calibrazione.");
+    }
+    const M = (peak + trough) / 2;
+    const span = peak - trough;
+    const minSpan = CONFIG.CALIB_MIN_SPAN_REL * Math.max(1e-6, Math.abs(M));
+    if (span < minSpan) {
+        return failCalibration("Modulazione troppo debole: prova a marcare di più la differenza fra concentrazione e rilassamento.");
+    }
+
+    AppState.absMax = peak;
+    AppState.absMin = trough;
+    AppState.neutralM = M;
+    AppState.localMax = M;   // la banda locale parte dal neutro
+    AppState.localMin = M;
+    AppState.calibValid = true;
+    AppState.calibStage = CALIB.DONE;
+    AppState.calibDoneTimer = 0.0;
+
+    console.log(`[CALIB] OK: absMin=${trough.toFixed(3)} M=${M.toFixed(3)} absMax=${peak.toFixed(3)} span=${span.toFixed(3)}`);
+    showCalibStage('done');
+    if (DOM.calibDoneTitle) DOM.calibDoneTitle.innerText = "Calibrazione completata";
+    if (DOM.calibDoneMsg) DOM.calibDoneMsg.innerText = "Concentrandoti aumenterai lo zoom, rilassandoti tornerai indietro. Buona esplorazione.";
+    DOM.calibRetryBtn?.classList.add('hidden');
+}
+
+function failCalibration(reason) {
+    AppState.calibValid = false;
+    AppState.calibStage = CALIB.FAILED;
+    console.warn(`[CALIB] fallita: ${reason}`);
+    showCalibStage('done');
+    if (DOM.calibDoneTitle) DOM.calibDoneTitle.innerText = "Calibrazione non riuscita";
+    if (DOM.calibDoneMsg) DOM.calibDoneMsg.innerText = reason;
+    DOM.calibRetryBtn?.classList.remove('hidden');
 }
 
 /* ------------------------------------------------------------------ *
@@ -750,10 +959,18 @@ function startSession() {
     AppState.sessionElapsed = 0.0;
     AppState.locked = false;
     AppState.lockTimer = 0.0;
-    AppState.seeded = false;
     AppState.gatedWindows = 0;
+
+    // Reset del controllo a estremi e della calibrazione.
+    AppState.smoothedInit = false;
+    AppState.smoothedIndex = 0.0;
+    AppState.calibValid = false;
+    AppState.calibPeak = -Infinity;
+    AppState.calibTrough = Infinity;
+    AppState.absMax = AppState.absMin = AppState.neutralM = 0.0;
+    AppState.localMax = AppState.localMin = 0.0;
+
     debugLogCounter = 0;
-    calibWindowBuffer.length = 0;
     Normalizer.reset();
     lastRenderedMagnification = -1;
 
@@ -761,7 +978,7 @@ function startSession() {
         AppState.phase = PHASE.ONBOARDING;
         AppState.phaseElapsed = 0.0;
         openOnboardingModal();
-        console.log('[FSM] -> ONBOARDING (calibrazione sotto la modale)');
+        console.log('[FSM] -> ONBOARDING (scheda di calibrazione attiva)');
     } else {
         // Percorso legacy: nessuna FSM, calibrazione a snapshot da 5s.
         AppState.phase = PHASE.INTERACTIVE;
@@ -869,7 +1086,14 @@ function updateHUD(activeIndex, progress) {
         DOM.debugPhase.innerText = AppState.locked ? `${AppState.phase} (HOLD)` : AppState.phase;
     }
     if (DOM.debugPercentile) {
-        DOM.debugPercentile.innerText = AppState.inputMode === "BCI" ? AppState.percentile.toFixed(2) : "--";
+        // Riusa la riga "Percentile" per lo stato del controllo a estremi: c vs neutro M.
+        if (AppState.inputMode !== "BCI") {
+            DOM.debugPercentile.innerText = "--";
+        } else if (AppState.calibValid) {
+            DOM.debugPercentile.innerText = `${AppState.smoothedIndex.toFixed(2)} / ${AppState.neutralM.toFixed(2)}`;
+        } else {
+            DOM.debugPercentile.innerText = "calibrazione…";
+        }
     }
     if (DOM.debugGate) {
         if (!AppState.contactOk) {
