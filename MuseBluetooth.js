@@ -15,7 +15,14 @@ class MuseBluetooth {
 
         this.autoReconnect = true;
         this.reconnectAttempts = 0;
-        this.maxReconnectAttempts = 5;
+        this.maxReconnectAttempts = 8;
+        // Un solo tentativo di riaggancio alla volta: senza questo guard, un evento
+        // gattserverdisconnected che arriva mentre un retry è già in coda (o in corso)
+        // accoda una SECONDA sessione. Due _establishSession concorrenti che chiamano
+        // gatt.connect() sullo stesso device fanno fallire entrambi ("Connection attempt
+        // failed") ed è esattamente il motivo per cui il riaggancio non riusciva mai.
+        this._reconnectPending = false;
+        this._sessionBusy = false;
 
         this.device = null;
         this.server = null;
@@ -142,6 +149,8 @@ class MuseBluetooth {
         this.device = await navigator.bluetooth.requestDevice({ filters: [{ services: [this.SERVICE_UUID] }] });
         this.device.addEventListener('gattserverdisconnected', this._handleDisconnect);
         this.reconnectAttempts = 0;
+        this._reconnectPending = false;
+        this.autoReconnect = true;
         await this._establishSession();
     }
 
@@ -151,7 +160,17 @@ class MuseBluetooth {
      * (il device resta autorizzato finché l'oggetto BluetoothDevice è vivo).
      */
     async _establishSession(){
+        // Reingresso: se una sessione si sta già aprendo, non aprirne una seconda in
+        // parallelo (stomperebbe controlChar/eegChars e farebbe fallire il GATT).
+        if(this._sessionBusy){ throw new Error('sessione già in apertura'); }
+        this._sessionBusy = true;
         try{
+            // Se il device risulta ancora connesso da un drop sporco, chiudi prima:
+            // un gatt.connect() su una sessione fantasma fallisce su Windows/Chrome.
+            if(this.device.gatt && this.device.gatt.connected){
+                try{ this.device.gatt.disconnect(); }catch(e){}
+                await this._sleep(200);
+            }
             this.server = await this.device.gatt.connect();
             const service = await this.server.getPrimaryService(this.SERVICE_UUID);
 
@@ -175,9 +194,13 @@ class MuseBluetooth {
             await this.sendControlCommand('s');
             console.log('[MuseBluetooth] Driver pronto ed ottimizzato.');
         }catch(err){
+            // NON chiamare _handleDisconnect() qui: il chiamante (connect iniziale o il
+            // retry schedulato) gestisce il fallimento una sola volta. Chiamarlo qui
+            // schedulava un secondo riaggancio in parallelo a quello del setTimeout.
             console.error('Connection failed', err);
-            this._handleDisconnect();
             throw err;
+        }finally{
+            this._sessionBusy = false;
         }
     }
 
@@ -194,6 +217,9 @@ class MuseBluetooth {
         if(typeof this.onDisconnectCallback === 'function') this.onDisconnectCallback();
 
         if(!this.autoReconnect || !this.device) return;
+        // Un riaggancio è già in coda o in corso: non accodarne un secondo. È questo
+        // che evita i tentativi sovrapposti che si sabotavano a vicenda.
+        if(this._reconnectPending || this._sessionBusy) return;
         if(this.reconnectAttempts >= this.maxReconnectAttempts){
             console.warn(`[MuseBluetooth] riaggancio esaurito dopo ${this.reconnectAttempts} tentativi`);
             return;
@@ -203,7 +229,9 @@ class MuseBluetooth {
         const delay = Math.min(500 * Math.pow(2, attempt - 1), 4000);   // backoff
         console.warn(`[MuseBluetooth] riaggancio automatico fra ${delay}ms (${attempt}/${this.maxReconnectAttempts})`);
 
+        this._reconnectPending = true;
         setTimeout(async () => {
+            this._reconnectPending = false;
             try{
                 await this._establishSession();
                 this.reconnectAttempts = 0;

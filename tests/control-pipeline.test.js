@@ -130,7 +130,6 @@ check('senza calibrazione -> velocità nulla', vNoCalib === 0, `v=${vNoCalib}`);
 
 // ---------------------------------------------------------------
 console.log('\n[5] Registrazione estremi durante la calibrazione (dopo il lead-in)');
-AppState.inputMode = 'BCI';
 S.startCalibration();   // stage CONCENTRATE, picco=-Inf, minimo=+Inf
 AppState.calibStageElapsed = CONFIG.CALIB_LEADIN_S + 0.1;
 [0.3, 0.5, 0.9, 0.6].forEach(c => S.updateCalibrationSample(c));
@@ -220,7 +219,6 @@ console.log('\n[10] Hold / select: detent + isteresi (soglie relative a EXTREMA_
 AppState.targetFocus = 0.46;
 AppState.locked = false;
 AppState.lockTimer = 0;
-AppState.inputMode = 'BCI';
 const step = 1 / 11;
 const maxInput = CONFIG.EXTREMA_GAIN;
 const enterHold = CONFIG.ENTER_HOLD_FRAC * maxInput;
@@ -250,7 +248,6 @@ check('alla velocità massima il detent è sempre sganciabile', !AppState.locked
 // ---------------------------------------------------------------
 console.log('\n[11] Crossfade di autorità in HANDOVER');
 AppState.phase = PHASE.HANDOVER;
-AppState.inputMode = 'BCI';
 AppState.eegVelocity = 0.0;
 AppState.phaseElapsed = 0;
 const vStart = S.resolveAuthorityVelocity();
