@@ -208,25 +208,29 @@ resto. Così il port si valida contro le attese della suite JS invece che a occh
 3. ~~**Decode + DSP:** 14bit→µV→DC→notch/LP→ring→STFT→Pope index + gating.~~ ✅ fatto
 4. ~~**Controllo:** calibrazione a estremi + velocità + rate-control/detent.~~ ✅ fatto
 5. ~~**Test numerici:** port delle attese dei `.test.js` (62 asserzioni verdi).~~ ✅ fatto
-6. **BLE spike:** WinRT GATT → connessione al Muse, sottoscrizione EEG char, log dei pacchetti
-   grezzi. Verificare `dataType`/`numSamples`/`sps~256` come nei log JS. ← **prossimo passo**
-7. **Confronto sul campo:** stessi pacchetti → stesso indice fra JS e nativo (utile un dump da
-   rigiocare offline, vedi §8).
-8. **Render:** crossfade 12 texture .webp, HUD ImGui con gli stessi campi del pannello JS.
-   Da qui servono vcpkg e le dipendenze.
-9. **Thread split:** spostare BLE su thread 1, DSP su thread 2 con i ring lock-free.
-10. **Packaging:** `.exe` + `assets/`; runtime static-link per portabilità.
+6. ~~**BLE:** WinRT GATT, sequenza di avvio, notifiche, riaggancio.~~ ✅ fatto
+7. ~~**Render:** crossfade 12 immagini + HUD + scheda di calibrazione.~~ ✅ fatto —
+   **non** con SDL2/ImGui/libwebp: vedi §8, si è rivelato tutto superfluo.
+8. ~~**Thread split:** BLE / DSP / render con ring SPSC e double buffer.~~ ✅ fatto
+9. ~~**Packaging:** `.exe` + `assets/`, CRT statico.~~ ✅ fatto (`package.bat`)
+10. **Confronto sul campo:** stessi pacchetti → stesso indice fra JS e nativo, con `mz_probe.exe`.
+    ← **unico passo rimasto, richiede la Muse accesa**
 
 ---
 
-## 8. Questioni aperte da decidere al kickoff
+## 8. Questioni aperte — come sono state risolte
 
-- **Render backend:** SDL2+OpenGL (semplice) vs bgfx (più portabile/moderno). Default: SDL2+GL.
-- **Asset .webp:** decodifica a runtime con `libwebp` vs pre-conversione a PNG (`stb_image`).
-- **Test:** portare i test numerici (come i `.test.js`) o validare per confronto coi log JS?
-- **HSI reale del Muse:** implementare la characteristic dedicata o restare sul proxy std?
-- **Registrazione/replay pacchetti:** utile un dump BLE da rigiocare offline per sviluppare il
-  DSP senza indossare la cuffia ogni volta.
+- **Render backend:** ~~SDL2+OpenGL vs bgfx~~ → **Direct2D**. Il carico è due quad texturati in
+  crossfade: uno stack GL completo era sovradimensionato quanto la GPU per il DSP (§0). Con
+  Win32+D2D+DirectWrite il progetto resta a **zero dipendenze esterne** e vcpkg non serve.
+- **Asset .webp:** ~~libwebp vs pre-conversione~~ → **WIC li decodifica nativamente**
+  (verificato). Fallback automatico a `.png` per le macchine senza il codec.
+- **Test:** portati come test numerici nativi (62 asserzioni) che rispecchiano le attese dei
+  `.test.js`. Il port si valida contro la pipeline JS, non contro sé stesso.
+- **HSI reale del Muse:** ancora sul proxy basato sulla deviazione standard, come in JS.
+  Aperta.
+- **Registrazione/replay pacchetti:** ancora aperta. Resta l'idea giusta per lavorare sul DSP
+  senza indossare la fascia ogni volta; `mz_probe.exe` è il punto naturale dove innestarla.
 
 ---
 

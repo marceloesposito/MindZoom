@@ -1,4 +1,6 @@
 build/
+build-release/
+dist/
 *.obj
 *.pdb
 *.ilk

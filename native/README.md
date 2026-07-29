@@ -1,62 +1,96 @@
 # Mind Zoom — port nativo C++
 
-Stato del port. Il brief architetturale completo (spec BLE/DSP/controllo estratta 1:1 dal JS)
-resta in [`PHASE2-KICKOFF.md`](PHASE2-KICKOFF.md); qui c'è solo cosa è fatto e come si compila.
+Applicazione Windows nativa: `MindZoom.exe` + cartella `assets/`, nessun installer, nessun
+runtime da installare. Il brief architetturale con la spec estratta dal JS resta in
+[`PHASE2-KICKOFF.md`](PHASE2-KICKOFF.md).
 
-## Compilare
+## Uso
 
 ```bat
-native\build.bat
+native\build.bat      REM configura, compila, lancia i test
+native\package.bat    REM produce dist\MindZoom\ pronto da copiare altrove
 ```
 
-Configura con CMake, compila e lancia i test. Non serve il *Developer Command Prompt*:
-lo script chiama `vcvars64.bat` da sé.
+Eseguibili prodotti:
 
-## Toolchain (verificata su questa macchina)
-
-Il brief ipotizzava Visual Studio 2022; l'installazione reale è più recente e va bene lo stesso:
-
-| Componente | Trovato |
+| Binario | A cosa serve |
 |---|---|
-| Compilatore | MSVC 14.50.35717 (`cl` 19.50) — VS Build Tools 18 |
-| Windows SDK | 10.0.26100.0 |
-| C++/WinRT | presente nell'SDK (`cppwinrt/winrt/base.h`) — serve al BLE |
-| CMake | 4.2.3 (incluso nei Build Tools) |
-| Generatore | Ninja |
+| `MindZoom.exe` | l'esperienza completa |
+| `MindZoom.exe --selftest` | verifica headless della catena grafica, esito nel codice d'uscita |
+| `mz_probe.exe` | sonda da console: connette il Muse e stampa la diagnostica del DSP |
+| `mz_tests.exe` | 62 test numerici del core |
 
-Nessuna dipendenza esterna finora: **vcpkg non serve ancora**. Servirà per il rendering
-(SDL2, Dear ImGui, libwebp) e non prima.
+Comandi nell'app: **INVIO** avvia la calibrazione (e riprova se fallisce), **H** mostra o
+nasconde il pannello diagnostico, **ESC** esce.
 
-## Cosa è fatto
+## Architettura
 
-Il core **deterministico** della pipeline: tutto ciò che trasforma campioni in una velocità di
-zoom, cioè la parte che si può verificare numericamente senza hardware né finestra.
+Tre thread, comunicazione senza lock:
+
+```
+[1: BLE]     GATT WinRT -> decodifica 14 bit -> ring SPSC lock-free
+                                                     |
+[2: DSP]     STFT scorrevole -> Pope -> gating -> calibrazione / velocita'
+                              -> double buffer atomico
+                                                     |
+[3: Render]  vsync -> rate control -> crossfade Direct2D + HUD
+```
+
+Il thread di render non attende mai il segnale: legge l'ultimo stato completo pubblicato. Il
+callback GATT non alloca e non blocca, altrimenti si perdono pacchetti.
+
+## Dipendenze: nessuna
+
+Tutto viene dal Windows SDK — è stata una scelta, non un caso: il carico grafico è due quad
+texturati in crossfade, per cui Direct2D basta e avanza, e questo elimina SDL2, Dear ImGui,
+libwebp e vcpkg che il brief ipotizzava.
+
+| Serve | Fornito da |
+|---|---|
+| BLE | C++/WinRT (`windowsapp.lib`) |
+| Finestra e rendering | Win32 + Direct2D (`d2d1`) |
+| Testo | DirectWrite (`dwrite`) |
+| Immagini, WebP incluso | WIC (`windowscodecs`) |
+| FFT | implementazione propria, port 1:1 di quella JS |
+
+Toolchain verificata: MSVC 14.50 (VS Build Tools 18), Windows SDK 10.0.26100, CMake 4.2.3, Ninja.
+Il CRT è linkato staticamente: sulla macchina di destinazione **non** serve il redistributable
+di Visual C++. Il pacchetto pesa ~5.5 MB, quasi tutto immagini.
+
+## Struttura
 
 ```
 src/config.hpp              costanti 1:1 da config.js (single source of truth)
-src/dsp/decode.hpp          unpack 14 bit, centratura ADC, conversione µV
-src/dsp/filters.hpp         predittore DC + biquad (notch, passa-basso)
+src/dsp/decode.hpp          unpack 14 bit, centratura ADC, µV
+src/dsp/filters.hpp         predittore DC + biquad notch/passa-basso
 src/dsp/stft.{hpp,cpp}      ring per canale, Hann, FFT radix-2, indice di Pope
-src/dsp/gating.{hpp,cpp}    artefatti (relativo) + proxy di contatto
+src/dsp/gating.{hpp,cpp}    artefatti (soglia relativa) + proxy di contatto
 src/control/calibration.*   calibrazione attiva + legge di controllo a estremi
 src/control/zoom.*          rate control, detent/isteresi/dwell, crossfade
+src/ble/muse.{hpp,cpp}      GATT WinRT, sequenza di avvio, riaggancio
+src/render/renderer.*       Direct2D + DirectWrite + WIC
+src/app/main.cpp            finestra, thread, FSM, disegno della scena
+src/util/spsc_ring.hpp      ring lock-free BLE -> DSP
+src/util/double_buffer.hpp  pubblicazione atomica DSP -> render
 tests/test_main.cpp         62 asserzioni, rispecchiano i .test.js
+tools/muse_probe.cpp        sonda da console
 ```
 
-I test sono la garanzia del port: replicano le attese della suite JS sugli stessi valori, quindi
-il C++ si valida contro la pipeline già tarata sul campo e non contro sé stesso.
+## Verifica
 
-## Cosa manca
+- **62/62** test numerici verdi, compilazione pulita con `/W4 /permissive-`.
+- I test replicano le attese di `control-pipeline.test.js` e `stft.test.js` sugli stessi valori:
+  il port si valida contro la pipeline JS già tarata sul campo, non contro sé stesso.
+- `--selftest` esercita Direct2D, WIC (12 immagini) e DirectWrite disegnando un frame completo
+  su finestra mai mostrata. `package.bat` lo esegue e non produce il pacchetto se fallisce.
 
-In ordine di dipendenza:
+**Quello che i test non coprono:** il percorso BLE. Serve la Muse accesa. `mz_probe.exe` esiste
+per questo — stampa indice, bande e diagnostica dei pacchetti nello stesso formato dei log JS,
+così i due porti si confrontano sullo stesso segnale. Da fare alla prima sessione con la fascia
+carica, insieme alla taratura di `LOCAL_DECAY`.
 
-1. **BLE (WinRT GATT)** — connessione, sequenza di avvio, notifiche, riaggancio.
-   La spec è §3 del brief; da recepire anche il fix del riaggancio singolo (commit `45d19bb`):
-   un solo tentativo alla volta, mai due `connect()` concorrenti.
-2. **Rendering** — SDL2 + OpenGL, 12 texture `.webp` in crossfade, HUD ImGui. Serve vcpkg.
-3. **Thread split** — BLE su thread 1, DSP su thread 2, render sul main; ring SPSC lock-free
-   fra BLE e DSP, double-buffer atomico fra DSP e render.
-4. **Packaging** — `.exe` + `assets/`, runtime static-linked.
+## Portabilità del WebP
 
-Il core attuale è già thread-agnostico: nessuno stato globale, nessuna allocazione nel percorso
-caldo, quindi lo split è un lavoro di cablaggio e non una riscrittura.
+WIC decodifica il WebP tramite un componente separato, preinstallato su Windows 11 ma non
+garantito su Windows 10. Il caricatore prova prima `N.webp` e poi `N.png`: se la macchina di
+destinazione non ha il codec, basta affiancare gli stessi file convertiti in PNG.
