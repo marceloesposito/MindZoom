@@ -26,8 +26,11 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <deque>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 using namespace mz;
 
@@ -58,6 +61,24 @@ struct Shared {
     std::atomic<bool>          running{true};
     std::atomic<std::uint64_t> dropped{0};
     std::atomic<bool>          hudVisible{true};
+
+    // Ultimi messaggi del BLE, mostrati nel pannello diagnostico: senza, quando
+    // la fascia cade non si capisce il motivo. Frequenza bassissima, quindi un
+    // mutex va benissimo e non tocca il percorso caldo.
+    std::mutex                bleLogMutex;
+    std::deque<std::wstring>  bleLog;
+
+    void pushBleLog(const std::string& msg) {
+        std::wstring w(msg.begin(), msg.end());
+        std::lock_guard<std::mutex> lock(bleLogMutex);
+        bleLog.push_back(std::move(w));
+        while (bleLog.size() > 4) bleLog.pop_front();
+    }
+
+    std::vector<std::wstring> bleLogSnapshot() {
+        std::lock_guard<std::mutex> lock(bleLogMutex);
+        return {bleLog.begin(), bleLog.end()};
+    }
 };
 
 Shared g;
@@ -91,6 +112,10 @@ void dspThread() {
     double doneHold     = 0.0;
     double velocity     = 0.0;
     int    gatedWindows = 0;
+    bool   contactOk    = false;   // finché non arriva un frame non si sa
+
+    auto lastTick    = std::chrono::steady_clock::now();
+    auto lastFrameAt = lastTick;
 
     app::ControlState st;
     st.phase = static_cast<int>(phase);
@@ -110,17 +135,20 @@ void dspThread() {
         ble::Sample s;
         bool consumed = false;
 
+        // --- consumo dei campioni: tutto ciò che dipende dal SEGNALE ---
         while (g.ring.pop(s)) {
             consumed = true;
             if (!stft.pushSample(s.uv, s.adc)) continue;
 
             ++st.frames;
-            phaseElapsed += dt;
+            lastFrameAt = std::chrono::steady_clock::now();
 
             const auto quality = gating.assess(stft);
             dsp::Bands bands;
             const auto index = dsp::popeIndex(stft, &bands);
             if (index) st.rawIndex = *index;
+
+            contactOk = quality.contactOk;
 
             // Gating del contatto: meglio uno zoom fermo che uno impazzito.
             if (!quality.contactOk) {
@@ -146,19 +174,41 @@ void dspThread() {
                 }
             }
 
-            // Avanzamento della calibrazione e della fase.
-            if (phase == control::Phase::Onboarding) {
-                calib.tick(dt, quality.contactOk);
+            st.theta = bands.theta; st.alpha = bands.alpha; st.beta = bands.beta;
+            st.maxAbsRaw = quality.maxAbsRaw;
+            st.contactOk = quality.contactOk;
+            st.artifact  = quality.artifact;
+        }
 
-                if (calib.stage() == control::CalibStage::Done) {
-                    doneHold += dt;
-                    if (doneHold >= config::kCalibDoneHoldS) {
-                        phase = config::kEnableHookPhase ? control::Phase::Hook
-                                                         : control::Phase::Interactive;
-                        phaseElapsed = 0.0;
-                    }
+        // --- avanzamento a tempo reale ---
+        // Le fasi NON possono dipendere dall'arrivo dei campioni: senza fascia
+        // collegata l'interfaccia resterebbe congelata sulla schermata iniziale
+        // e il tasto INVIO sembrerebbe non fare nulla.
+        const auto now = std::chrono::steady_clock::now();
+        const double elapsed = std::chrono::duration<double>(now - lastTick).count();
+        lastTick = now;
+
+        // Il segnale è "fresco" se è arrivato un frame di recente: è questo che
+        // distingue una pausa per contatto scarso da una fascia mai connessa.
+        const bool signalFresh =
+            st.frames > 0 && std::chrono::duration<double>(now - lastFrameAt).count() < 1.0;
+
+        if (phase == control::Phase::Onboarding) {
+            // Il conteggio avanza solo con segnale valido: una fascia storta o
+            // assente mette in pausa invece di consumare la calibrazione.
+            calib.tick(elapsed, signalFresh && contactOk);
+
+            if (calib.stage() == control::CalibStage::Done) {
+                doneHold += elapsed;
+                if (doneHold >= config::kCalibDoneHoldS) {
+                    phase = config::kEnableHookPhase ? control::Phase::Hook
+                                                     : control::Phase::Interactive;
+                    phaseElapsed = 0.0;
                 }
-            } else if (phase == control::Phase::Hook && phaseElapsed >= config::kPhaseHookS) {
+            }
+        } else {
+            phaseElapsed += elapsed;
+            if (phase == control::Phase::Hook && phaseElapsed >= config::kPhaseHookS) {
                 phase = control::Phase::Handover;
                 phaseElapsed = 0.0;
             } else if (phase == control::Phase::Handover &&
@@ -166,34 +216,6 @@ void dspThread() {
                 phase = control::Phase::Interactive;
                 phaseElapsed = 0.0;
             }
-
-            st.phase        = static_cast<int>(phase);
-            st.phaseElapsed = phaseElapsed;
-            st.calibStage   = static_cast<int>(calib.stage());
-            st.calibDisplayTarget = calib.displayTarget();
-            st.calibRemaining = (calib.stageDuration() > 0.0)
-                ? (calib.stageDuration() - calib.stageElapsed()) : 0.0;
-            st.calibValid = calib.valid();
-            st.absMin  = calib.absMin();
-            st.absMax  = calib.absMax();
-            st.neutral = calib.neutral();
-            st.localMin = calib.localMin();
-            st.localMax = calib.localMax();
-            st.velocity  = velocity;
-            st.theta = bands.theta; st.alpha = bands.alpha; st.beta = bands.beta;
-            st.maxAbsRaw = quality.maxAbsRaw;
-            st.contactOk = quality.contactOk;
-            st.artifact  = quality.artifact;
-
-            if (calib.stage() == control::CalibStage::Failed) {
-                st.failReason = static_cast<int>(
-                    calib.absMax() == calib.absMin() ? app::FailReason::NoSignal
-                                                     : app::FailReason::WeakModulation);
-            } else {
-                st.failReason = static_cast<int>(app::FailReason::None);
-            }
-
-            g.state.publish(st);
         }
 
         // Watchdog: il flusso BLE può fermarsi senza emettere alcun evento.
@@ -203,6 +225,30 @@ void dspThread() {
         if (stalled) {
             velocity = 0.0;
             g_muse.resumeStreaming();
+        }
+
+        // --- pubblicazione: ogni giro, non solo quando arrivano campioni ---
+        st.phase        = static_cast<int>(phase);
+        st.phaseElapsed = phaseElapsed;
+        st.calibStage   = static_cast<int>(calib.stage());
+        st.calibDisplayTarget = calib.displayTarget();
+        st.calibRemaining = (calib.stageDuration() > 0.0)
+            ? (calib.stageDuration() - calib.stageElapsed()) : 0.0;
+        st.calibValid = calib.valid();
+        st.absMin   = calib.absMin();
+        st.absMax   = calib.absMax();
+        st.neutral  = calib.neutral();
+        st.localMin = calib.localMin();
+        st.localMax = calib.localMax();
+        st.velocity = velocity;
+        st.signalFresh = signalFresh;
+
+        if (calib.stage() == control::CalibStage::Failed) {
+            st.failReason = static_cast<int>(
+                calib.absMax() == calib.absMin() ? app::FailReason::NoSignal
+                                                 : app::FailReason::WeakModulation);
+        } else {
+            st.failReason = static_cast<int>(app::FailReason::None);
         }
 
         st.stalled        = stalled;
@@ -250,6 +296,13 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
         r.drawText(L"INVIO per iniziare",
                    D2D1::RectF(panel.left, panel.bottom - 80, panel.right, panel.bottom - 40),
                    19.0f, kAccent, render::TextAlign::Center, true);
+        if (!st.signalFresh) {
+            r.drawText(L"Nessun dato dalla fascia: puoi iniziare lo stesso,\n"
+                       L"il conteggio partira' quando arriva il segnale.",
+                       D2D1::RectF(panel.left + 24, panel.bottom - 130, panel.right - 24,
+                                   panel.bottom - 85),
+                       14.0f, kWarn);
+        }
         return;
     }
 
@@ -326,7 +379,15 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
                D2D1::RectF(panel.left, rail.bottom + 24, panel.right, rail.bottom + 80), 40.0f,
                kInk, render::TextAlign::Center, true);
 
-    if (!st.contactOk) {
+    // Il conteggio si ferma sia senza fascia sia con contatto scarso: sono due
+    // situazioni diverse e vanno dette in modo diverso, altrimenti sembra che il
+    // programma sia bloccato.
+    if (!st.signalFresh) {
+        r.drawText(L"In attesa del segnale dalla fascia. Il conteggio e' in pausa.",
+                   D2D1::RectF(panel.left + 24, panel.bottom - 60, panel.right - 24,
+                               panel.bottom - 20),
+                   15.0f, kWarn);
+    } else if (!st.contactOk) {
         r.drawText(L"Contatto assente: sistema la fascia. Il conteggio e' in pausa.",
                    D2D1::RectF(panel.left + 24, panel.bottom - 60, panel.right - 24,
                                panel.bottom - 20),
@@ -382,6 +443,14 @@ void drawHud(render::Renderer& r, const app::ControlState& st, const control::Zo
 
     if (cf) {
         line(L"Ingrandimento: " + std::to_wstring(cf->magnification) + L"x", kAccent, 15.0f);
+    }
+
+    // Cronologia del BLE: quando la fascia cade, dice il motivo.
+    const auto logLines = g.bleLogSnapshot();
+    if (!logLines.empty()) {
+        y += 8.0f;
+        line(L"Bluetooth:", {0.45f, 0.48f, 0.55f, 1.0f}, 12.0f);
+        for (const auto& l : logLines) line(L"  " + l, kMuted, 12.0f);
     }
 
     y += 6.0f;
@@ -506,6 +575,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
     g_muse.onSample([](const ble::Sample& s) {
         if (!g.ring.push(s)) g.dropped.fetch_add(1, std::memory_order_relaxed);
     });
+    g_muse.onLog([](const std::string& msg) { g.pushBleLog(msg); });
     g_muse.start();
 
     // Thread 2: DSP.

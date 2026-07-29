@@ -34,8 +34,8 @@ constexpr winrt::guid kControlUuid{
 constexpr winrt::guid kEegUuid{
     0x273e0013, 0x4c4d, 0x454d, {0x96, 0xbe, 0xf0, 0x3b, 0xac, 0x82, 0x13, 0x58}};
 
-constexpr int  kMaxReconnectAttempts = 8;
-constexpr auto kScanTimeout          = std::chrono::seconds(20);
+constexpr int  kMaxBackoffMs = 4000;
+constexpr auto kScanTimeout  = std::chrono::seconds(20);
 
 std::int64_t nowMillis() {
     using namespace std::chrono;
@@ -71,7 +71,12 @@ struct MuseClient::Impl {
     std::condition_variable wake;
     bool                    disconnectedFlag = false;
 
-    BluetoothLEDevice device{nullptr};
+    BluetoothLEDevice  device{nullptr};
+    // Il service e la sessione vanno TENUTI in vita per tutta la connessione.
+    // Lasciandoli scadere come temporanei, Windows considera il link non più
+    // richiesto da nessuno e lo abbatte da solo dopo pochi secondi.
+    GattDeviceService  service{nullptr};
+    GattSession        session{nullptr};
     GattCharacteristic controlChar{nullptr};
     GattCharacteristic eegChar{nullptr};
     event_token        eegToken{};
@@ -165,16 +170,16 @@ void MuseClient::Impl::run() {
             setState(State::Disconnected);
 
             if (!running.load(std::memory_order_acquire)) break;
-            if (++attempt > kMaxReconnectAttempts) {
-                log("riaggancio esaurito dopo " + std::to_string(kMaxReconnectAttempts) +
-                    " tentativi");
-                break;
-            }
 
-            // Stesso backoff del client JS.
-            const int delayMs = std::min(500 * (1 << (attempt - 1)), 4000);
-            log("nuovo tentativo fra " + std::to_string(delayMs) + " ms (" +
-                std::to_string(attempt) + "/" + std::to_string(kMaxReconnectAttempts) + ")");
+            // Si ritenta all'infinito. Un tetto ai tentativi ha senso per uno
+            // strumento da riga di comando, non per un'esperienza che deve
+            // restare in piedi: una caduta momentanea non può chiudere la
+            // sessione per sempre. Chi vuole smettere chiude l'applicazione.
+            ++attempt;
+            const int shift   = std::min(attempt - 1, 4);   // evita l'overflow
+            const int delayMs = std::min(500 * (1 << shift), kMaxBackoffMs);
+            log("nuovo tentativo fra " + std::to_string(delayMs) + " ms (tentativo " +
+                std::to_string(attempt) + ")");
 
             std::unique_lock<std::mutex> lock(wakeMutex);
             wake.wait_for(lock, std::chrono::milliseconds(delayMs),
@@ -280,7 +285,18 @@ bool MuseClient::Impl::connectOnce() {
         log("service Muse non trovato sul device");
         return false;
     }
-    const auto service = services.Services().GetAt(0);
+    service = services.Services().GetAt(0);
+
+    // MaintainConnection dice a Windows di tenere aperto il link finché la
+    // sessione è viva. Senza, il sistema chiude la connessione appena la
+    // ritiene inattiva e si vedono scollegamenti a ripetizione senza causa
+    // apparente: è il comportamento predefinito, non un guasto della fascia.
+    try {
+        session = service.Session();
+        if (session) session.MaintainConnection(true);
+    } catch (...) {
+        log("impossibile richiedere il mantenimento della connessione");
+    }
 
     const auto controls = service.GetCharacteristicsForUuidAsync(kControlUuid).get();
     if (controls.Status() != GattCommunicationStatus::Success ||
@@ -337,7 +353,9 @@ void MuseClient::Impl::teardown() {
     try {
         if (eegChar && eegToken.value) eegChar.ValueChanged(eegToken);
         if (device && statusToken.value) device.ConnectionStatusChanged(statusToken);
-        if (device) device.Close();
+        if (session) { session.MaintainConnection(false); session.Close(); }
+        if (service) service.Close();
+        if (device)  device.Close();
     } catch (...) {
         // In chiusura un fallimento non ha rimedio utile: si prosegue.
     }
@@ -345,6 +363,8 @@ void MuseClient::Impl::teardown() {
     statusToken = {};
     eegChar     = nullptr;
     controlChar = nullptr;
+    session     = nullptr;
+    service     = nullptr;
     device      = nullptr;
 }
 

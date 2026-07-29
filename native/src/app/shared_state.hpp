@@ -45,6 +45,10 @@ struct ControlState {
     double maxAbsRaw = 0.0;
     bool   contactOk = true;
     bool   artifact  = false;
+    // Un frame è arrivato di recente. Distingue "fascia storta" (contatto scarso
+    // ma dati presenti) da "fascia assente" (nessun dato): sono due messaggi
+    // diversi da dare all'utente.
+    bool   signalFresh = false;
 
     // --- flusso ---
     int           bleState      = 0;   // ble::State
