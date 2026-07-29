@@ -75,12 +75,13 @@ bool Renderer::loadSprites(const std::wstring& dir, int count) {
     sources_.reserve(static_cast<std::size_t>(count));
 
     for (int i = 1; i <= count; ++i) {
-        // Il WebP lo decodifica WIC, ma il codec è un componente separato:
-        // presente d'ufficio su Windows 11, non garantito su 10. Si ripiega sul
-        // PNG con lo stesso nome, così basta affiancare i file convertiti.
+        // Ordine di preferenza: JPEG per primo perché è l'unico che ogni Windows
+        // sa decodificare senza componenti aggiuntivi (il codec WebP di WIC c'è
+        // d'ufficio su 11 ma non su 10). WebP e PNG restano accettati, comodi in
+        // sviluppo dove si lavora direttamente sugli asset del progetto web.
         winrt::com_ptr<IWICBitmapDecoder> decoder;
         bool opened = false;
-        for (const wchar_t* ext : {L".webp", L".png"}) {
+        for (const wchar_t* ext : {L".jpg", L".webp", L".png"}) {
             const std::wstring path = dir + L"\\" + std::to_wstring(i) + ext;
             decoder = nullptr;
             if (SUCCEEDED(wic_->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,

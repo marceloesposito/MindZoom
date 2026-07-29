@@ -29,7 +29,14 @@ if exist "%DIST%" rmdir /s /q "%DIST%"
 mkdir "%DIST%" 2>nul
 
 copy /y build-release\MindZoom.exe "%DIST%\" >nul
-xcopy /e /i /y /q build-release\assets "%DIST%\assets" >nul
+
+echo.
+echo [package] conversione degli asset in JPEG (niente codec WebP richiesto)...
+build-release\mz_convert.exe "..\images" "%DIST%\assets" 12
+if errorlevel 1 (
+    echo [package] conversione FALLITA: pacchetto non prodotto.
+    exit /b 1
+)
 
 echo.
 echo [package] pronto in %CD%\%DIST%

@@ -89,8 +89,23 @@ per questo — stampa indice, bande e diagnostica dei pacchetti nello stesso for
 così i due porti si confrontano sullo stesso segnale. Da fare alla prima sessione con la fascia
 carica, insieme alla taratura di `LOCAL_DECAY`.
 
-## Portabilità del WebP
+## Distribuzione su un altro PC
 
-WIC decodifica il WebP tramite un componente separato, preinstallato su Windows 11 ma non
-garantito su Windows 10. Il caricatore prova prima `N.webp` e poi `N.png`: se la macchina di
-destinazione non ha il codec, basta affiancare gli stessi file convertiti in PNG.
+Il pacchetto è una cartella da copiare: nessun installer, nessun runtime da installare.
+
+**Requisiti sulla macchina di destinazione:**
+
+| Serve | Perché | Rischio |
+|---|---|---|
+| Windows 10 (1809+) o 11, **64 bit** | le API BLE di WinRT | build solo x64 |
+| Bluetooth LE | connessione alla Muse | un PC fisso senza BLE non funziona |
+| — | il CRT è statico, Direct2D/WIC sono di sistema | nessuno |
+
+**Il codec WebP non serve.** `package.bat` converte gli asset in JPEG (`mz_convert`), formato
+che ogni Windows decodifica da sempre. Il caricatore accetta `.jpg`, `.webp` e `.png` in
+quest'ordine: in sviluppo si lavora direttamente sui `.webp` del progetto web, la distribuzione
+usa i JPEG. Costa meno spazio dell'originale: pacchetto **3.6 MB** in tutto.
+
+Alla prima esecuzione di un `.exe` non firmato scaricato da internet, Windows mostra l'avviso
+SmartScreen ("Windows ha protetto il PC"): serve *Ulteriori informazioni → Esegui comunque*.
+Si evita solo firmando l'eseguibile con un certificato.

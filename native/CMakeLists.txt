@@ -51,6 +51,11 @@ add_test(NAME core COMMAND mz_tests)
 add_executable(mz_probe tools/muse_probe.cpp)
 target_link_libraries(mz_probe PRIVATE mz_ble)
 
+# Conversione degli asset in JPEG per la distribuzione: toglie la dipendenza dal
+# codec WebP, che su Windows 10 può mancare.
+add_executable(mz_convert tools/convert_assets.cpp)
+target_link_libraries(mz_convert PRIVATE windowscodecs ole32)
+
 # Rendering: Direct2D + DirectWrite + WIC, tutto dal Windows SDK.
 add_library(mz_render STATIC src/render/renderer.cpp)
 target_link_libraries(mz_render PUBLIC mz_core d2d1 dwrite windowscodecs)
