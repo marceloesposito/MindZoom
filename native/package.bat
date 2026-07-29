@@ -38,6 +38,16 @@ if errorlevel 1 (
     exit /b 1
 )
 
+copy /y dist-template\LEGGIMI.txt "%DIST%\" >nul
+
 echo.
-echo [package] pronto in %CD%\%DIST%
+echo [package] creazione dell'archivio...
+if exist dist\MindZoom.zip del /q dist\MindZoom.zip
+powershell -NoProfile -Command ^
+    "Compress-Archive -Path '%DIST%' -DestinationPath 'dist\MindZoom.zip' -Force" || exit /b 1
+
+echo.
+echo [package] pronto:
+echo   cartella: %CD%\%DIST%
+echo   archivio: %CD%\dist\MindZoom.zip
 dir /b "%DIST%"

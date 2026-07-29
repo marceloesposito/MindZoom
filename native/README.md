@@ -8,8 +8,12 @@ runtime da installare. Il brief architetturale con la spec estratta dal JS resta
 
 ```bat
 native\build.bat      REM configura, compila, lancia i test
-native\package.bat    REM produce dist\MindZoom\ pronto da copiare altrove
+native\package.bat    REM produce dist\MindZoom\ e dist\MindZoom.zip (2.8 MB)
 ```
+
+`package.bat` compila in Release, esegue il self-test grafico, converte gli asset in JPEG,
+aggiunge `LEGGIMI.txt` (istruzioni per chi riceve l'app) e crea l'archivio. Se il self-test
+fallisce non produce nulla.
 
 Eseguibili prodotti:
 

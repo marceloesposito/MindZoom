@@ -1,0 +1,83 @@
+MIND ZOOM
+Esplorazione al microscopio elettronico guidata dalle onde cerebrali
+
+
+COS'E'
+------
+Un'esperienza immersiva in cui lo zoom di un microscopio elettronico a scansione
+e' controllato dalla tua concentrazione, letta da una fascia EEG Muse.
+Concentrandoti scendi verso il livello atomico, rilassandoti risali.
+
+
+COSA SERVE
+----------
+- Windows 10 (aggiornato) oppure Windows 11, a 64 bit
+- Bluetooth Low Energy funzionante sul computer
+- Una fascia EEG Muse, carica
+
+Non serve installare nulla: niente runtime, niente librerie aggiuntive.
+
+
+COME SI AVVIA
+-------------
+1. Copia l'intera cartella dove preferisci (Desktop va benissimo).
+   IMPORTANTE: MindZoom.exe e la cartella "assets" devono restare insieme.
+2. Accendi la fascia Muse e indossala.
+3. Doppio clic su MindZoom.exe
+
+Al primo avvio Windows puo' mostrare l'avviso "Windows ha protetto il PC".
+E' normale per un programma non firmato con un certificato commerciale:
+clicca su "Ulteriori informazioni" e poi su "Esegui comunque".
+
+
+COMANDI
+-------
+INVIO   avvia la calibrazione (e la ripete se non riesce)
+H       mostra o nasconde il pannello di diagnostica
+ESC     esci
+
+
+LA CALIBRAZIONE
+---------------
+Serve a misurare i TUOI due estremi personali: non esistono soglie valide per
+tutti, quindi il programma impara i tuoi prima di iniziare.
+
+Sono due fasi da 15 secondi ciascuna.
+
+1. CONCENTRAZIONE - spingi il quadratino verso l'obiettivo in alto.
+   Funziona meglio con un compito mentale vero e impegnativo: contare
+   all'indietro da 300 saltando di 7, per esempio. Non basta "pensare intensamente".
+
+2. RILASSAMENTO - lascia scendere il quadratino.
+   Molla del tutto: respira lentamente, sguardo morbido, mascella rilassata.
+
+Piu' marcata e' la differenza fra le due fasi, meglio funzionera' il controllo
+dello zoom. Se il programma dice che la modulazione e' troppo debole, e' proprio
+questo che sta chiedendo: accentuare il contrasto fra i due stati.
+
+Il conteggio si mette in pausa da solo se il contatto degli elettrodi si perde.
+
+
+SE QUALCOSA NON VA
+------------------
+Il pannello di diagnostica (tasto H) dice sempre a che punto e' il sistema.
+
+"Muse: RICERCA" che non cambia mai
+  La fascia e' spenta, scarica, o gia' collegata a un altro dispositivo.
+  Chiudi eventuali app Muse sul telefono. Tieni il computer vicino alla fascia.
+
+"Segnale: CONTATTO"
+  Gli elettrodi non fanno contatto. Sposta la fascia sulla fronte scostando i
+  capelli, e inumidisci leggermente i due contatti dietro le orecchie.
+
+"Segnale: ARTEFATTO" che compare spesso
+  Movimenti, battito di ciglia frequente o mascella contratta. Stai fermo e
+  rilassa la mandibola: i muscoli del viso disturbano molto la lettura.
+
+Lo zoom non si muove
+  Controlla che la calibrazione sia stata completata: il pannello deve mostrare
+  una "Banda" con due valori, non "calibrazione in corso".
+
+La fascia si scollega dopo poco
+  Quasi sempre e' la batteria in esaurimento. Mettila in carica.
+  Il programma prova comunque a riagganciarsi da solo.
