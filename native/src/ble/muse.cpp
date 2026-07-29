@@ -80,7 +80,18 @@ struct MuseClient::Impl {
     GattCharacteristic controlChar{nullptr};
     GattCharacteristic eegChar{nullptr};
     event_token        eegToken{};
+    event_token        controlToken{};
     event_token        statusToken{};
+
+    // Risposte del Muse sulla characteristic di controllo. Il driver JS attende
+    // una notifica dopo ogni comando: quell'attesa scandisce la sequenza di
+    // avvio, e senza di essa il dispositivo non comincia a trasmettere.
+    std::mutex              ctrlMutex;
+    std::condition_variable ctrlCv;
+    bool                    ctrlReceived = false;
+    std::string             ctrlLast;
+
+    bool awaitControlResponse(int timeoutMs);
 
     void log(const std::string& msg) {
         if (self.onLog_) self.onLog_(msg);
@@ -306,6 +317,37 @@ bool MuseClient::Impl::connectOnce() {
     }
     controlChar = controls.Characteristics().GetAt(0);
 
+    // Le risposte del Muse arrivano qui. Vanno sottoscritte PRIMA di mandare i
+    // comandi, esattamente come fa il driver JS.
+    controlToken = controlChar.ValueChanged(
+        [this](GattCharacteristic const&, GattValueChangedEventArgs const& args) {
+            auto reader = DataReader::FromBuffer(args.CharacteristicValue());
+            std::vector<std::uint8_t> data(reader.UnconsumedBufferLength());
+            if (!data.empty()) reader.ReadBytes(data);
+
+            // Primo byte = lunghezza, il resto è testo.
+            std::string text;
+            for (std::size_t i = 1; i < data.size(); ++i) {
+                const char c = static_cast<char>(data[i]);
+                if (c >= 32 && c < 127) text += c;
+            }
+            {
+                std::lock_guard<std::mutex> lock(ctrlMutex);
+                ctrlLast     = text;
+                ctrlReceived = true;
+            }
+            ctrlCv.notify_all();
+        });
+
+    const auto ctrlNotify =
+        controlChar.WriteClientCharacteristicConfigurationDescriptorAsync(
+                       GattClientCharacteristicConfigurationDescriptorValue::Notify)
+            .get();
+    if (ctrlNotify != GattCommunicationStatus::Success) {
+        log("attivazione delle notifiche di controllo fallita");
+        return false;
+    }
+
     const auto eegs = service.GetCharacteristicsForUuidAsync(kEegUuid).get();
     if (eegs.Status() != GattCommunicationStatus::Success ||
         eegs.Characteristics().Size() == 0) {
@@ -352,6 +394,7 @@ bool MuseClient::Impl::connectOnce() {
 void MuseClient::Impl::teardown() {
     try {
         if (eegChar && eegToken.value) eegChar.ValueChanged(eegToken);
+        if (controlChar && controlToken.value) controlChar.ValueChanged(controlToken);
         if (device && statusToken.value) device.ConnectionStatusChanged(statusToken);
         if (session) { session.MaintainConnection(false); session.Close(); }
         if (service) service.Close();
@@ -359,8 +402,9 @@ void MuseClient::Impl::teardown() {
     } catch (...) {
         // In chiusura un fallimento non ha rimedio utile: si prosegue.
     }
-    eegToken    = {};
-    statusToken = {};
+    eegToken     = {};
+    controlToken = {};
+    statusToken  = {};
     eegChar     = nullptr;
     controlChar = nullptr;
     session     = nullptr;
@@ -368,31 +412,72 @@ void MuseClient::Impl::teardown() {
     device      = nullptr;
 }
 
+bool MuseClient::Impl::awaitControlResponse(int timeoutMs) {
+    std::unique_lock<std::mutex> lock(ctrlMutex);
+    ctrlReceived = false;
+    return ctrlCv.wait_for(lock, std::chrono::milliseconds(timeoutMs),
+                           [this] { return ctrlReceived; });
+}
+
 bool MuseClient::Impl::sendCommand(std::string_view cmd) {
     if (!controlChar) return false;
-    try {
+
+    const auto build = [&] {
         // Formato: [len][ascii...] con ascii = cmd + '\n' e len = lunghezza ascii.
         DataWriter writer;
         writer.WriteByte(static_cast<std::uint8_t>(cmd.size() + 1));
         for (const char c : cmd) writer.WriteByte(static_cast<std::uint8_t>(c));
         writer.WriteByte(static_cast<std::uint8_t>('\n'));
+        return writer.DetachBuffer();
+    };
 
-        const auto status =
-            controlChar.WriteValueAsync(writer.DetachBuffer(),
-                                        GattWriteOption::WriteWithoutResponse).get();
-        return status == GattCommunicationStatus::Success;
+    {
+        std::lock_guard<std::mutex> lock(ctrlMutex);
+        ctrlReceived = false;
+    }
+
+    auto status = GattCommunicationStatus::Unreachable;
+    try {
+        status = controlChar.WriteValueAsync(build(),
+                                             GattWriteOption::WriteWithoutResponse).get();
     } catch (...) {
+        status = GattCommunicationStatus::Unreachable;
+    }
+
+    // Non tutte le implementazioni accettano la scrittura senza risposta: il
+    // driver JS ripiega sulla scrittura normale, e qui serve lo stesso.
+    if (status != GattCommunicationStatus::Success) {
+        try {
+            status = controlChar.WriteValueAsync(build(),
+                                                 GattWriteOption::WriteWithResponse).get();
+        } catch (...) {
+            status = GattCommunicationStatus::Unreachable;
+        }
+    }
+
+    if (status != GattCommunicationStatus::Success) {
+        log("comando '" + std::string(cmd) + "' non inviato");
         return false;
     }
+
+    // L'attesa della risposta scandisce la sequenza: senza, i comandi partono
+    // troppo ravvicinati e il dispositivo non avvia lo streaming.
+    awaitControlResponse(400);
+    return true;
 }
 
 void MuseClient::Impl::handlePacket(const std::vector<std::uint8_t>& data) {
+    // Contato prima di ogni filtro: se resta a zero le notifiche non arrivano
+    // affatto, il che è un problema diverso dal formato non riconosciuto.
+    self.rawPackets_.fetch_add(1, std::memory_order_relaxed);
+
     const std::size_t len = data.size();
     if (len < 10) return;
 
     const int dataType = data[9] & 0x0F;
     if (dataType != 1 && dataType != 2) return;
 
+    self.validPackets_.fetch_add(1, std::memory_order_relaxed);
     self.lastPacketAt_.store(nowMillis(), std::memory_order_release);
 
     constexpr std::size_t kHeaderOffset = 14;

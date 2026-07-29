@@ -69,6 +69,16 @@ public:
     int lastPacketLen() const noexcept { return packetLen_.load(std::memory_order_relaxed); }
     int lastPacketSamples() const noexcept { return packetSamples_.load(std::memory_order_relaxed); }
 
+    /**
+     * Notifiche ricevute sulla characteristic EEG, prima di qualunque filtro, e
+     * quelle effettivamente riconosciute come pacchetti EEG. Distinguono due
+     * guasti che si assomigliano: zero grezzi = le notifiche non arrivano
+     * (sottoscrizione o comandi di avvio); grezzi ma zero valide = i pacchetti
+     * arrivano ma il formato non è quello atteso.
+     */
+    std::uint64_t rawPackets() const noexcept { return rawPackets_.load(std::memory_order_relaxed); }
+    std::uint64_t validPackets() const noexcept { return validPackets_.load(std::memory_order_relaxed); }
+
 private:
     struct Impl;                 // isola winrt/*.h dal resto del progetto
     Impl* impl_ = nullptr;
@@ -80,6 +90,8 @@ private:
     std::atomic<std::int64_t> lastPacketAt_{0};
     std::atomic<int>          packetLen_{0};
     std::atomic<int>          packetSamples_{0};
+    std::atomic<std::uint64_t> rawPackets_{0};
+    std::atomic<std::uint64_t> validPackets_{0};
 
     mutable std::mutex nameMutex_;
     std::string        deviceName_;

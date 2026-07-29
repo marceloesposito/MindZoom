@@ -255,6 +255,8 @@ void dspThread() {
         st.bleState       = static_cast<int>(g_muse.state());
         st.packetLen      = g_muse.lastPacketLen();
         st.packetSamples  = g_muse.lastPacketSamples();
+        st.rawPackets     = g_muse.rawPackets();
+        st.validPackets   = g_muse.validPackets();
         st.droppedSamples = g.dropped.load(std::memory_order_relaxed);
         g.state.publish(st);
 
@@ -440,6 +442,16 @@ void drawHud(render::Renderer& r, const app::ControlState& st, const control::Zo
     line(L"Ampiezza: " + fixed(st.maxAbsRaw, 0) + L" uV   pkt: " +
              std::to_wstring(st.packetLen) + L"B/" + std::to_wstring(st.packetSamples) + L"smp",
          kMuted);
+
+    // Distingue "nessuna notifica" da "notifiche con formato inatteso".
+    {
+        const std::wstring counts = L"Pacchetti: " + std::to_wstring(st.rawPackets) +
+                                    L" grezzi / " + std::to_wstring(st.validPackets) + L" validi";
+        render::Color c = kMuted;
+        if (st.bleState == 3 && st.rawPackets == 0)                 c = kBad;
+        else if (st.rawPackets > 0 && st.validPackets == 0)         c = kWarn;
+        line(counts, c);
+    }
 
     if (cf) {
         line(L"Ingrandimento: " + std::to_wstring(cf->magnification) + L"x", kAccent, 15.0f);

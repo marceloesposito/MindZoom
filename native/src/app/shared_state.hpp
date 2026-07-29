@@ -54,6 +54,8 @@ struct ControlState {
     int           bleState      = 0;   // ble::State
     int           packetLen     = 0;
     int           packetSamples = 0;
+    std::uint64_t rawPackets    = 0;   // notifiche EEG ricevute, prima dei filtri
+    std::uint64_t validPackets  = 0;   // quelle riconosciute come pacchetti EEG
     std::uint64_t frames        = 0;
     std::uint64_t droppedSamples = 0;
     bool          stalled       = false;

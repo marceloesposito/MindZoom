@@ -89,6 +89,17 @@ int main() {
         }
 
         if (!worked) {
+            // Con il link aperto ma nessun frame, la coppia grezzi/validi dice
+            // subito da che parte guardare: zero grezzi = le notifiche non
+            // arrivano, grezzi senza validi = formato non riconosciuto.
+            const auto now = std::chrono::steady_clock::now();
+            if (muse.streaming() && now - lastLog > std::chrono::seconds(2)) {
+                lastLog = now;
+                std::printf("[BLE] in attesa di dati - pacchetti: %llu grezzi / %llu validi\n",
+                            static_cast<unsigned long long>(muse.rawPackets()),
+                            static_cast<unsigned long long>(muse.validPackets()));
+            }
+
             // Watchdog: il flusso BLE può fermarsi senza emettere alcun evento.
             const auto silent = muse.millisSinceLastPacket();
             if (muse.streaming() && silent > static_cast<std::int64_t>(config::kEegWatchdogS * 1000)) {
