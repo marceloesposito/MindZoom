@@ -24,7 +24,12 @@ La GPU si usa **solo per il rendering** (2 quad texturati in crossfade), come gi
 
 ---
 
-## 1. Prerequisiti da installare (farlo PRIMA della sessione)
+## 1. Prerequisiti
+
+> **Aggiornamento:** la toolchain risulta **già installata** su questa macchina (MSVC 14.50 dei
+> VS Build Tools 18, Windows SDK 10.0.26100 con C++/WinRT, CMake 4.2.3, Ninja) e il core compila
+> e passa i test. Vedi [`README.md`](README.md). L'elenco sotto resta come riferimento per
+> replicare l'ambiente altrove. **vcpkg e le dipendenze servono solo dal rendering in poi.**
 
 - **Visual Studio 2022** con workload *"Sviluppo di applicazioni desktop con C++"* (MSVC v143)
   **+ Windows 11 SDK** (necessario per C++/WinRT e l'accesso BLE nativo).
@@ -192,18 +197,25 @@ native/
 
 ---
 
-## 7. Checklist prima sessione (ordine consigliato)
+## 7. Checklist (ordine consigliato)
 
-1. **Scaffold build:** `CMakeLists.txt` + `vcpkg.json`, "hello window" SDL2+GL che apre e chiude.
-2. **`config.hpp`:** trascrivere la tabella §5 (single source of truth).
-3. **BLE spike:** WinRT GATT → connessione al Muse, sottoscrizione EEG char, log dei pacchetti
-   grezzi. Verificare `dataType`/`numSamples`/`sps~256` come nei log JS.
-4. **Decode + DSP:** 14bit→µV→DC→notch/LP→ring→STFT→Pope index. Confrontare i valori con i log
-   JS a parità di segnale (o rigiocando pacchetti registrati).
-5. **Controllo:** calibrazione a estremi + `computeExtremaVelocity` + rate-control.
-6. **Render:** crossfade 12 texture .webp, HUD ImGui con gli stessi campi del pannello JS.
-7. **Thread split:** spostare BLE su thread 1, DSP su thread 2 con i ring lock-free.
-8. **Packaging:** `.exe` + `assets/`; runtime static-link per portabilità.
+L'ordine originale partiva dalla finestra SDL2. È stato invertito: prima il **core
+deterministico**, che si verifica numericamente senza hardware né dipendenze esterne, poi il
+resto. Così il port si valida contro le attese della suite JS invece che a occhio sullo schermo.
+
+1. ~~**Scaffold build:** `CMakeLists.txt`, target del core + test.~~ ✅ fatto
+2. ~~**`config.hpp`:** trascrivere la tabella §5 (single source of truth).~~ ✅ fatto
+3. ~~**Decode + DSP:** 14bit→µV→DC→notch/LP→ring→STFT→Pope index + gating.~~ ✅ fatto
+4. ~~**Controllo:** calibrazione a estremi + velocità + rate-control/detent.~~ ✅ fatto
+5. ~~**Test numerici:** port delle attese dei `.test.js` (62 asserzioni verdi).~~ ✅ fatto
+6. **BLE spike:** WinRT GATT → connessione al Muse, sottoscrizione EEG char, log dei pacchetti
+   grezzi. Verificare `dataType`/`numSamples`/`sps~256` come nei log JS. ← **prossimo passo**
+7. **Confronto sul campo:** stessi pacchetti → stesso indice fra JS e nativo (utile un dump da
+   rigiocare offline, vedi §8).
+8. **Render:** crossfade 12 texture .webp, HUD ImGui con gli stessi campi del pannello JS.
+   Da qui servono vcpkg e le dipendenze.
+9. **Thread split:** spostare BLE su thread 1, DSP su thread 2 con i ring lock-free.
+10. **Packaging:** `.exe` + `assets/`; runtime static-link per portabilità.
 
 ---
 
