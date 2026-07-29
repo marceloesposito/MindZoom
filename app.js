@@ -22,10 +22,6 @@ const FOCUS_EASING = 0.06;
 const DEAD_ZONE = 0.08;
 const ZOOM_SPEED_FACTOR = 0.003;
 
-// Costanti specifiche per la simulazione via Mouse Wheel
-const MOUSE_ACCELERATION = 0.15;
-const MOUSE_FRICTION = 0.92;
-
 // --- Stato calibrazione legacy (usato solo se USE_ADAPTIVE_PIPELINE = false) ---
 const CALIBRATION_DURATION = 5;
 let calibrationBuffer = [];
@@ -57,12 +53,11 @@ function clamp01(x) { return x < 0 ? 0 : (x > 1 ? 1 : x); }
 
 const AppState = {
     currentView: "LANDING",
-    inputMode: "BCI",
     targetFocus: 0.0,
     currentFocus: 0.0,
     isMuseConnected: false,
     rawRatio: 0.0,
-    targetVelocity: 0.0,   // velocità della rotella (SIMULATION)
+    targetVelocity: 0.0,   // velocità comandata dal path legacy (USE_ADAPTIVE_PIPELINE = false)
 
     // --- FSM ---
     phase: PHASE.IDLE,
@@ -224,7 +219,6 @@ document.addEventListener("DOMContentLoaded", () => {
     DOM.hamburgerMenuBtn = document.getElementById('hamburger-menu-btn');
     DOM.hamburgerModal = document.getElementById('hamburger-modal');
     DOM.menuCloseBtn = document.getElementById('menu-close-btn');
-    DOM.toggleInputModeBtn = document.getElementById('toggle-input-mode-btn');
 
     DOM.onboardingModal = document.getElementById('onboarding-modal');
     DOM.calibIntro = document.getElementById('calib-intro');
@@ -242,7 +236,6 @@ document.addEventListener("DOMContentLoaded", () => {
     DOM.calibDoneMsg = document.getElementById('calib-done-msg');
     DOM.calibRetryBtn = document.getElementById('calib-retry-btn');
 
-    DOM.debugInputSource = document.getElementById('debug-input-source');
     DOM.debugVelocity = document.getElementById('debug-velocity');
     DOM.debugRawRatio = document.getElementById('debug-raw-ratio');
     DOM.debugTarget = document.getElementById('debug-target');
@@ -255,7 +248,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
     Normalizer.init();
     initUIEventListeners();
-    initMouseWheelController();
     updateSynchronizedLEDs(false);
 });
 
@@ -283,30 +275,6 @@ function initUIEventListeners() {
         });
     }
 
-    if (DOM.toggleInputModeBtn) {
-        DOM.toggleInputModeBtn.addEventListener('click', () => {
-            if (AppState.inputMode === "BCI") {
-                AppState.inputMode = "SIMULATION";
-                DOM.toggleInputModeBtn.innerText = "MODE: WHEEL SIM";
-                DOM.toggleInputModeBtn.className = "bg-green-600/80 hover:bg-green-500 backdrop-blur-md border border-green-500 text-white font-mono text-xs uppercase tracking-wider px-4 py-2.5 rounded-xl transition-all shadow-md pointer-events-auto";
-                if (DOM.debugInputSource) {
-                    DOM.debugInputSource.innerText = "WHEEL";
-                    DOM.debugInputSource.className = "font-bold text-green-400";
-                }
-                AppState.targetVelocity = 0.0;
-            } else {
-                AppState.inputMode = "BCI";
-                DOM.toggleInputModeBtn.innerText = "MODE: BCI (MUSE)";
-                DOM.toggleInputModeBtn.className = "bg-blue-600/80 hover:bg-blue-500 backdrop-blur-md border border-blue-500 text-white font-mono text-xs uppercase tracking-wider px-4 py-2.5 rounded-xl transition-all shadow-md pointer-events-auto";
-                if (DOM.debugInputSource) {
-                    DOM.debugInputSource.innerText = "BCI";
-                    DOM.debugInputSource.className = "font-bold text-blue-400";
-                }
-                AppState.targetVelocity = 0.0;
-            }
-        });
-    }
-
     if (DOM.modalFindDeviceBtn) {
         DOM.modalFindDeviceBtn.addEventListener('click', async () => {
             try {
@@ -321,7 +289,7 @@ function initUIEventListeners() {
     }
 
     muse.onEEGData((brainData) => {
-        // Timbrato sempre, anche in modalità rotella: è il segnale di vita del flusso.
+        // Timbro del segnale di vita del flusso: base del watchdog.
         AppState.lastEEGAt = Date.now();
         if (AppState.eegStalled) {
             console.log('[EEG] flusso ripristinato');
@@ -329,7 +297,7 @@ function initUIEventListeners() {
         }
         AppState.watchdogRetries = 0;
 
-        if (!brainData.fft || AppState.inputMode !== "BCI") return;
+        if (!brainData.fft) return;
         if (CONFIG.USE_ADAPTIVE_PIPELINE) {
             processAdaptiveIndex(brainData);
         } else {
@@ -348,17 +316,6 @@ function initUIEventListeners() {
         updateSynchronizedLEDs(true, muse.device?.name || '');
         AppState.watchdogRetries = 0;
     });
-}
-
-function initMouseWheelController() {
-    window.addEventListener('wheel', (event) => {
-        if (AppState.currentView !== "IMMERSION" || AppState.inputMode !== "SIMULATION") return;
-        event.preventDefault();
-
-        const direction = event.deltaY < 0 ? 1 : -1;
-        AppState.targetVelocity += direction * MOUSE_ACCELERATION;
-        AppState.targetVelocity = Math.max(-1.0, Math.min(1.0, AppState.targetVelocity));
-    }, { passive: false });
 }
 
 /* ------------------------------------------------------------------ *
@@ -402,7 +359,7 @@ function computePopeIndex(fftData) {
  * incollato sull'ultimo valore) e si tenta di far ripartire lo streaming.
  */
 function checkEEGWatchdog() {
-    if (AppState.inputMode !== "BCI" || !AppState.isMuseConnected) return;
+    if (!AppState.isMuseConnected) return;
     if (AppState.lastEEGAt === 0) return;   // non è mai partito: niente da diagnosticare
 
     const silentFor = (Date.now() - AppState.lastEEGAt) / 1000;
@@ -596,8 +553,7 @@ function computeExtremaVelocity(c, dt) {
 
 /**
  * Aggiorna gli estremi (run min/max per il display, picco/minimo per gli assoluti)
- * e l'altezza-target del quadratino. Chiamata sia dal flusso EEG (BCI) sia dal
- * percorso rotella (SIMULATION). Lo scarto iniziale di CALIB_LEADIN_S evita di
+ * e l'altezza-target del quadratino. Lo scarto iniziale di CALIB_LEADIN_S evita di
  * registrare il transitorio di reazione al prompt.
  */
 function updateCalibrationSample(c) {
@@ -669,7 +625,7 @@ function updatePhase(dt) {
 
 /** Velocità di input corrente, indipendentemente dall'autorità della fase. */
 function currentInputVelocity() {
-    return (AppState.inputMode === "SIMULATION") ? AppState.targetVelocity : AppState.eegVelocity;
+    return AppState.eegVelocity;
 }
 
 /** Risolve chi comanda lo zoom nella fase corrente. */
@@ -701,8 +657,8 @@ function applyHoldSelect(velocity, dt) {
     const nearest = Math.round(AppState.targetFocus / step) * step;
 
     // Le soglie sono relative alla velocità massima che l'input può produrre:
-    // in BCI il controllo a estremi satura a EXTREMA_GAIN, con la rotella a 1.0.
-    const maxInput = (AppState.inputMode === "SIMULATION") ? 1.0 : CONFIG.EXTREMA_GAIN;
+    // il controllo a estremi satura a EXTREMA_GAIN.
+    const maxInput = CONFIG.EXTREMA_GAIN;
     const enterHold = CONFIG.ENTER_HOLD_FRAC * maxInput;
     const snapThreshold = CONFIG.SNAP_VEL_FRAC * maxInput;
 
@@ -821,14 +777,7 @@ function updateOnboardingModal(dt) {
 
 function updateActiveCalibStage(dt) {
     const stage = AppState.calibStage;
-    const contactOk = (AppState.inputMode === "SIMULATION") ? true : AppState.contactOk;
-
-    // In SIMULATION la rotella pilota un indice sintetico, per testare a secco.
-    if (AppState.inputMode === "SIMULATION") {
-        const c = updateSmoothedIndex((AppState.smoothedInit ? AppState.smoothedIndex : 0) +
-                                      AppState.targetVelocity * 0.05);
-        updateCalibrationSample(c);
-    }
+    const contactOk = AppState.contactOk;
 
     // Contatto scarso: si mette in pausa il conteggio e si segnala.
     if (DOM.calibContactHint) DOM.calibContactHint.classList.toggle('hidden', contactOk);
@@ -1007,24 +956,14 @@ function updateExperienceFrame() {
         // Conclusione scriptata: garanzia della FSM, non una speranza sull'EEG.
         AppState.targetFocus += (CONFIG.OUTRO_TARGET_FOCUS - AppState.targetFocus) * CONFIG.OUTRO_EASING;
     } else if (!CONFIG.USE_ADAPTIVE_PIPELINE) {
-        // Percorso legacy invariato.
-        if (AppState.inputMode === "BCI") {
-            if (isCalibrated) AppState.targetFocus += AppState.targetVelocity * ZOOM_SPEED_FACTOR;
-        } else {
-            AppState.targetFocus += AppState.targetVelocity * ZOOM_SPEED_FACTOR;
-        }
+        // Percorso legacy invariato: velocità solo dopo la calibrazione a snapshot.
+        if (isCalibrated) AppState.targetFocus += AppState.targetVelocity * ZOOM_SPEED_FACTOR;
     } else {
         let velocity = resolveAuthorityVelocity();
         if (AppState.phase === PHASE.INTERACTIVE) {
             velocity = applyHoldSelect(velocity, dt);
         }
         AppState.targetFocus += velocity * ZOOM_SPEED_FACTOR;
-    }
-
-    // Attrito della rotella (solo simulazione).
-    if (AppState.inputMode === "SIMULATION") {
-        AppState.targetVelocity *= MOUSE_FRICTION;
-        if (Math.abs(AppState.targetVelocity) < 0.001) AppState.targetVelocity = 0.0;
     }
 
     AppState.targetFocus = Math.max(0.0, Math.min(1.0, AppState.targetFocus));
@@ -1071,12 +1010,8 @@ function updateHUD(activeIndex, progress) {
         lastRenderedMagnification = realTimeMagnification;
     }
 
-    const effectiveVelocity = (AppState.inputMode === "SIMULATION")
-        ? AppState.targetVelocity
-        : AppState.eegVelocity;
-
-    if (DOM.debugRawRatio) DOM.debugRawRatio.innerText = AppState.inputMode === "BCI" ? AppState.rawRatio.toFixed(3) : "SIMULATED";
-    if (DOM.debugVelocity) DOM.debugVelocity.innerText = effectiveVelocity.toFixed(3);
+    if (DOM.debugRawRatio) DOM.debugRawRatio.innerText = AppState.rawRatio.toFixed(3);
+    if (DOM.debugVelocity) DOM.debugVelocity.innerText = AppState.eegVelocity.toFixed(3);
     if (DOM.debugTarget) DOM.debugTarget.innerText = AppState.targetFocus.toFixed(3);
     if (DOM.debugCurrent) DOM.debugCurrent.innerText = AppState.currentFocus.toFixed(3);
     if (DOM.debugBarTarget) DOM.debugBarTarget.style.width = `${AppState.targetFocus * 100}%`;
@@ -1087,9 +1022,7 @@ function updateHUD(activeIndex, progress) {
     }
     if (DOM.debugPercentile) {
         // Riusa la riga "Percentile" per lo stato del controllo a estremi: c vs neutro M.
-        if (AppState.inputMode !== "BCI") {
-            DOM.debugPercentile.innerText = "--";
-        } else if (AppState.calibValid) {
+        if (AppState.calibValid) {
             DOM.debugPercentile.innerText = `${AppState.smoothedIndex.toFixed(2)} / ${AppState.neutralM.toFixed(2)}`;
         } else {
             DOM.debugPercentile.innerText = "calibrazione…";
