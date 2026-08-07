@@ -18,6 +18,33 @@ COSA SERVE
 Non serve installare nulla: niente runtime, niente librerie aggiuntive.
 
 
+UNA SESSIONE, DALL'INIZIO ALLA FINE
+-----------------------------------
+1. Metti in carica la fascia la sera prima. Quasi tutti i problemi di
+   collegamento sono batteria in esaurimento.
+
+2. Accendi la fascia e indossala PRIMA di aprire il programma. Sposta i capelli
+   sotto la fascia sulla fronte e inumidisci leggermente i due contatti dietro
+   le orecchie.
+
+3. Apri MindZoom.exe. Con due schermi collegati ti chiede su quale proiettare:
+   frecce per scegliere, INVIO per confermare.
+
+4. Premi H e guarda la riga "Segnale". Non premere INVIO finche' non dice OK.
+   Se dice altro, la sezione "SE IL PROGRAMMA DICE CHE IL SEGNALE NON E'
+   UTILIZZABILE" piu' avanti spiega cosa fare.
+
+5. Con "Segnale: OK", INVIO avvia la calibrazione: 15 secondi di concentrazione,
+   15 di rilassamento. Il conteggio si mette in pausa da solo se il contatto si
+   perde, quindi non c'e' fretta.
+
+6. Poi usa lo zoom. Se non risponde, guarda la barra di attivazione nel pannello
+   H prima di cambiare qualcosa: dice se il problema e' che sei vicino al neutro
+   o che la banda non lascia passare, e sono due cose opposte.
+
+7. ESC per uscire. La sessione e' gia' salvata in "registrazioni".
+
+
 COME SI AVVIA
 -------------
 1. Copia l'intera cartella dove preferisci (Desktop va benissimo).

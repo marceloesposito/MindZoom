@@ -138,6 +138,18 @@ public:
         if (std::fwrite(data, 1, len, f_) == len) ++packets_;
     }
 
+    /**
+     * Porta su disco quanto è nel buffer.
+     *
+     * Va chiamato periodicamente: la chiusura dell'applicazione può richiedere
+     * secondi (il thread Bluetooth può essere dentro una scansione lunga), e chi
+     * si stanca di aspettare termina il processo. Senza flush periodico si
+     * perderebbe l'ultimo pezzo di sessione - proprio quello appena registrato.
+     */
+    void flush() {
+        if (f_) std::fflush(f_);
+    }
+
     void close() {
         if (f_) {
             std::fclose(f_);

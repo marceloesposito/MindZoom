@@ -342,6 +342,7 @@ void dspThread() {
     int    gatedWindows = 0;
     bool   contactOk    = false;   // finché non arriva un frame non si sa
     bool   signalPlausible = false;
+    double flushTimer      = 0.0;
 
     // Smoothing a valle del controllo: la legge produce un valore ogni 187 ms e
     // senza filtro il render ne vede lo scalino.
@@ -551,6 +552,15 @@ void dspThread() {
         st.packetSamples  = g_muse.lastPacketSamples();
         st.rawPackets     = g_muse.rawPackets();
         st.validPackets   = g_muse.validPackets();
+        // Il file va portato su disco spesso: la chiusura può richiedere
+        // secondi e chi si stanca termina il processo. Due secondi di margine
+        // invece dell'intera sessione.
+        flushTimer += elapsed;
+        if (flushTimer >= 2.0) {
+            flushTimer = 0.0;
+            g.recorder.flush();
+        }
+
         st.droppedSamples = g.dropped.load(std::memory_order_relaxed);
         st.replaying       = replaying;
         st.recording       = g.recorder.hasData();
