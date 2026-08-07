@@ -318,7 +318,9 @@ int runReplay(const std::string& path, const control::Tunables& t, double speed)
 
         if (p.elapsed - lastPrint >= 1.0) {
             lastPrint = p.elapsed;
-            printLine(p, q, b, index, p.calibrating ? "CALIB" : "REPLAY", 0, 0, 0);
+            printLine(p, q, b, index,
+                      p.calibrating ? control::toString(p.calib.stage()) : "REPLAY",
+                      0, 0, 0);
         }
         if (speed > 0.0) {
             std::this_thread::sleep_for(
@@ -356,6 +358,16 @@ int runLive(const std::string& recordPath, const control::Tunables& t) {
     });
 
     Pipeline p;
+    // La calibrazione parte subito, come nell'applicazione: senza, la velocita'
+    // resterebbe a zero per sempre e la colonna v= non direbbe nulla. Il
+    // conteggio avanza solo sui frame buoni, quindi l'attesa della connessione
+    // non lo consuma.
+    p.calib.start();
+    p.calibrating = true;
+    std::printf("Calibrazione: %.0f s di CONCENTRAZIONE, poi %.0f s di RILASSAMENTO.\n",
+                config::kCalibConcentrateS, config::kCalibRelaxS);
+    std::printf("Il conteggio parte quando arrivano i dati dalla fascia.\n\n");
+
     muse.start();
 
     auto lastLog = std::chrono::steady_clock::now();
@@ -377,7 +389,13 @@ int runLive(const std::string& recordPath, const control::Tunables& t) {
             if (now - lastLog < std::chrono::milliseconds(500)) continue;
             lastLog = now;
 
-            printLine(p, q, b, index, ble::toString(muse.state()),
+            // Durante la calibrazione conta la fase, non lo stato del link:
+            // e' quello che dice all'utente cosa deve fare in questo momento.
+            const char* label = p.calibrating
+                ? control::toString(p.calib.stage())
+                : ble::toString(muse.state());
+
+            printLine(p, q, b, index, label,
                       muse.lastPacketLen(), muse.lastPacketSamples(),
                       dropped.load(std::memory_order_relaxed));
         }
@@ -407,9 +425,12 @@ int runLive(const std::string& recordPath, const control::Tunables& t) {
 
     std::printf("\nchiusura...\n");
     muse.stop();
+    p.stats.report(t);
     if (rec) {
         std::fclose(rec);
-        std::printf("Registrazione chiusa: %s\n", recordPath.c_str());
+        std::printf("\nRegistrazione chiusa: %s\n", recordPath.c_str());
+        std::printf("Puoi ritararla senza rimettere la fascia:\n");
+        std::printf("  mz_probe --replay %s --tolleranza 0.30\n", recordPath.c_str());
     }
     return 0;
 }
