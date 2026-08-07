@@ -20,11 +20,14 @@
 // e il riepilogo finale dice quale delle due e' utilizzabile.
 
 #include "ble/muse.hpp"
+#include "ble/recording.hpp"
 #include "control/calibration.hpp"
 #include "control/tunables.hpp"
 #include "dsp/gating.hpp"
 #include "dsp/stft.hpp"
 #include "util/spsc_ring.hpp"
+
+#include <windows.h>   // MultiByteToWideChar: i percorsi da argv sono narrow
 
 #include <atomic>
 #include <chrono>
@@ -44,37 +47,17 @@ std::atomic<bool> g_stop{false};
 
 void onSignal(int) { g_stop.store(true); }
 
-// --- formato del file di registrazione ---------------------------------------
-// Il campione e' banalmente copiabile e il file e' un artefatto locale di
-// diagnostica, quindi si scrive lo struct cosi' com'e'. L'intestazione serve a
-// rifiutare un file incompatibile invece di interpretarlo a caso.
+// Il formato del file vive in ble/recording.hpp, condiviso con l'applicazione:
+// le registrazioni fatte da MindZoom.exe e quelle fatte qui sono lo stesso file
+// e si aprono con entrambi gli strumenti.
 
-constexpr char kMagic[8] = {'M', 'Z', 'R', 'E', 'C', '\0', '\0', '\0'};
-
-struct RecordHeader {
-    char          magic[8];
-    std::uint32_t version;
-    std::uint32_t sampleRate;
-    std::uint32_t channels;
-    std::uint32_t sampleBytes;
-};
-
-RecordHeader makeHeader() {
-    RecordHeader h{};
-    std::memcpy(h.magic, kMagic, sizeof(kMagic));
-    h.version     = 1;
-    h.sampleRate  = config::kSampleRate;
-    h.channels    = config::kChannels;
-    h.sampleBytes = static_cast<std::uint32_t>(sizeof(ble::Sample));
-    return h;
-}
-
-bool headerOk(const RecordHeader& h) {
-    return std::memcmp(h.magic, kMagic, sizeof(kMagic)) == 0 &&
-           h.version == 1 &&
-           h.sampleRate == config::kSampleRate &&
-           h.channels == config::kChannels &&
-           h.sampleBytes == sizeof(ble::Sample);
+/** I percorsi arrivano da argv, quindi nella codepage della console. */
+std::wstring toWide(const std::string& s) {
+    if (s.empty()) return {};
+    const int n = MultiByteToWideChar(CP_ACP, 0, s.c_str(), -1, nullptr, 0);
+    std::wstring w(static_cast<std::size_t>(n > 0 ? n - 1 : 0), L'\0');
+    if (n > 0) MultiByteToWideChar(CP_ACP, 0, s.c_str(), -1, w.data(), n);
+    return w;
 }
 
 // --- analisi condivisa fra live e replay -------------------------------------
@@ -231,13 +214,11 @@ private:
  * dall'altra. E' il regime rumoroso quello che conta.
  */
 int runGenerate(const std::string& path, double seconds) {
-    std::FILE* f = std::fopen(path.c_str(), "wb");
-    if (!f) {
+    ble::Recorder rec;
+    if (!rec.open(toWide(path))) {
         std::printf("Impossibile scrivere %s\n", path.c_str());
         return 2;
     }
-    const auto h = makeHeader();
-    std::fwrite(&h, sizeof(h), 1, f);
 
     const auto total = static_cast<long long>(seconds * config::kSampleRate);
     constexpr double kTwoPi = 6.283185307179586;
@@ -264,10 +245,10 @@ int runGenerate(const std::string& path, double seconds) {
             s.adc[ch] = static_cast<std::uint16_t>(
                 config::kAdcCenter + static_cast<int>(s.uv[ch] / config::kAdcToMicrovolts));
         }
-        std::fwrite(&s, sizeof(s), 1, f);
+        rec.write(s);
     }
 
-    std::fclose(f);
+    rec.close();
     std::printf("Registrazione sintetica scritta: %s (%.0f s, %lld campioni)\n",
                 path.c_str(), seconds, total);
     return 0;
@@ -276,26 +257,15 @@ int runGenerate(const std::string& path, double seconds) {
 // --- replay ------------------------------------------------------------------
 
 int runReplay(const std::string& path, const control::Tunables& t, double speed) {
-    std::FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) {
-        std::printf("Impossibile aprire %s\n", path.c_str());
-        return 2;
-    }
-
-    RecordHeader h{};
-    if (std::fread(&h, sizeof(h), 1, f) != 1 || !headerOk(h)) {
-        std::printf("%s non e' una registrazione valida per questa versione.\n", path.c_str());
-        std::fclose(f);
+    auto loaded = ble::loadRecording(toWide(path));
+    if (!loaded.ok) {
+        std::printf("%s: %s\n", path.c_str(), loaded.error.c_str());
         return 3;
     }
-
-    std::vector<ble::Sample> samples;
-    ble::Sample s;
-    while (std::fread(&s, sizeof(s), 1, f) == 1) samples.push_back(s);
-    std::fclose(f);
+    const auto& samples = loaded.samples;
 
     std::printf("Replay di %s: %zu campioni (~%.1f s)\n", path.c_str(), samples.size(),
-                static_cast<double>(samples.size()) / config::kSampleRate);
+                loaded.seconds());
     std::printf("Manopole: sensibilita' %.1fx, tolleranza %.2f, smoothing %.2fs\n\n",
                 t.sensitivity, t.localTolerance, t.velTauS);
 
@@ -335,15 +305,12 @@ int runReplay(const std::string& path, const control::Tunables& t, double speed)
 // --- live --------------------------------------------------------------------
 
 int runLive(const std::string& recordPath, const control::Tunables& t) {
-    std::FILE* rec = nullptr;
+    ble::Recorder rec;
     if (!recordPath.empty()) {
-        rec = std::fopen(recordPath.c_str(), "wb");
-        if (!rec) {
+        if (!rec.open(toWide(recordPath))) {
             std::printf("Impossibile scrivere %s\n", recordPath.c_str());
             return 2;
         }
-        const auto h = makeHeader();
-        std::fwrite(&h, sizeof(h), 1, rec);
         std::printf("Registrazione su %s\n", recordPath.c_str());
     }
 
@@ -378,7 +345,7 @@ int runLive(const std::string& recordPath, const control::Tunables& t) {
 
         while (ring.pop(s)) {
             worked = true;
-            if (rec) std::fwrite(&s, sizeof(s), 1, rec);
+            rec.write(s);
 
             dsp::Quality q;
             dsp::Bands   b;
@@ -426,9 +393,10 @@ int runLive(const std::string& recordPath, const control::Tunables& t) {
     std::printf("\nchiusura...\n");
     muse.stop();
     p.stats.report(t);
-    if (rec) {
-        std::fclose(rec);
-        std::printf("\nRegistrazione chiusa: %s\n", recordPath.c_str());
+    if (rec.active()) {
+        std::printf("\nRegistrazione chiusa: %s (%.0f s)\n",
+                    recordPath.c_str(), rec.seconds());
+        rec.close();
         std::printf("Puoi ritararla senza rimettere la fascia:\n");
         std::printf("  mz_probe --replay %s --tolleranza 0.30\n", recordPath.c_str());
     }

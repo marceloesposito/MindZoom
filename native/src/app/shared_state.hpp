@@ -65,6 +65,11 @@ struct ControlState {
     std::uint64_t frames        = 0;
     std::uint64_t droppedSamples = 0;
     bool          stalled       = false;
+
+    // --- registrazione / riproduzione ---
+    bool          replaying     = false;  // il segnale viene da un file, non dalla fascia
+    bool          recording     = false;
+    std::uint64_t recordedSamples = 0;
 };
 
 } // namespace mz::app

@@ -10,6 +10,7 @@
 
 #include "app/shared_state.hpp"
 #include "ble/muse.hpp"
+#include "ble/recording.hpp"
 #include "config.hpp"
 #include "control/calibration.hpp"
 #include "control/tunables.hpp"
@@ -22,6 +23,7 @@
 #include "util/spsc_ring.hpp"
 
 #include <windows.h>
+#include <shellapi.h>   // CommandLineToArgvW
 #include <shlwapi.h>
 
 #include <algorithm>
@@ -76,6 +78,15 @@ struct Shared {
     // Ultimi messaggi del BLE, mostrati nel pannello diagnostico: senza, quando
     // la fascia cade non si capisce il motivo. Frequenza bassissima, quindi un
     // mutex va benissimo e non tocca il percorso caldo.
+    // Registrazione della sessione. Solo il thread DSP la tocca dopo l'avvio,
+    // perche' e' lui che consuma il ring: scrivere dal callback GATT
+    // significherebbe fare I/O su un thread che non deve mai bloccarsi.
+    ble::Recorder recorder;
+
+    // Riproduzione da file invece che dalla fascia.
+    bool         replaying = false;
+    std::wstring replayPath;
+
     std::mutex                bleLogMutex;
     std::deque<std::wstring>  bleLog;
 
@@ -106,6 +117,63 @@ std::wstring fixed(double v, int decimals) {
     wchar_t buf[64]{};
     swprintf(buf, 64, L"%.*f", decimals, v);
     return buf;
+}
+
+/** <exe>\registrazioni\sessione-AAAAMMGG-HHMMSS.mzr, cartella creata se manca. */
+std::wstring newRecordingPath() {
+    const std::wstring dir = exeDirectory() + L"\\registrazioni";
+    CreateDirectoryW(dir.c_str(), nullptr);   // se esiste gia', va bene cosi'
+
+    SYSTEMTIME t{};
+    GetLocalTime(&t);
+
+    wchar_t name[64]{};
+    swprintf(name, 64, L"\\sessione-%04d%02d%02d-%02d%02d%02d.mzr",
+             t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+    return dir + name;
+}
+
+/** Nome del file senza il percorso: e' quello che ha senso mostrare nel pannello. */
+std::wstring fileNameOf(const std::wstring& path) {
+    const auto slash = path.find_last_of(L"\\/");
+    return (slash == std::wstring::npos) ? path : path.substr(slash + 1);
+}
+
+// ---------------------------------------------------------------------------
+// Thread 1-bis: riproduzione da file al posto della fascia
+// ---------------------------------------------------------------------------
+
+/**
+ * Rigioca una registrazione nel ring, allo stesso ritmo dell'hardware.
+ *
+ * Scrive esattamente dove scriverebbe il callback GATT, quindi tutto cio' che
+ * sta a valle non sa che il segnale viene da un file: nessun percorso
+ * alternativo da tenere in vita, e quello che si osserva e' la pipeline vera.
+ */
+void replayThread(std::vector<ble::Sample> samples) {
+    if (samples.empty()) return;
+
+    const auto start = std::chrono::steady_clock::now();
+    std::size_t sent = 0;
+
+    while (g.running.load(std::memory_order_acquire) && sent < samples.size()) {
+        // Quanti campioni sarebbero arrivati dall'hardware a quest'ora.
+        const double elapsed =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        const auto due = static_cast<std::size_t>(elapsed * config::kSampleRate);
+
+        while (sent < samples.size() && sent < due) {
+            if (!g.ring.push(samples[sent])) {
+                g.dropped.fetch_add(1, std::memory_order_relaxed);
+            }
+            ++sent;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+    }
+
+    if (sent >= samples.size()) {
+        g.pushBleLog("riproduzione terminata: registrazione esaurita");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -156,6 +224,11 @@ void dspThread() {
         // --- consumo dei campioni: tutto ciò che dipende dal SEGNALE ---
         while (g.ring.pop(s)) {
             consumed = true;
+            // Si registra il campione grezzo, prima di qualunque elaborazione:
+            // una registrazione gia' filtrata non permetterebbe di riprovare
+            // tarature diverse del DSP.
+            g.recorder.write(s);
+
             if (!stft.pushSample(s.uv, s.adc)) continue;
 
             ++st.frames;
@@ -237,8 +310,10 @@ void dspThread() {
         }
 
         // Watchdog: il flusso BLE può fermarsi senza emettere alcun evento.
+        // In riproduzione non ha senso: non c'è nessun link da rianimare, e a
+        // registrazione esaurita farebbe lampeggiare un guasto inesistente.
         const auto silent = g_muse.millisSinceLastPacket();
-        const bool stalled = g_muse.streaming() && silent > 0 &&
+        const bool stalled = !g.replaying && g_muse.streaming() && silent > 0 &&
                              silent > static_cast<std::int64_t>(config::kEegWatchdogS * 1000);
         if (stalled) {
             velocityRaw = 0.0;
@@ -291,6 +366,9 @@ void dspThread() {
         st.rawPackets     = g_muse.rawPackets();
         st.validPackets   = g_muse.validPackets();
         st.droppedSamples = g.dropped.load(std::memory_order_relaxed);
+        st.replaying       = g.replaying;
+        st.recording       = g.recorder.active();
+        st.recordedSamples = g.recorder.count();
         g.state.publish(st);
 
         if (!consumed) std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -439,10 +517,16 @@ void drawHud(render::Renderer& r, const app::ControlState& st, const control::Zo
         y += size + 7.0f;
     };
 
-    const wchar_t* bleNames[] = {L"DISCONNESSO", L"RICERCA", L"CONNESSIONE", L"STREAMING"};
-    const int bs = std::clamp(st.bleState, 0, 3);
-    line(std::wstring(L"Muse: ") + bleNames[bs],
-         bs == 3 ? kOk : (bs == 0 ? kBad : kWarn), 15.0f);
+    if (st.replaying) {
+        // Va detto forte: guardando i numeri senza questa riga si crederebbe di
+        // stare leggendo la fascia.
+        line(L"RIPRODUZIONE da file (fascia non in uso)", kAccent, 15.0f);
+    } else {
+        const wchar_t* bleNames[] = {L"DISCONNESSO", L"RICERCA", L"CONNESSIONE", L"STREAMING"};
+        const int bs = std::clamp(st.bleState, 0, 3);
+        line(std::wstring(L"Muse: ") + bleNames[bs],
+             bs == 3 ? kOk : (bs == 0 ? kBad : kWarn), 15.0f);
+    }
 
     const wchar_t* phaseNames[] = {L"IDLE",   L"ONBOARDING", L"HOOK", L"HANDOVER",
                                    L"INTERACTIVE", L"OUTRO", L"DONE"};
@@ -536,6 +620,13 @@ void drawHud(render::Renderer& r, const app::ControlState& st, const control::Zo
         for (const auto& l : logLines) line(L"  " + l, kMuted, 12.0f);
     }
 
+    // --- registrazione in corso ---
+    if (st.recording) {
+        const double secs = static_cast<double>(st.recordedSamples) / config::kSampleRate;
+        line(L"Registrazione: " + fileNameOf(g.recorder.path()) + L"  (" +
+                 fixed(secs, 0) + L"s)", kOk, 12.0f);
+    }
+
     // --- taratura corrente ---
     y += 8.0f;
     line(L"Sensibilita': " + fixed(t.sensitivity, 1) + L"x    Tolleranza: " +
@@ -613,13 +704,63 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
 }
 
+/** Opzioni da riga di comando. */
+struct Options {
+    bool         selfTest = false;
+    bool         record   = true;    // la registrazione è il default: serve dopo,
+                                     // e chiederla ogni volta significa non averla
+                                     // proprio la volta in cui servirebbe
+    std::wstring replayPath;
+    bool         badArg   = false;
+    std::wstring badArgText;
+};
+
+Options parseOptions(PWSTR cmdLine) {
+    Options o;
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(cmdLine && *cmdLine ? cmdLine : L"", &argc);
+    if (!argv) return o;
+
+    for (int i = 0; i < argc; ++i) {
+        const std::wstring a = argv[i];
+        if (a == L"--selftest")            o.selfTest = true;
+        else if (a == L"--senza-log")      o.record = false;
+        else if (a == L"--riproduci" && i + 1 < argc) o.replayPath = argv[++i];
+        else if (!a.empty() && a[0] == L'-') {
+            o.badArg = true;
+            o.badArgText = a;
+        }
+    }
+
+    LocalFree(argv);
+
+    // Riproducendo si legge un file: registrarlo di nuovo produrrebbe solo una
+    // copia della stessa cosa.
+    if (!o.replayPath.empty()) o.record = false;
+    return o;
+}
+
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
     // --selftest: verifica l'intera catena grafica (Direct2D, WIC, DirectWrite)
     // su una finestra mai mostrata, e riporta l'esito col codice d'uscita.
     // Serve a validare il rendering senza aprire nulla sullo schermo.
-    const bool selfTest = (cmdLine && wcsstr(cmdLine, L"--selftest") != nullptr);
+    const Options opt = parseOptions(cmdLine);
+    const bool selfTest = opt.selfTest;
+
+    if (opt.badArg && !selfTest) {
+        MessageBoxW(nullptr,
+                    (L"Opzione non riconosciuta: " + opt.badArgText + L"\n\n"
+                     L"Opzioni disponibili:\n"
+                     L"  --riproduci FILE.mzr   rigioca una sessione registrata,\n"
+                     L"                         senza usare la fascia\n"
+                     L"  --senza-log            non registrare questa sessione\n\n"
+                     L"Senza opzioni il programma registra da solo in registrazioni\\.")
+                        .c_str(),
+                    L"Mind Zoom", MB_ICONINFORMATION);
+        return 1;
+    }
 
     if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return 1;
 
@@ -685,12 +826,49 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
 
     ShowWindow(hwnd, showCmd);
 
-    // Thread 1: BLE.
-    g_muse.onSample([](const ble::Sample& s) {
-        if (!g.ring.push(s)) g.dropped.fetch_add(1, std::memory_order_relaxed);
-    });
-    g_muse.onLog([](const std::string& msg) { g.pushBleLog(msg); });
-    g_muse.start();
+    // --- sorgente del segnale: la fascia, oppure una registrazione ---
+    std::vector<ble::Sample> replaySamples;
+    if (!opt.replayPath.empty()) {
+        auto loaded = ble::loadRecording(opt.replayPath);
+        if (!loaded.ok) {
+            MessageBoxW(hwnd,
+                        (L"Impossibile riprodurre:\n" + opt.replayPath + L"\n\n" +
+                         std::wstring(loaded.error.begin(), loaded.error.end()))
+                            .c_str(),
+                        L"Mind Zoom", MB_ICONERROR);
+            return 5;
+        }
+        replaySamples = std::move(loaded.samples);
+        g.replaying   = true;
+        g.replayPath  = opt.replayPath;
+        g.pushBleLog("riproduzione di " +
+                     std::to_string(static_cast<int>(replaySamples.size() /
+                                                     config::kSampleRate)) +
+                     "s registrati");
+    }
+
+    if (opt.record) {
+        const auto path = newRecordingPath();
+        if (g.recorder.open(path)) {
+            g.pushBleLog("registrazione avviata");
+        } else {
+            // Non si blocca l'esperienza per un log: si dice e si va avanti.
+            g.pushBleLog("registrazione NON avviata: cartella non scrivibile");
+        }
+    }
+
+    // Thread 1: la fascia, oppure il rigioco della registrazione. Entrambi
+    // scrivono nello stesso ring, quindi il resto del programma è identico.
+    std::thread replay;
+    if (g.replaying) {
+        replay = std::thread(replayThread, std::move(replaySamples));
+    } else {
+        g_muse.onSample([](const ble::Sample& s) {
+            if (!g.ring.push(s)) g.dropped.fetch_add(1, std::memory_order_relaxed);
+        });
+        g_muse.onLog([](const std::string& msg) { g.pushBleLog(msg); });
+        g_muse.start();
+    }
 
     // Thread 2: DSP.
     std::thread dsp(dspThread);
@@ -761,9 +939,31 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
     }
 
     g.running.store(false, std::memory_order_release);
+    // Il DSP va fermato PRIMA di chiudere il file: è lui che ci scrive dentro.
     if (dsp.joinable()) dsp.join();
+    if (replay.joinable()) replay.join();
     g_muse.stop();
+
+    // A sessione finita si dice dove sono finiti i dati e come rigiocarli:
+    // scritto in una cartella e mai nominato, il log non lo userebbe nessuno.
+    const bool saved = g.recorder.active() && g.recorder.count() > 0;
+    const std::wstring path = g.recorder.path();
+    const double secs = g.recorder.seconds();
+    g.recorder.close();
+
     renderer.shutdown();
     CoUninitialize();
+
+    if (saved) {
+        wchar_t report[1024]{};
+        swprintf(report, 1024,
+                 L"Sessione registrata: %.0f secondi.\n\n%s\n\n"
+                 L"Per rivedere questa sessione senza indossare la fascia:\n"
+                 L"  MindZoom.exe --riproduci \"%s\"\n\n"
+                 L"Lo stesso file si analizza con:\n"
+                 L"  mz_probe.exe --replay \"%s\"",
+                 secs, path.c_str(), path.c_str(), path.c_str());
+        MessageBoxW(nullptr, report, L"Mind Zoom", MB_ICONINFORMATION);
+    }
     return 0;
 }

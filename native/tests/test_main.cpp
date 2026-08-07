@@ -2,6 +2,7 @@
 // tests/stft.test.js: stesse attese sugli stessi valori, così il port si valida
 // contro la pipeline JS già tarata sul campo invece che contro sé stesso.
 
+#include "ble/recording.hpp"
 #include "config.hpp"
 #include "control/calibration.hpp"
 #include "control/tunables.hpp"
@@ -514,6 +515,70 @@ void testZoom() {
            "l'outro converge sul focus finale");
 }
 
+void testRecording() {
+    group("13. Registrazione: giro completo scrittura -> lettura");
+
+    const std::wstring path = L"mz_test_recording.mzr";
+
+    // Campioni con valori tutti diversi: se il layout su file fosse sbagliato la
+    // rilettura non darebbe un errore, darebbe dati plausibili ma falsi. Solo un
+    // confronto campione per campione lo intercetta.
+    std::vector<ble::Sample> written;
+    for (int i = 0; i < 500; ++i) {
+        ble::Sample s{};
+        for (std::size_t ch = 0; ch < config::kChannels; ++ch) {
+            s.uv[ch]  = i * 0.25 + static_cast<double>(ch);
+            s.adc[ch] = static_cast<std::uint16_t>(config::kAdcCenter + i + ch);
+        }
+        written.push_back(s);
+    }
+
+    {
+        ble::Recorder rec;
+        check(rec.open(path), "il file di registrazione si apre in scrittura");
+        for (const auto& s : written) rec.write(s);
+        check(rec.count() == written.size(), "il contatore segue i campioni scritti");
+        nearly(rec.seconds(), static_cast<double>(written.size()) / config::kSampleRate,
+               1e-9, "la durata si ricava dal numero di campioni");
+    }   // il distruttore chiude il file
+
+    const auto loaded = ble::loadRecording(path);
+    check(loaded.ok, "la registrazione si rilegge");
+    check(loaded.samples.size() == written.size(), "stesso numero di campioni");
+
+    bool identical = (loaded.samples.size() == written.size());
+    for (std::size_t i = 0; identical && i < written.size(); ++i) {
+        for (std::size_t ch = 0; ch < config::kChannels; ++ch) {
+            if (loaded.samples[i].uv[ch] != written[i].uv[ch] ||
+                loaded.samples[i].adc[ch] != written[i].adc[ch]) {
+                identical = false;
+                break;
+            }
+        }
+    }
+    check(identical, "ogni campione torna identico, canale per canale");
+
+    // Un file estraneo va RIFIUTATO, non interpretato: leggere campioni con un
+    // layout diverso produrrebbe EEG credibile e completamente inventato.
+    {
+        std::FILE* f = ble::detail::openFile(L"mz_test_garbage.mzr", L"wb");
+        if (f) {
+            const char junk[] = "questo non e' una registrazione";
+            std::fwrite(junk, 1, sizeof(junk), f);
+            std::fclose(f);
+        }
+    }
+    const auto bad = ble::loadRecording(L"mz_test_garbage.mzr");
+    check(!bad.ok, "un file estraneo viene rifiutato");
+    check(!bad.error.empty(), "il rifiuto dice il motivo");
+
+    const auto missing = ble::loadRecording(L"mz_test_non_esiste.mzr");
+    check(!missing.ok, "un file inesistente viene rifiutato");
+
+    _wremove(path.c_str());
+    _wremove(L"mz_test_garbage.mzr");
+}
+
 } // namespace
 
 int main() {
@@ -531,6 +596,7 @@ int main() {
     testContinuity();
     testFrameRateIndependence();
     testSmoothingPrimitives();
+    testRecording();
 
     std::printf("\n=== %d passed, %d failed ===\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

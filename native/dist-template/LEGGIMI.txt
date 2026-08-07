@@ -45,7 +45,8 @@ L                     accende e spegne l'aggancio ai livelli (diagnostico)
 R                     riporta tutto ai valori di partenza
 
 Non serve ricompilare nulla: si prova con la fascia in testa e si tiene il
-valore che va meglio.
+valore che va meglio. Oppure si prova su una sessione gia' registrata, senza
+fascia: vedi "RIVEDERE UNA SESSIONE" piu' avanti.
 
 
 LA CALIBRAZIONE
@@ -109,27 +110,56 @@ La fascia si scollega dopo poco
   Il programma prova comunque a riagganciarsi da solo.
 
 
-REGISTRARE UNA SESSIONE (facoltativo)
--------------------------------------
-Nella cartella c'e' anche mz_probe.exe, uno strumento da riga di comando.
-Serve a registrare una sessione e a ritararla dopo, offline, senza dover
-rimettere la fascia ad ogni tentativo.
+LE SESSIONI SI REGISTRANO DA SOLE
+---------------------------------
+Ogni volta che usi il programma, i dati grezzi della fascia vengono salvati
+nella cartella "registrazioni", con la data e l'ora nel nome:
 
-Apri il Prompt dei comandi nella cartella e scrivi:
+  registrazioni\sessione-20260807-183340.mzr
 
-  mz_probe.exe --record sessione.mzr
+Quando chiudi, una finestrella ti dice quanti secondi sono stati registrati e
+dove sta il file. Non devi fare niente perche' accada.
 
-Indossa la fascia e fai la calibrazione come faresti nel programma: prima 15
-secondi di concentrazione, poi 15 di rilassamento, poi usa lo zoom
-normalmente. Ctrl+C per chiudere.
+A cosa serve: puoi rivedere una sessione senza rimetterti la fascia.
 
-Poi puoi riprovare la stessa registrazione con tarature diverse:
+
+RIVEDERE UNA SESSIONE
+---------------------
+Apri il Prompt dei comandi nella cartella (clic destro sulla cartella ->
+"Apri nel terminale") e scrivi:
+
+  MindZoom.exe --riproduci registrazioni\sessione-20260807-183340.mzr
+
+Il programma riparte identico - calibrazione compresa - ma legge il segnale dal
+file invece che dalla fascia, alla stessa velocita' con cui era stato
+registrato. Il pannello H mostra in alto "RIPRODUZIONE da file".
+
+Non e' un segnale finto: sono le tue onde cerebrali di quella sessione, che
+ripercorrono la stessa identica catena di elaborazione. Quello che vedi e'
+quello che sarebbe successo.
+
+Cosi' puoi provare le manopole di taratura (frecce, S, L) sulla stessa
+sessione, quante volte vuoi, finche' non trovi i valori giusti.
+
+Altre opzioni:
+
+  MindZoom.exe --senza-log      non registrare questa sessione
+
+
+ANALIZZARE UNA SESSIONE COI NUMERI
+----------------------------------
+Nella cartella c'e' anche mz_probe.exe: legge gli stessi file e, invece di
+mostrare le immagini, stampa i numeri.
+
+  mz_probe.exe --replay registrazioni\sessione-20260807-183340.mzr
+
+Alla fine compare un riepilogo. La riga che conta e' "tempo con controllo
+attivo": piu' e' alta, piu' lo zoom risulta guidabile. Puoi confrontare due
+tarature sulla stessa identica sessione:
 
   mz_probe.exe --replay sessione.mzr --tolleranza 0.10
   mz_probe.exe --replay sessione.mzr --tolleranza 0.30
 
-Alla fine di ogni prova compare un riepilogo. La riga che conta e'
-"tempo con controllo attivo": piu' e' alta, piu' lo zoom risulta guidabile.
-Il valore che ti convince diventa quello da impostare con le frecce.
+Il valore che ti convince e' quello da impostare con le frecce nel programma.
 
   mz_probe.exe --help    per l'elenco completo delle opzioni
