@@ -215,7 +215,7 @@ private:
  */
 int runGenerate(const std::string& path, double seconds) {
     ble::Recorder rec;
-    if (!rec.open(toWide(path))) {
+    if (!rec.arm(toWide(path))) {
         std::printf("Impossibile scrivere %s\n", path.c_str());
         return 2;
     }
@@ -307,7 +307,7 @@ int runReplay(const std::string& path, const control::Tunables& t, double speed)
 int runLive(const std::string& recordPath, const control::Tunables& t) {
     ble::Recorder rec;
     if (!recordPath.empty()) {
-        if (!rec.open(toWide(recordPath))) {
+        if (!rec.arm(toWide(recordPath))) {
             std::printf("Impossibile scrivere %s\n", recordPath.c_str());
             return 2;
         }
@@ -393,7 +393,7 @@ int runLive(const std::string& recordPath, const control::Tunables& t) {
     std::printf("\nchiusura...\n");
     muse.stop();
     p.stats.report(t);
-    if (rec.active()) {
+    if (rec.hasData()) {
         std::printf("\nRegistrazione chiusa: %s (%.0f s)\n",
                     recordPath.c_str(), rec.seconds());
         rec.close();

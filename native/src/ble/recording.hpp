@@ -80,6 +80,11 @@ inline bool recordHeaderOk(const RecordHeader& h) {
  * Scrittore. Un solo thread lo usa (quello che consuma il ring): la scrittura
  * passa per il buffer di stdio, quindi nel caso normale e' una memcpy e non
  * tocca il disco.
+ *
+ * Il file nasce al PRIMO campione, non all'avvio. Una sessione senza fascia
+ * collegata altrimenti lascerebbe un file di sole 24 byte, che poi ricompare
+ * nell'elenco delle registrazioni e viene rifiutato: un artefatto inutile che
+ * si presenta come un guasto.
  */
 class Recorder {
 public:
@@ -89,32 +94,34 @@ public:
     Recorder(const Recorder&)            = delete;
     Recorder& operator=(const Recorder&) = delete;
 
-    bool open(const std::wstring& path) {
+    /** Prepara la registrazione. Il file si crea quando arriva il primo campione. */
+    bool arm(const std::wstring& path) {
         close();
-        f_ = detail::openFile(path, L"wb");
-        if (!f_) return false;
-        const auto h = makeRecordHeader();
-        if (std::fwrite(&h, sizeof(h), 1, f_) != 1) {
-            close();
-            return false;
-        }
         path_  = path;
+        armed_ = !path.empty();
         count_ = 0;
-        return true;
+        return armed_;
     }
 
     void write(const Sample& s) {
-        if (!f_) return;
+        if (!armed_) return;
+        if (!f_ && !openNow()) return;
         if (std::fwrite(&s, sizeof(s), 1, f_) == 1) ++count_;
     }
 
     void close() {
-        if (!f_) return;
-        std::fclose(f_);
-        f_ = nullptr;
+        if (f_) {
+            std::fclose(f_);
+            f_ = nullptr;
+        }
+        armed_ = false;
     }
 
-    bool               active() const noexcept { return f_ != nullptr; }
+    /** Registrazione richiesta per questa sessione (anche se ancora senza dati). */
+    bool armed() const noexcept { return armed_; }
+    /** Almeno un campione e' finito su disco: solo allora il file esiste. */
+    bool hasData() const noexcept { return count_ > 0; }
+
     std::uint64_t      count() const noexcept { return count_; }
     double             seconds() const noexcept {
         return static_cast<double>(count_) / config::kSampleRate;
@@ -122,8 +129,25 @@ public:
     const std::wstring& path() const noexcept { return path_; }
 
 private:
+    bool openNow() {
+        f_ = detail::openFile(path_, L"wb");
+        if (!f_) {
+            armed_ = false;          // inutile riprovare ad ogni campione
+            return false;
+        }
+        const auto h = makeRecordHeader();
+        if (std::fwrite(&h, sizeof(h), 1, f_) != 1) {
+            std::fclose(f_);
+            f_ = nullptr;
+            armed_ = false;
+            return false;
+        }
+        return true;
+    }
+
     std::FILE*    f_ = nullptr;
     std::wstring  path_;
+    bool          armed_ = false;
     std::uint64_t count_ = 0;
 };
 
@@ -149,7 +173,8 @@ inline LoadResult loadRecording(const std::wstring& path) {
 
     RecordHeader h{};
     if (std::fread(&h, sizeof(h), 1, f) != 1 || !recordHeaderOk(h)) {
-        r.error = "non e' una registrazione valida per questa versione";
+        r.error = "il file non e' una registrazione di Mind Zoom, "
+                  "oppure e' stato scritto da una versione diversa";
         std::fclose(f);
         return r;
     }
@@ -159,7 +184,11 @@ inline LoadResult loadRecording(const std::wstring& path) {
     std::fclose(f);
 
     if (r.samples.empty()) {
-        r.error = "la registrazione non contiene campioni";
+        // Capita per le sessioni aperte senza fascia collegata: il file e' bene
+        // formato, semplicemente non contiene niente da rigiocare. Dirlo cosi'
+        // evita di far cercare un guasto dove non c'e'.
+        r.error = "questa registrazione e' vuota: durante quella sessione non e' "
+                  "mai arrivato segnale dalla fascia";
         return r;
     }
 

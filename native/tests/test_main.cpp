@@ -534,10 +534,25 @@ void testRecording() {
         written.push_back(s);
     }
 
+    // Il file nasce al PRIMO campione: una sessione senza segnale non deve
+    // lasciare un file vuoto, che poi ricompare nell'elenco e viene rifiutato.
+    {
+        const std::wstring empty = L"mz_test_vuota.mzr";
+        _wremove(empty.c_str());
+        {
+            ble::Recorder rec;
+            check(rec.arm(empty), "la registrazione si arma");
+            check(!rec.hasData(), "armata ma senza dati finche' non arriva un campione");
+        }
+        check(ble::detail::openFile(empty, L"rb") == nullptr,
+              "nessun campione -> nessun file creato");
+    }
+
     {
         ble::Recorder rec;
-        check(rec.open(path), "il file di registrazione si apre in scrittura");
+        check(rec.arm(path), "la registrazione si arma sul percorso dato");
         for (const auto& s : written) rec.write(s);
+        check(rec.hasData(), "dopo il primo campione la registrazione ha dati");
         check(rec.count() == written.size(), "il contatore segue i campioni scritti");
         nearly(rec.seconds(), static_cast<double>(written.size()) / config::kSampleRate,
                1e-9, "la durata si ricava dal numero di campioni");
@@ -576,7 +591,26 @@ void testRecording() {
     const auto missing = ble::loadRecording(L"mz_test_non_esiste.mzr");
     check(!missing.ok, "un file inesistente viene rifiutato");
 
+    // Un file con la sola intestazione: ben formato ma senza niente da
+    // rigiocare. Va distinto da un file estraneo, perche' la causa e' un'altra
+    // (sessione aperta senza fascia) e chi legge deve poterlo capire.
+    {
+        const std::wstring headerOnly = L"mz_test_solo_intestazione.mzr";
+        std::FILE* f = ble::detail::openFile(headerOnly, L"wb");
+        if (f) {
+            const auto hdr = ble::makeRecordHeader();
+            std::fwrite(&hdr, sizeof(hdr), 1, f);
+            std::fclose(f);
+        }
+        const auto emptyRec = ble::loadRecording(headerOnly);
+        check(!emptyRec.ok, "una registrazione senza campioni viene rifiutata");
+        check(emptyRec.error != bad.error,
+              "il motivo distingue 'vuota' da 'file estraneo'");
+        _wremove(headerOnly.c_str());
+    }
+
     _wremove(path.c_str());
+    _wremove(L"mz_test_vuota.mzr");
     _wremove(L"mz_test_garbage.mzr");
 }
 

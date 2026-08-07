@@ -517,7 +517,7 @@ void dspThread() {
         st.validPackets   = g_muse.validPackets();
         st.droppedSamples = g.dropped.load(std::memory_order_relaxed);
         st.replaying       = replaying;
-        st.recording       = g.recorder.active();
+        st.recording       = g.recorder.hasData();
         st.recordedSamples = g.recorder.count();
         g.state.publish(st);
 
@@ -1307,13 +1307,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
     }
 
     if (opt.record) {
-        const auto path = newRecordingPath();
-        if (g.recorder.open(path)) {
-            g.pushBleLog("registrazione avviata");
-        } else {
-            // Non si blocca l'esperienza per un log: si dice e si va avanti.
-            g.pushBleLog("registrazione NON avviata: cartella non scrivibile");
-        }
+        // Il file nasce al primo campione: una sessione senza fascia non lascia
+        // un file vuoto che poi ricompare nell'elenco e viene rifiutato.
+        g.recorder.arm(newRecordingPath());
     }
 
     // Thread 1: la fascia. Se si sta già riproducendo un file, il thread di
@@ -1472,7 +1468,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
 
     // A sessione finita si dice dove sono finiti i dati e come rigiocarli:
     // scritto in una cartella e mai nominato, il log non lo userebbe nessuno.
-    const bool saved = g.recorder.active() && g.recorder.count() > 0;
+    const bool saved = g.recorder.hasData();
     const std::wstring path = g.recorder.path();
     const double secs = g.recorder.seconds();
     g.recorder.close();
