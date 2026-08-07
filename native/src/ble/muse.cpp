@@ -80,6 +80,10 @@ struct MuseClient::Impl {
     GattCharacteristic controlChar{nullptr};
     GattCharacteristic eegChar{nullptr};
     event_token        eegToken{};
+
+    // Trova da sé dove comincia la catena di pacchetti dentro la notifica.
+    // Toccato solo dal thread delle notifiche GATT.
+    dsp::ChainLocator locator;
     event_token        controlToken{};
     event_token        statusToken{};
 
@@ -477,47 +481,68 @@ void MuseClient::Impl::handlePacket(const std::vector<std::uint8_t>& data) {
     if (self.onRaw_ && !data.empty()) self.onRaw_(data.data(), data.size());
 
     const std::size_t len = data.size();
-    if (len < 10) return;
+    if (len < dsp::kPacketHeaderBytes + 1) return;
 
-    const int dataType = data[9] & 0x0F;
-    if (dataType != 1 && dataType != 2) return;
+    // Una notifica contiene PIÙ pacchetti concatenati, non uno solo, e il
+    // prefisso di trasporto non è documentato in modo affidabile. L'offset non
+    // si assume: si misura, osservando che in ogni notifica cade nello stesso
+    // punto. Finché non è deciso non si emette nulla - sono due secondi, e un
+    // offset sbagliato non fallisce, produce campioni plausibili e falsi.
+    if (!locator.offer(data.data(), len)) {
+        self.packetLen_.store(static_cast<int>(len), std::memory_order_relaxed);
+        return;
+    }
+    const std::size_t start = locator.offset();
+    if (start >= len) return;
+
+    self.packetLen_.store(static_cast<int>(len), std::memory_order_relaxed);
+
+    int  emitted = 0;
+    bool sawEeg  = false;
+
+    std::size_t i = start;
+    while (i < len) {
+        const auto type = dsp::packetType(data[i]);
+        const int  size = dsp::payloadBytes(type);
+        if (size < 0) break;
+
+        const std::size_t payloadAt = i + dsp::kPacketHeaderBytes;
+        const std::size_t next = payloadAt + static_cast<std::size_t>(size);
+        if (next > len) break;
+
+        if (dsp::isEeg(type)) {
+            sawEeg = true;
+            const int numChannels = dsp::eegChannels(type);
+            const std::uint8_t* payload = data.data() + payloadAt;
+            const auto payloadLen = static_cast<std::size_t>(size);
+            const std::size_t numSamples = dsp::samplesInPayload(payloadLen, numChannels);
+
+            std::size_t bitOffset = 0;
+            for (std::size_t s = 0; s < numSamples; ++s) {
+                Sample sample;
+                for (int ch = 0; ch < numChannels; ++ch) {
+                    const std::uint16_t raw = dsp::unpack14(payload, payloadLen, bitOffset);
+                    bitOffset += 14;
+                    // Degli 8 canali dell'Athena si usano i primi 4, che sono
+                    // quelli montati sulla fascia.
+                    if (ch < config::kChannels) {
+                        const auto c = static_cast<std::size_t>(ch);
+                        sample.adc[c] = raw;
+                        sample.uv[c]  = dsp::toMicrovolts(dsp::centerSample(raw));
+                    }
+                }
+                if (self.onSample_) self.onSample_(sample);
+                ++emitted;
+            }
+        }
+        i = next;
+    }
+
+    if (!sawEeg) return;   // notifica valida ma senza EEG: ottica, IMU, batteria
 
     self.validPackets_.fetch_add(1, std::memory_order_relaxed);
     self.lastPacketAt_.store(nowMillis(), std::memory_order_release);
-
-    constexpr std::size_t kHeaderOffset = 14;
-    if (len <= kHeaderOffset) return;
-
-    const std::uint8_t* payload = data.data() + kHeaderOffset;
-    const std::size_t payloadLen = len - kHeaderOffset;
-
-    // 8 canali per i pacchetti di tipo 2: il passo in bit per campione cambia,
-    // anche se poi si usano solo i primi 4.
-    const int numChannels = (dataType == 2) ? 8 : 4;
-    const std::size_t numSamples = dsp::samplesInPayload(payloadLen, numChannels);
-    if (numSamples == 0) return;
-
-    self.packetLen_.store(static_cast<int>(len), std::memory_order_relaxed);
-    self.packetSamples_.store(static_cast<int>(numSamples), std::memory_order_relaxed);
-
-    const std::size_t totalBits = payloadLen * 8;
-    std::size_t bitOffset = 0;
-
-    for (std::size_t s = 0; s < numSamples; ++s) {
-        Sample sample;
-        for (int ch = 0; ch < numChannels; ++ch) {
-            if (bitOffset + 14 > totalBits) break;
-            const std::uint16_t raw = dsp::unpack14(payload, payloadLen, bitOffset);
-            bitOffset += 14;
-
-            if (ch < config::kChannels) {
-                const auto c = static_cast<std::size_t>(ch);
-                sample.adc[c] = raw;
-                sample.uv[c]  = dsp::toMicrovolts(dsp::centerSample(raw));
-            }
-        }
-        if (self.onSample_) self.onSample_(sample);
-    }
+    self.packetSamples_.store(emitted, std::memory_order_relaxed);
 }
 
 } // namespace mz::ble

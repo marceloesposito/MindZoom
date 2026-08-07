@@ -119,10 +119,17 @@ inline constexpr double kContactStdMin      = 0.5;   // TUNE - canale piatto = s
 // rumore e nessuno se ne accorge, perché l'indice di Pope su rumore bianco vale
 // meccanicamente 17/8 = 2.1 e sembra un valore normale.
 //
-// L'autocorrelazione è la prova decisiva: a 256 Hz due campioni consecutivi
-// distano 4 ms, e l'EEG è fortemente passa-banda, quindi si somigliano quasi del
-// tutto. Valori reali stanno sopra 0.9; byte non interpretabili danno ~0.
-inline constexpr double kMinAutocorr1   = 0.50;  // TUNE - generoso di proposito
+// L'autocorrelazione è la prova decisiva, e vale per QUALUNQUE grandezza fisica
+// continua, non solo per l'EEG: a 256 Hz due campioni distano 4 ms, e il filtro
+// anti-aliasing a monte di ogni ADC impedisce che siano indipendenti. È la
+// condizione di Nyquist, non una proprietà del cervello.
+//
+// La soglia va tenuta BASSA. Un segnale con energia tutta sotto i 30 Hz darebbe
+// circa cos(2*pi*30/256) = 0.74, ma la rete elettrica a 50 Hz contribuisce
+// cos(2*pi*50/256) = 0.34: un EEG valido in una stanza rumorosa può scendere
+// parecchio. Una soglia troppo alta manderebbe a inseguire un guasto
+// inesistente. Sul campo si è osservato 0.02, quindi il margine resta enorme.
+inline constexpr double kMinAutocorr1   = 0.25;  // TUNE - prudente di proposito
 inline constexpr double kMaxRailFraction = 0.02; // oltre il 2% ai fondo scala = saturo
 inline constexpr double kMinSpreadCounts = 2.0;  // sotto = canale piatto
 

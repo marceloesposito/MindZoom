@@ -629,6 +629,110 @@ void feedAdc(dsp::SlidingStft& stft, int samples, Gen gen) {
     }
 }
 
+/** Impacchetta valori a 14 bit LSB-first, come fa il dispositivo. */
+void pack14(std::vector<std::uint8_t>& out, const std::vector<std::uint16_t>& vals) {
+    std::size_t bit = 0;
+    for (const auto v : vals) {
+        for (int k = 0; k < 14; ++k) {
+            const std::size_t byteIdx = (bit >> 3);
+            if (out.size() <= byteIdx) out.resize(byteIdx + 1, 0);
+            if (v & (1u << k)) out[byteIdx] |= static_cast<std::uint8_t>(1u << (bit & 7));
+            ++bit;
+        }
+    }
+}
+
+void testAthenaPackets() {
+    group("16. Formato dei pacchetti Athena");
+
+    // Dimensioni dalla specifica: EEG 2 campioni x 8 canali x 14 bit.
+    check(dsp::payloadBytes(dsp::PacketType::Eeg8) == 28, "EEG 8 canali -> 28 byte di payload");
+    check(dsp::payloadBytes(dsp::PacketType::Eeg4) == 14, "EEG 4 canali -> 14 byte");
+    check(dsp::payloadBytes(dsp::PacketType::Imu) == 27, "IMU -> 27 byte");
+    check(dsp::payloadBytes(dsp::PacketType::Optics16) == 120, "ottica 16 canali -> 120 byte");
+    check(dsp::payloadBytes(dsp::PacketType::DrlRef) < 0, "DRL/REF: dimensione ignota, si ferma");
+
+    check(dsp::packetType(0x12) == dsp::PacketType::Eeg8,
+          "etichetta 0x12 -> EEG 8 canali a 256 Hz");
+    check(dsp::isEeg(dsp::packetType(0x12)), "0x12 e' EEG");
+    check(!dsp::isEeg(dsp::packetType(0x17)), "0x17 e' IMU, non EEG");
+
+    // Notifica sintetica: prefisso ignoto, poi EEG, IMU, EEG in catena.
+    // È il punto centrale: il parser deve TROVARE dove comincia, perché
+    // sbagliare il prefisso non produce un errore ma campioni falsi.
+    const std::vector<std::uint16_t> eeg = {
+        100, 200, 300, 400, 500, 600, 700, 800,
+        150, 250, 350, 450, 550, 650, 750, 850};
+
+    for (const std::size_t prefix : {std::size_t{9}, std::size_t{12}, std::size_t{21}}) {
+        std::vector<std::uint8_t> pkt(prefix, 0xAA);   // prefisso qualunque
+
+        pkt.push_back(0x12);                            // EEG 8 canali
+        pkt.insert(pkt.end(), 4, 0x00);
+        std::vector<std::uint8_t> body;
+        pack14(body, eeg);
+        body.resize(28, 0);
+        pkt.insert(pkt.end(), body.begin(), body.end());
+
+        pkt.push_back(0x17);                            // IMU
+        pkt.insert(pkt.end(), 4, 0x00);
+        pkt.insert(pkt.end(), 27, 0x33);
+
+        pkt.push_back(0x12);                            // altro EEG
+        pkt.insert(pkt.end(), 4, 0x00);
+        pkt.insert(pkt.end(), body.begin(), body.end());
+
+        // L'offset si decide osservando piu' notifiche, non una sola.
+        dsp::ChainLocator loc;
+        for (int k = 0; k < dsp::ChainLocator::kNeeded; ++k) loc.offer(pkt.data(), pkt.size());
+
+        check(loc.locked(), "prefisso di " + std::to_string(prefix) +
+                            " byte: l'offset viene deciso");
+        check(loc.offset() == prefix, "l'offset deciso e' quello giusto");
+
+        int samples = 0, packets = 0;
+        const std::size_t used =
+            dsp::walkPackets(pkt.data(), pkt.size(), loc.offset(), &samples, &packets);
+        check(used == pkt.size() - prefix, "la catena consuma la notifica fino in fondo");
+        check(packets == 3, "tre pacchetti percorsi: EEG, IMU, EEG");
+        check(samples == 4, "due pacchetti EEG -> quattro campioni");
+    }
+
+    // I valori devono tornare identici a quelli impacchettati.
+    {
+        std::vector<std::uint8_t> body;
+        pack14(body, eeg);
+        bool same = true;
+        for (std::size_t k = 0; k < eeg.size(); ++k) {
+            if (dsp::unpack14(body.data(), body.size(), k * 14) != eeg[k]) same = false;
+        }
+        check(same, "i campioni a 14 bit tornano identici dopo il giro completo");
+    }
+
+    // Su rumore l'offset non deve MAI stabilizzarsi. E' il vincolo che rende la
+    // cosa decidibile: su una notifica sola le coincidenze sono frequenti (piu'
+    // di meta' delle volte), ma cadono ogni volta in un punto diverso, mentre
+    // l'offset vero e' sempre lo stesso.
+    {
+        int locked = 0;
+        std::uint32_t seed = 99;
+        for (int trial = 0; trial < 40; ++trial) {
+            dsp::ChainLocator loc;
+            for (int k = 0; k < dsp::ChainLocator::kNeeded * 4; ++k) {
+                std::vector<std::uint8_t> junk(64);
+                for (auto& b : junk) {
+                    seed = seed * 1664525u + 1013904223u;
+                    b = static_cast<std::uint8_t>(seed >> 16);
+                }
+                loc.offer(junk.data(), junk.size());
+            }
+            if (loc.locked()) ++locked;
+        }
+        std::printf("        (offset stabilizzati su rumore: %d su 40)\n", locked);
+        check(locked == 0, "su byte casuali l'offset non si stabilizza mai");
+    }
+}
+
 void testPlausibility() {
     group("15. Plausibilita' fisica del segnale");
 
@@ -760,6 +864,7 @@ int main() {
     testFrameRateIndependence();
     testSmoothingPrimitives();
     testRecording();
+    testAthenaPackets();
     testPlausibility();
     testDisplays();
 

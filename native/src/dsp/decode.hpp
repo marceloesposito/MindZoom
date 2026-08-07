@@ -5,6 +5,7 @@
 
 #include "config.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 
@@ -50,5 +51,186 @@ inline std::size_t samplesInPayload(std::size_t payloadLen, int numChannels) noe
     if (numChannels <= 0) return 0;
     return (payloadLen * 8u) / (14u * static_cast<std::size_t>(numChannels));
 }
+
+// ---------------------------------------------------------------------------
+// Formato dei pacchetti Muse S Athena
+// ---------------------------------------------------------------------------
+//
+// Una notifica contiene PIÙ pacchetti concatenati, ciascuno con la propria
+// etichetta. L'etichetta è un byte diviso in due nibble: quello alto codifica la
+// frequenza, quello basso il tipo di dato. Dopo l'etichetta ci sono 4 byte che
+// non servono qui, poi il payload.
+//
+//   [etichetta][4 byte][payload][etichetta][4 byte][payload]...
+//
+// Riferimento: AbosaSzakal/MuseAthenaDataformatParser.
+
+/** Tipo di dato: nibble basso dell'etichetta. */
+enum class PacketType : int {
+    Invalid   = 0,
+    Eeg4      = 1,
+    Eeg8      = 2,
+    DrlRef    = 3,
+    Optics4   = 4,
+    Optics8   = 5,
+    Optics16  = 6,
+    Imu       = 7,
+    Battery   = 8
+};
+
+inline PacketType packetType(std::uint8_t tag) noexcept {
+    return static_cast<PacketType>(tag & 0x0F);
+}
+
+/** Byte di payload di un pacchetto, oppure -1 se la dimensione non è nota. */
+inline int payloadBytes(PacketType t) noexcept {
+    switch (t) {
+        case PacketType::Eeg4:     return  2 *  4 * 14 / 8;   // 14
+        case PacketType::Eeg8:     return  2 *  8 * 14 / 8;   // 28
+        case PacketType::Optics4:  return  3 *  4 * 20 / 8;   // 30
+        case PacketType::Optics8:  return  3 *  8 * 20 / 8;   // 60
+        case PacketType::Optics16: return  3 * 16 * 20 / 8;   // 120
+        case PacketType::Imu:      return  3 *  6 * 12 / 8;   // 27
+        // DRL/REF e batteria non sono documentati: incontrandoli la catena non
+        // può proseguire, perché non si sa di quanto avanzare.
+        default:                   return -1;
+    }
+}
+
+inline bool isEeg(PacketType t) noexcept {
+    return t == PacketType::Eeg4 || t == PacketType::Eeg8;
+}
+
+inline int eegChannels(PacketType t) noexcept {
+    return (t == PacketType::Eeg8) ? 8 : 4;
+}
+
+/** Ogni pacchetto: 1 byte di etichetta + 4 byte non usati, poi il payload. */
+inline constexpr std::size_t kPacketHeaderBytes = 5;
+
+/**
+ * Prova a percorrere la catena di pacchetti a partire da `start` e riporta
+ * quanti byte si riescono a consumare.
+ *
+ * Serve a TROVARE dove comincia la catena invece di assumerlo. Il prefisso di
+ * trasporto della notifica non è documentato in modo affidabile, e sbagliarlo di
+ * pochi byte non produce un errore: produce campioni plausibili e falsi. Il
+ * punto di partenza giusto è quello che consuma la notifica fino in fondo; uno
+ * sbagliato inciampa quasi subito in un'etichetta senza significato.
+ *
+ * @param eegSamples se non nullo, riceve quanti campioni EEG conterrebbe
+ * @param packets    se non nullo, riceve quanti pacchetti sono stati percorsi
+ * @return byte consumati dalla catena (0 se non parte nemmeno)
+ */
+inline std::size_t walkPackets(const std::uint8_t* data, std::size_t len, std::size_t start,
+                               int* eegSamples = nullptr, int* packets = nullptr) noexcept {
+    if (eegSamples) *eegSamples = 0;
+    if (packets) *packets = 0;
+    if (!data || start >= len) return 0;
+
+    std::size_t i = start;
+    while (i < len) {
+        const auto type = packetType(data[i]);
+        const int  size = payloadBytes(type);
+        if (size < 0) break;
+
+        const std::size_t next = i + kPacketHeaderBytes + static_cast<std::size_t>(size);
+        if (next > len) break;   // pacchetto troncato: la catena finisce qui
+
+        if (eegSamples && isEeg(type)) *eegSamples += 2;
+        if (packets) ++(*packets);
+        i = next;
+    }
+    return i - start;
+}
+
+/** Byte che possono restare non consumati in fondo a una notifica valida. */
+inline constexpr std::size_t kChainTailSlack = 3;
+
+/** Oltre questo prefisso non si cerca: ogni formato plausibile è più compatto. */
+inline constexpr std::size_t kMaxPrefixSearch = 40;
+
+/**
+ * Candidati di partenza per UNA notifica: gli offset da cui i pacchetti si
+ * incastrano fino in fondo.
+ *
+ * Su una notifica sola questo non basta a decidere. Con sei tipi noti su sedici
+ * valori di etichetta, dei byte casuali producono catene che arrivano in fondo
+ * piuttosto spesso - misurato: più di metà delle volte su buffer da 64 byte.
+ * Serve il vincolo del livello superiore, in ChainLocator.
+ */
+template <typename Fn>
+void forEachChainCandidate(const std::uint8_t* data, std::size_t len, Fn&& fn) {
+    const std::size_t limit = (len < kMaxPrefixSearch) ? len : kMaxPrefixSearch;
+    for (std::size_t s = 0; s < limit; ++s) {
+        int packets = 0, eeg = 0;
+        const std::size_t consumed = walkPackets(data, len, s, &eeg, &packets);
+        // Due pacchetti almeno: uno solo che per caso finisce in fondo non dice
+        // niente. E almeno un EEG, che è l'unica cosa che ci interessa leggere.
+        if (packets < 2 || eeg < 1) continue;
+        if (s + consumed + kChainTailSlack >= len) fn(s);
+    }
+}
+
+/**
+ * Trova l'offset di partenza osservando PIÙ notifiche.
+ *
+ * È il vincolo che rende la cosa decidibile: l'offset vero è lo stesso in ogni
+ * notifica, mentre le coincidenze casuali cadono ogni volta altrove. Si
+ * raccolgono voti finché uno degli offset non domina; prima di allora non si
+ * emette nulla, che è questione di frazioni di secondo.
+ *
+ * Il difetto che ha reso inutile un'intera sessione era esattamente questo:
+ * un offset sbagliato non fallisce, produce campioni plausibili e falsi. Qui
+ * l'offset non si assume, si misura.
+ */
+class ChainLocator {
+public:
+    static constexpr std::size_t kNone = static_cast<std::size_t>(-1);
+
+    /** Notifiche da osservare prima di decidere. A ~12 Hz sono ~2 secondi. */
+    static constexpr int kNeeded = 24;
+    /** Frazione di notifiche che deve concordare sullo stesso offset. */
+    static constexpr int kAgreePercent = 70;
+
+    /** @return true se dopo questa notifica l'offset è noto. */
+    bool offer(const std::uint8_t* data, std::size_t len) {
+        if (locked_ != kNone) return true;
+
+        forEachChainCandidate(data, len, [&](std::size_t s) {
+            if (s < votes_.size()) ++votes_[s];
+        });
+        ++seen_;
+
+        if (seen_ < kNeeded) return false;
+
+        std::size_t best = kNone;
+        int bestVotes = 0;
+        for (std::size_t s = 0; s < votes_.size(); ++s) {
+            if (votes_[s] > bestVotes) { bestVotes = votes_[s]; best = s; }
+        }
+
+        if (best != kNone && bestVotes * 100 >= seen_ * kAgreePercent) {
+            locked_ = best;
+            return true;
+        }
+
+        // Nessun accordo: si riparte da capo invece di accontentarsi. Se il
+        // formato non è questo, è meglio non leggere niente che leggere male.
+        votes_.fill(0);
+        seen_ = 0;
+        return false;
+    }
+
+    bool        locked() const noexcept { return locked_ != kNone; }
+    std::size_t offset() const noexcept { return locked_; }
+    int         observed() const noexcept { return seen_; }
+    void        reset() noexcept { votes_.fill(0); seen_ = 0; locked_ = kNone; }
+
+private:
+    std::array<int, kMaxPrefixSearch> votes_{};
+    int         seen_   = 0;
+    std::size_t locked_ = kNone;
+};
 
 } // namespace mz::dsp
