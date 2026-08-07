@@ -3,6 +3,10 @@
 // Specchio 1:1 di config.js + le costanti di testa di app.js.
 // Single source of truth del port: qui NON si re-inventa nulla, si trascrive.
 // I valori marcati TUNE sono le manopole di feel, da ri-tarare sul campo.
+//
+// I valori marcati LIVE hanno una copia modificabile a runtime in
+// control/tunables.hpp: qui restano i DEFAULT, che sono anche ciò a cui il
+// tasto R riporta tutto.
 
 #include <array>
 #include <cstddef>
@@ -47,15 +51,35 @@ inline constexpr double kCalibIntroMinS    = 1.0;
 inline constexpr double kCalibConcentrateS = 15.0;
 inline constexpr double kCalibRelaxS       = 15.0;
 inline constexpr double kCalibLeadInS      = 1.5;   // scarto del transitorio di reazione
-inline constexpr double kCalibIndexEma     = 0.30;  // TUNE - denoise (NON normalizzazione)
 inline constexpr double kCalibDisplayEma   = 0.20;  // TUNE - posizione quadratino a 60 Hz
-inline constexpr double kCalibConcFraction = 0.75;  // saturazione al 75% di M->estremo
+inline constexpr double kCalibConcFraction = 0.50;  // LIVE - saturazione al 50% di M->estremo
 inline constexpr double kCalibDoneHoldS    = 1.6;
 inline constexpr double kCalibMinSpanRel   = 0.08;  // TUNE - soglia di fallimento
 
+// --- Condizionamento dell'indice di Pope ---
+// L'indice è un rapporto fra potenze di banda: ha code pesanti, un singolo
+// campione anomalo passerebbe dritto in un EMA. Prima la mediana lo toglie,
+// poi due poli in cascata smussano senza lasciare spigoli.
+inline constexpr int    kIndexMedianTaps = 5;       // dispari; latenza (n-1)/2 campioni
+inline constexpr double kIndexTauS       = 0.90;    // TUNE - costante di tempo, non un alfa
+
 // --- Controllo a estremi ---
-inline constexpr double kExtremaGain = 0.25;        // TUNE - velocità normalizzata massima
-inline constexpr double kLocalDecay  = 0.35;        // TUNE - manopola di feel principale
+inline constexpr double kExtremaGain     = 0.30;    // LIVE - velocità normalizzata massima
+inline constexpr double kLocalDecay      = 0.55;    // LIVE - manopola di feel principale
+// Ampiezza della rampa di attivazione, in frazioni della semi-span M->estremo.
+// È il compromesso fra "fasico e faticoso" (piccolo) e "continuo e facile"
+// (grande): con 0 si torna esattamente al gradino di prima.
+inline constexpr double kLocalTolerance  = 0.18;    // LIVE
+// Zona morta attorno al neutro, in frazioni di u: toglie la deriva a riposo
+// senza reintrodurre una soglia netta.
+inline constexpr double kNeutralDeadzone = 0.10;    // TUNE
+
+// --- Smoothing della velocità ---
+// Il controllo aggiorna a 5.3 Hz mentre il render gira a 60: senza smoothing si
+// vedono gli scalini. Costanti di tempo, non alfa: indipendenti dal rate.
+inline constexpr double kVelTauS       = 0.35;      // LIVE - a valle della legge di controllo
+inline constexpr double kVelRenderTauS = 0.12;      // TUNE - interpolazione 5.3 Hz -> 60 Hz
+inline constexpr double kVelStaleTauS  = 0.50;      // TUNE - decadimento a segnale assente
 
 // --- Rate control (INVARIATO rispetto al JS) ---
 inline constexpr double kZoomSpeedFactor = 0.003;
@@ -64,10 +88,17 @@ inline constexpr double kFocusEasing     = 0.06;
 // --- Detent / isteresi / hold ---
 inline constexpr double kSnapStrength   = 0.06;
 inline constexpr double kSnapVelFrac    = 0.25;
-inline constexpr double kEnterHoldFrac  = 0.25;   // TUNE
-inline constexpr double kBreakHoldFrac  = 0.55;   // TUNE (> kEnterHoldFrac)
+inline constexpr double kEnterHoldFrac  = 0.15;   // TUNE
+inline constexpr double kBreakHoldFrac  = 0.32;   // TUNE (> kEnterHoldFrac)
 inline constexpr double kLockDwellS     = 3.0;
-inline constexpr double kLockDwellMult  = 1.5;    // TUNE
+inline constexpr double kLockDwellMult  = 1.25;   // TUNE
+// L'aggancio richiede PERMANENZA sotto soglia: senza, un controllo che passa per
+// zero fra un impulso e l'altro si riaggancia ad ogni frame e annulla il
+// movimento appena ottenuto.
+inline constexpr double kEnterHoldDwellS  = 0.90; // TUNE
+// Dopo uno sgancio il lock resta disabilitato per questo tempo, così si ottiene
+// una finestra di movimento utilizzabile invece di un singolo frame.
+inline constexpr double kBreakRefractoryS = 1.50; // TUNE
 
 // --- Gating artefatti / contatto ---
 inline constexpr double kArtifactRelMult    = 2.5;   // TUNE

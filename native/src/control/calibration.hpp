@@ -1,16 +1,24 @@
 #pragma once
 
 // Calibrazione attiva (scheda col quadratino sul binario) + legge di controllo
-// a estremi. Port 1:1 di app.js: updateSmoothedIndex, updateCalibrationSample,
+// a estremi. Specchio di app.js: updateSmoothedIndex, updateCalibrationSample,
 // finalizeActiveCalibration, computeExtremaVelocity.
 //
 // Modello: la calibrazione fissa DUE ESTREMI ASSOLUTI personali. Il neutro M è
 // la loro media: sopra = concentrazione (zoom in), sotto = distrazione (zoom
 // out). Una banda LOCALE di isteresi rende il controllo fasico. Niente
 // moving-average, niente ring buffer percentile: l'interazione parte subito.
+//
+// La banda locale ha una TOLLERANZA: il suo bordo non è una soglia netta ma una
+// rampa. Con un bordo netto la velocità collassava a zero ogni volta che
+// l'indice scendeva — cioè circa metà del tempo — e l'uscita era un segnale
+// commutato a 5.3 Hz invece di un controllo.
 
 #include "config.hpp"
+#include "control/tunables.hpp"
+#include "util/smoothing.hpp"
 
+#include <cstddef>
 #include <limits>
 #include <string>
 
@@ -27,18 +35,25 @@ enum class CalibStage {
 
 const char* toString(CalibStage stage) noexcept;
 
-/** EMA di denoise sull'indice di Pope. NON è una normalizzazione a finestra. */
+/**
+ * Denoise dell'indice di Pope. NON è una normalizzazione a finestra.
+ *
+ * Due stadi: mediana (toglie i campioni anomali, che in un rapporto fra potenze
+ * di banda sono frequenti) e poi due poli in cascata (smussa senza lasciare
+ * spigoli). La calibrazione e l'esercizio usano lo STESSO `c` condizionato, così
+ * gli estremi misurati e il segnale su cui si guida restano coerenti.
+ */
 class IndexSmoother {
 public:
     /** Inizializza col primo campione, così non c'è transitorio di partenza. */
-    double push(double index) noexcept;
-    double value() const noexcept { return value_; }
-    bool   initialized() const noexcept { return init_; }
-    void   reset() noexcept { value_ = 0.0; init_ = false; }
+    double push(double index, double dt) noexcept;
+    double value() const noexcept { return ema_.value(); }
+    bool   initialized() const noexcept { return ema_.initialized(); }
+    void   reset() noexcept { median_.reset(); ema_.reset(); }
 
 private:
-    double value_ = 0.0;
-    bool   init_  = false;
+    util::MedianFilter<static_cast<std::size_t>(config::kIndexMedianTaps)> median_;
+    util::TwoPoleEma ema_;
 };
 
 /**
@@ -70,10 +85,16 @@ public:
 
     /**
      * Velocità di zoom dalla concentrazione `c` relativa agli estremi.
-     * Positiva = zoom in, negativa = zoom out, 0 = fermo (banda locale).
+     * Positiva = zoom in, negativa = zoom out, 0 = fermo.
      * Torna 0 finché la calibrazione non è valida.
+     *
+     * Forma: AMPIEZZA x GATE, entrambi continui.
+     *  - ampiezza: distanza dal neutro in unità personali, con zona morta al
+     *    centro e rampa liscia fino alla saturazione a `concFraction`;
+     *  - gate: quanto si è vicini al proprio estremo recente, su una rampa
+     *    larga `localTolerance` invece che su un gradino.
      */
-    double velocity(double c, double dt);
+    double velocity(double c, double dt, const Tunables& t);
 
     CalibStage stage() const noexcept { return stage_; }
     bool   valid() const noexcept { return valid_; }
@@ -90,6 +111,13 @@ public:
 
     /** Durata della fase corrente, 0 se non è una fase a tempo. */
     double stageDuration() const noexcept;
+
+    // Le due componenti dell'ultima velocità calcolata. Servono al misuratore di
+    // attivazione: separano "sono lontano dal neutro ma la banda non lascia
+    // passare" da "la banda lascia passare ma sono vicino al neutro", che
+    // richiedono due correzioni opposte.
+    double gate() const noexcept { return lastGate_; }
+    double magnitude() const noexcept { return lastMag_; }
 
 private:
     void fail(std::string reason);
@@ -114,6 +142,10 @@ private:
     double neutralM_ = 0.0;
     double localMax_ = 0.0;
     double localMin_ = 0.0;
+
+    // Diagnostica dell'ultimo calcolo di velocity().
+    double lastGate_ = 0.0;
+    double lastMag_  = 0.0;
 
     std::string message_;
 };

@@ -24,6 +24,8 @@ void ZoomController::reset() {
     locked_       = false;
     lockedLevel_  = 0.0;
     lockTimer_    = 0.0;
+    quietTimer_   = 0.0;
+    refractory_   = 0.0;
 }
 
 double ZoomController::authorityVelocity(double inputVelocity, Phase phase,
@@ -45,16 +47,24 @@ double ZoomController::authorityVelocity(double inputVelocity, Phase phase,
     }
 }
 
-double ZoomController::applyHoldSelect(double velocity, double dt) {
+double ZoomController::applyHoldSelect(double velocity, double dt, const Tunables& t) {
+    // Interruttore diagnostico: con hold spento si vede subito se a bloccare lo
+    // zoom è il detent o la legge di controllo a monte.
+    if (!t.holdEnabled) {
+        locked_     = false;
+        quietTimer_ = 0.0;
+        return velocity;
+    }
+
     const double absV    = std::fabs(velocity);
     const double step    = 1.0 / (config::kTotalImages - 1);
     const double nearest = std::round(targetFocus_ / step) * step;
 
     // Le soglie sono FRAZIONI della velocità massima che l'input può produrre,
     // non valori assoluti: così cambiare il gain non rende un detent inescapabile.
-    constexpr double maxInput = config::kExtremaGain;
-    constexpr double enterHold     = config::kEnterHoldFrac * maxInput;
-    constexpr double snapThreshold = config::kSnapVelFrac * maxInput;
+    const double maxInput      = t.gain();
+    const double enterHold     = config::kEnterHoldFrac * maxInput;
+    const double snapThreshold = config::kSnapVelFrac * maxInput;
 
     // Dwell-to-lock: dopo kLockDwellS su un livello serve uno sforzo maggiore per
     // uscirne, così l'utente può rilassarsi del tutto senza scivolare. Il clamp
@@ -64,10 +74,17 @@ double ZoomController::applyHoldSelect(double velocity, double dt) {
         : config::kBreakHoldFrac * maxInput;
     const double breakThreshold = std::min(rawBreak, maxInput * 0.95);
 
+    if (refractory_ > 0.0) refractory_ = std::max(0.0, refractory_ - dt);
+
     if (locked_) {
         if (absV >= breakThreshold) {
-            locked_    = false;
-            lockTimer_ = 0.0;
+            locked_     = false;
+            lockTimer_  = 0.0;
+            quietTimer_ = 0.0;
+            // Finestra utilizzabile dopo lo sgancio: senza, la velocità che
+            // ricade sotto enterHold al frame successivo riagganciava subito e
+            // lo sforzo appena fatto veniva sprecato.
+            refractory_ = config::kBreakRefractoryS;
             return velocity;
         }
         // Agganciato: attrattore verso il livello, nessuna deriva.
@@ -76,11 +93,19 @@ double ZoomController::applyHoldSelect(double velocity, double dt) {
         return 0.0;
     }
 
+    // Aggancio solo dopo PERMANENZA continuativa sotto soglia. Un singolo frame
+    // sotto enterHold non è un utente fermo: è un attraversamento dello zero.
     if (absV < enterHold) {
-        locked_      = true;
-        lockedLevel_ = nearest;
-        lockTimer_   = 0.0;
-        return 0.0;
+        quietTimer_ += dt;
+        if (refractory_ <= 0.0 && quietTimer_ >= config::kEnterHoldDwellS) {
+            locked_      = true;
+            lockedLevel_ = nearest;
+            lockTimer_   = 0.0;
+            quietTimer_  = 0.0;
+            return 0.0;
+        }
+    } else {
+        quietTimer_ = 0.0;
     }
 
     if (absV < snapThreshold) {
@@ -91,14 +116,14 @@ double ZoomController::applyHoldSelect(double velocity, double dt) {
 }
 
 void ZoomController::update(double inputVelocity, double dt, Phase phase,
-                            double phaseElapsed) {
+                            double phaseElapsed, const Tunables& t) {
     if (phase == Phase::Outro || phase == Phase::Done) {
         // Conclusione scriptata: garanzia della FSM, non una speranza sull'EEG.
         targetFocus_ += (config::kOutroTargetFocus - targetFocus_) * config::kOutroEasing;
     } else {
         double velocity = authorityVelocity(inputVelocity, phase, phaseElapsed);
         if (phase == Phase::Interactive) {
-            velocity = applyHoldSelect(velocity, dt);
+            velocity = applyHoldSelect(velocity, dt, t);
         }
         targetFocus_ += velocity * config::kZoomSpeedFactor;
     }

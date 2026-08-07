@@ -67,7 +67,7 @@ int main() {
             const auto index = dsp::popeIndex(stft, &bands);
             if (!index) continue;
 
-            const double c = smoother.push(*index);
+            const double c = smoother.push(*index, config::kControlDt);
 
             const auto now = std::chrono::steady_clock::now();
             if (now - lastLog < std::chrono::milliseconds(500)) continue;

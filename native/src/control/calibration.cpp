@@ -7,9 +7,8 @@
 namespace mz::control {
 namespace {
 
-constexpr double clamp01(double x) noexcept {
-    return x < 0.0 ? 0.0 : (x > 1.0 ? 1.0 : x);
-}
+using util::clamp01;
+using util::smoothstep01;
 
 constexpr double kNegInf = -std::numeric_limits<double>::infinity();
 constexpr double kPosInf =  std::numeric_limits<double>::infinity();
@@ -27,14 +26,10 @@ const char* toString(CalibStage stage) noexcept {
     return "?";
 }
 
-double IndexSmoother::push(double index) noexcept {
-    if (!init_) {
-        value_ = index;
-        init_  = true;
-    } else {
-        value_ += (index - value_) * config::kCalibIndexEma;
-    }
-    return value_;
+double IndexSmoother::push(double index, double dt) noexcept {
+    // Mediana prima, EMA dopo: invertendoli il campione anomalo entrerebbe
+    // comunque nell'EMA e ne uscirebbe spalmato sulla coda invece che rimosso.
+    return ema_.push(median_.push(index), dt, config::kIndexTauS);
 }
 
 void Calibration::start() {
@@ -136,29 +131,44 @@ void Calibration::fail(std::string reason) {
     message_ = std::move(reason);
 }
 
-double Calibration::velocity(double c, double dt) {
+double Calibration::velocity(double c, double dt, const Tunables& t) {
+    lastGate_ = 0.0;
+    lastMag_  = 0.0;
     if (!valid_) return 0.0;
 
     const double span = absMax_ - absMin_;
     if (span <= 0.0) return 0.0;
 
-    // Gli estremi locali decadono verso il segnale a kLocalDecay frazioni di span/s.
-    const double step = config::kLocalDecay * dt * span;
+    // Gli estremi locali decadono verso il segnale a localDecay frazioni di span/s.
+    const double step = t.localDecay * dt * span;
     localMax_ = std::min(absMax_, std::max(c, localMax_ - step));
     localMin_ = std::max(absMin_, std::min(c, localMin_ + step));
 
-    constexpr double gain = config::kExtremaGain;
-    constexpr double frac = config::kCalibConcFraction;
+    const bool   up   = (c >= neutralM_);
+    const double half = up ? (absMax_ - neutralM_) : (neutralM_ - absMin_);
+    if (half <= 0.0) return 0.0;
 
-    if (c >= localMax_) {
-        const double denom = frac * (absMax_ - neutralM_);
-        return (denom > 0.0) ? gain * clamp01((c - neutralM_) / denom) : 0.0;   // zoom in
-    }
-    if (c <= localMin_) {
-        const double denom = frac * (neutralM_ - absMin_);
-        return (denom > 0.0) ? -gain * clamp01((neutralM_ - c) / denom) : 0.0;  // zoom out
-    }
-    return 0.0;   // dentro la banda locale: fermo
+    // --- 1. AMPIEZZA: distanza dal neutro in unità personali ---
+    // u vale 1 alla saturazione, cioè a concFraction del tragitto M->estremo.
+    // Sotto la zona morta l'ampiezza è nulla, e la rampa liscia evita che il
+    // bordo della zona morta diventi a sua volta un gradino.
+    const double u   = clamp01(std::fabs(c - neutralM_) / (t.concFraction * half));
+    const double mag = (u <= t.deadzone)
+        ? 0.0
+        : smoothstep01((u - t.deadzone) / (1.0 - t.deadzone));
+
+    // --- 2. GATE: quanto la banda locale lascia passare ---
+    // Il bordo non è più `c >= localMax_` ma una rampa larga `tol`: stare VICINO
+    // al proprio massimo recente dà già autorità parziale. Con tolerance = 0 si
+    // ritorna esattamente al gradino di prima.
+    const double tol  = std::max(1e-9, t.localTolerance * half);
+    const double gate = up ? smoothstep01((c - (localMax_ - tol)) / tol)
+                           : smoothstep01(((localMin_ + tol) - c) / tol);
+
+    lastGate_ = gate;
+    lastMag_  = mag;
+
+    return (up ? 1.0 : -1.0) * t.gain() * mag * gate;
 }
 
 } // namespace mz::control

@@ -40,7 +40,13 @@ struct ControlState {
     // --- segnale ---
     double rawIndex      = 0.0;
     double smoothedIndex = 0.0;
-    double velocity      = 0.0;
+    double velocity      = 0.0;   // dopo lo smoothing: è quella che guida lo zoom
+    double velocityRaw   = 0.0;   // uscita cruda della legge di controllo
+    // Le due componenti della velocità. Separano "sono lontano dal neutro ma la
+    // banda non lascia passare" (gate basso) da "la banda lascia passare ma sono
+    // vicino al neutro" (ampiezza bassa): richiedono correzioni opposte.
+    double gate      = 0.0;
+    double magnitude = 0.0;
     double theta = 0.0, alpha = 0.0, beta = 0.0;
     double maxAbsRaw = 0.0;
     bool   contactOk = true;

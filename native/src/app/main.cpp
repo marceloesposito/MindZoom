@@ -12,11 +12,13 @@
 #include "ble/muse.hpp"
 #include "config.hpp"
 #include "control/calibration.hpp"
+#include "control/tunables.hpp"
 #include "control/zoom.hpp"
 #include "dsp/gating.hpp"
 #include "dsp/stft.hpp"
 #include "render/renderer.hpp"
 #include "util/double_buffer.hpp"
+#include "util/smoothing.hpp"
 #include "util/spsc_ring.hpp"
 
 #include <windows.h>
@@ -56,6 +58,15 @@ constexpr render::Color kTargetZone{0.30f, 0.85f, 0.55f, 0.22f};
 struct Shared {
     util::SpscRing<ble::Sample, 16384> ring;
     util::DoubleBuffer<app::ControlState> state;
+
+    // Manopole di taratura: la UI le muove coi tasti, il DSP le rilegge ad ogni
+    // giro. Stesso meccanismo dello stato, in direzione opposta.
+    // `tune` è la copia di lavoro, toccata SOLO dal thread della UI (windowProc e
+    // loop di render sono lo stesso thread); `tunables` è la sua pubblicazione.
+    control::Tunables                     tune;
+    util::DoubleBuffer<control::Tunables> tunables;
+
+    void publishTunables() { tunables.publish(tune); }
 
     std::atomic<int>           command{static_cast<int>(app::Command::None)};
     std::atomic<bool>          running{true};
@@ -110,9 +121,13 @@ void dspThread() {
     auto phase = control::Phase::Onboarding;
     double phaseElapsed = 0.0;
     double doneHold     = 0.0;
-    double velocity     = 0.0;
+    double velocityRaw  = 0.0;     // uscita cruda della legge di controllo
     int    gatedWindows = 0;
     bool   contactOk    = false;   // finché non arriva un frame non si sa
+
+    // Smoothing a valle del controllo: la legge produce un valore ogni 187 ms e
+    // senza filtro il render ne vede lo scalino.
+    util::Ema velocitySmooth;
 
     auto lastTick    = std::chrono::steady_clock::now();
     auto lastFrameAt = lastTick;
@@ -129,8 +144,11 @@ void dspThread() {
         if (cmd == app::Command::StartCalibration || cmd == app::Command::RetryCalibration) {
             calib.start();
             smoother.reset();
-            velocity = 0.0;
+            velocityRaw = 0.0;
+            velocitySmooth.reset();
         }
+
+        const control::Tunables tune = g.tunables.read();
 
         ble::Sample s;
         bool consumed = false;
@@ -152,7 +170,7 @@ void dspThread() {
 
             // Gating del contatto: meglio uno zoom fermo che uno impazzito.
             if (!quality.contactOk) {
-                velocity = 0.0;
+                velocityRaw = 0.0;
                 ++gatedWindows;
             } else if (quality.artifact) {
                 // La finestra sporca non alimenta l'indice. Si tiene la velocità
@@ -160,17 +178,17 @@ void dspThread() {
                 // gating prolungato non deve incollare lo zoom.
                 ++gatedWindows;
                 if (gatedWindows > config::kArtifactHoldMaxS * config::kControlHz) {
-                    velocity *= 0.85;
+                    velocityRaw *= 0.85;
                 }
             } else if (index) {
                 gatedWindows = 0;
-                const double c = smoother.push(*index);
+                const double c = smoother.push(*index, dt);
                 st.smoothedIndex = c;
 
                 if (phase == control::Phase::Onboarding) {
                     calib.sample(c);
                 } else {
-                    velocity = calib.velocity(c, dt);
+                    velocityRaw = calib.velocity(c, dt, tune);
                 }
             }
 
@@ -223,8 +241,20 @@ void dspThread() {
         const bool stalled = g_muse.streaming() && silent > 0 &&
                              silent > static_cast<std::int64_t>(config::kEegWatchdogS * 1000);
         if (stalled) {
-            velocity = 0.0;
+            velocityRaw = 0.0;
             g_muse.resumeStreaming();
+        }
+
+        // --- smoothing della velocità ---
+        // Senza segnale fresco la velocità DECADE invece di restare congelata:
+        // prima, fra la perdita del flusso e lo scatto del watchdog a 3 s, lo
+        // zoom continuava a muoversi su dati morti.
+        double velocity = 0.0;
+        if (signalFresh) {
+            velocity = velocitySmooth.push(velocityRaw, elapsed, tune.velTauS);
+        } else {
+            velocityRaw = 0.0;
+            velocity = velocitySmooth.decay(elapsed, config::kVelStaleTauS);
         }
 
         // --- pubblicazione: ogni giro, non solo quando arrivano campioni ---
@@ -240,7 +270,10 @@ void dspThread() {
         st.neutral  = calib.neutral();
         st.localMin = calib.localMin();
         st.localMax = calib.localMax();
-        st.velocity = velocity;
+        st.velocity    = velocity;
+        st.velocityRaw = velocityRaw;
+        st.gate        = calib.gate();
+        st.magnitude   = calib.magnitude();
         st.signalFresh = signalFresh;
 
         if (calib.stage() == control::CalibStage::Failed) {
@@ -398,7 +431,7 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
 }
 
 void drawHud(render::Renderer& r, const app::ControlState& st, const control::ZoomController& zoom,
-             const control::CrossfadeState* cf) {
+             const control::CrossfadeState* cf, const control::Tunables& t) {
     const float x = 24.0f;
     float y = 20.0f;
     const auto line = [&](const std::wstring& s, render::Color c, float size = 14.0f) {
@@ -434,8 +467,46 @@ void drawHud(render::Renderer& r, const app::ControlState& st, const control::Zo
         line(L"Banda: calibrazione in corso", kMuted);
     }
 
-    line(L"Velocita': " + fixed(st.velocity, 3), st.velocity > 0 ? kOk
-                                               : (st.velocity < 0 ? kWarn : kMuted));
+    line(L"Velocita': " + fixed(st.velocity, 3) + L"  (cruda " + fixed(st.velocityRaw, 3) + L")",
+         st.velocity > 0 ? kOk : (st.velocity < 0 ? kWarn : kMuted));
+
+    // --- misuratore di attivazione ---
+    // Dice PERCHE' non si attiva, che è la cosa che i numeri da soli non dicono:
+    // gate basso = la banda locale non lascia passare (serve piu' tolleranza o
+    // una spinta piu' decisa); ampiezza bassa = si e' vicini al neutro (serve
+    // concentrarsi di piu'). Le due correzioni sono opposte.
+    if (st.calibValid && st.absMax > st.absMin) {
+        const float bw = 460.0f, bh = 22.0f, by = y;
+        const auto toX = [&](double v) {
+            const double f = (v - st.absMin) / (st.absMax - st.absMin);
+            return x + static_cast<float>(std::clamp(f, 0.0, 1.0)) * bw;
+        };
+
+        r.fillRect(D2D1::RectF(x, by, x + bw, by + bh), {1, 1, 1, 0.06f}, 4.0f);
+
+        // Banda locale: dentro questa il controllo era fermo del tutto, prima.
+        r.fillRect(D2D1::RectF(toX(st.localMin), by, toX(st.localMax), by + bh),
+                   {1, 1, 1, 0.07f}, 4.0f);
+
+        // Rampe di tolleranza: il bordo morbido su cui si guadagna autorita'.
+        const double tolUp = t.localTolerance * (st.absMax - st.neutral);
+        const double tolDn = t.localTolerance * (st.neutral - st.absMin);
+        r.fillRect(D2D1::RectF(toX(st.localMax - tolUp), by, toX(st.localMax), by + bh),
+                   {kOk.r, kOk.g, kOk.b, 0.24f}, 4.0f);
+        r.fillRect(D2D1::RectF(toX(st.localMin), by, toX(st.localMin + tolDn), by + bh),
+                   {kWarn.r, kWarn.g, kWarn.b, 0.24f}, 4.0f);
+
+        const float nx = toX(st.neutral);
+        r.fillRect(D2D1::RectF(nx - 1.0f, by, nx + 1.0f, by + bh), kMuted);
+
+        const float px = toX(st.smoothedIndex);
+        r.fillRect(D2D1::RectF(px - 2.0f, by - 3.0f, px + 2.0f, by + bh + 3.0f), kAccent, 2.0f);
+
+        y += bh + 7.0f;
+        line(L"Gate: " + fixed(st.gate, 2) + L"   Ampiezza: " + fixed(st.magnitude, 2),
+             st.gate > 0.05 ? kOk : kMuted, 13.0f);
+    }
+
     line(L"Focus: " + fixed(zoom.targetFocus(), 3) + L" -> " + fixed(zoom.currentFocus(), 3), kMuted);
     line(L"Bande  t:" + fixed(st.theta, 1) + L"  a:" + fixed(st.alpha, 1) + L"  b:" +
              fixed(st.beta, 1), kMuted);
@@ -465,7 +536,16 @@ void drawHud(render::Renderer& r, const app::ControlState& st, const control::Zo
         for (const auto& l : logLines) line(L"  " + l, kMuted, 12.0f);
     }
 
+    // --- taratura corrente ---
+    y += 8.0f;
+    line(L"Sensibilita': " + fixed(t.sensitivity, 1) + L"x    Tolleranza: " +
+             fixed(t.localTolerance, 2) + L"    Smoothing: " + fixed(t.velTauS, 2) + L"s",
+         kAccent, 12.0f);
+    if (!t.holdEnabled) line(L"Hold/detent SPENTO (diagnostica)", kWarn, 12.0f);
+
     y += 6.0f;
+    line(L"su/giu sensibilita'   sin/des tolleranza   S smoothing   L hold   R reset",
+         {0.45f, 0.48f, 0.55f, 1.0f}, 12.0f);
     line(L"H nasconde questo pannello   -   ESC esce", {0.45f, 0.48f, 0.55f, 1.0f}, 12.0f);
 }
 
@@ -501,6 +581,28 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     g.hudVisible.store(!g.hudVisible.load(std::memory_order_relaxed),
                                        std::memory_order_relaxed);
                     return 0;
+
+                // --- taratura dal vivo ---
+                // La legge di controllo si giudica solo con la fascia in testa, e
+                // ricompilare fra un tentativo e l'altro rende il confronto
+                // inutile: quando riprovi non ricordi più com'era.
+                case VK_UP:    g.tune.adjustSensitivity(+1); g.publishTunables(); return 0;
+                case VK_DOWN:  g.tune.adjustSensitivity(-1); g.publishTunables(); return 0;
+                case VK_RIGHT: g.tune.adjustTolerance(+1);   g.publishTunables(); return 0;
+                case VK_LEFT:  g.tune.adjustTolerance(-1);   g.publishTunables(); return 0;
+                case 'S':
+                    g.tune.adjustSmoothing((GetKeyState(VK_SHIFT) & 0x8000) ? -1 : +1);
+                    g.publishTunables();
+                    return 0;
+                case 'L':
+                    g.tune.holdEnabled = !g.tune.holdEnabled;
+                    g.publishTunables();
+                    return 0;
+                case 'R':
+                    g.tune.reset();
+                    g.publishTunables();
+                    return 0;
+
                 default:
                     break;
             }
@@ -572,7 +674,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
         renderer.drawSprite(cf.activeIndex + 1, static_cast<float>(cf.nextScale),
                             static_cast<float>(cf.nextAlpha));
         drawCalibrationCard(renderer, st, 0.6);
-        drawHud(renderer, st, probe, &cf);
+        drawHud(renderer, st, probe, &cf, control::Tunables{});
         const bool drawn = renderer.end();
 
         renderer.shutdown();
@@ -595,6 +697,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
 
     control::ZoomController zoom;
     double squarePos = 0.5;   // posizione filtrata del quadratino (EMA a frame rate)
+    util::Ema velRender;      // interpola la velocità dai 5.3 Hz del DSP al vsync
+
+    g.publishTunables();      // il DSP deve trovare i default già pubblicati
 
     auto last = std::chrono::steady_clock::now();
     MSG msg{};
@@ -622,9 +727,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
         const auto st = g.state.read();
         const auto phase = static_cast<control::Phase>(st.phase);
 
+        // Interpolazione 5.3 Hz -> vsync. Il DSP pubblica un valore nuovo ogni
+        // 187 ms: applicandolo tale e quale si sente uno scalino ad ogni
+        // aggiornamento. Questo è il punto che toglie la maggior parte della
+        // ruvidità percepita.
+        const double velocity = velRender.push(st.velocity, dt, config::kVelRenderTauS);
+
         // Rate control a frame rate: è qui che i 5.3 Hz del controllo diventano
         // movimento fluido, esattamente come nel ticker della versione web.
-        zoom.update(st.velocity, dt, phase, st.phaseElapsed);
+        zoom.update(velocity, dt, phase, st.phaseElapsed, g.tune);
 
         // EMA di posizione del quadratino: il target arriva a 5.3 Hz, il
         // movimento deve essere a 60.
@@ -643,7 +754,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
         }
 
         if (g.hudVisible.load(std::memory_order_relaxed)) {
-            drawHud(renderer, st, zoom, &cf);
+            drawHud(renderer, st, zoom, &cf, g.tune);
         }
 
         renderer.end();

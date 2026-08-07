@@ -4,10 +4,12 @@
 
 #include "config.hpp"
 #include "control/calibration.hpp"
+#include "control/tunables.hpp"
 #include "control/zoom.hpp"
 #include "dsp/decode.hpp"
 #include "dsp/gating.hpp"
 #include "dsp/stft.hpp"
+#include "util/smoothing.hpp"
 
 #include <array>
 #include <cmath>
@@ -49,6 +51,9 @@ void group(const char* title) { std::printf("\n[%s]\n", title); }
 using namespace mz;
 
 constexpr double kDt = config::kControlDt;   // 48/256 = 0.1875 s
+
+/** Manopole ai valori di default: è quello che il programma usa all'avvio. */
+const control::Tunables kTune{};
 
 /** Porta una calibrazione a termine con estremi noti, senza passare dal segnale. */
 void calibrateTo(control::Calibration& cal, double lo, double hi) {
@@ -201,7 +206,8 @@ void testCalibrationFailures() {
     calibrateTo(narrow, 1.00, 1.01);   // span 0.01 su M~1 -> sotto kCalibMinSpanRel
     check(narrow.stage() == control::CalibStage::Failed, "span troppo stretta -> fallimento");
     check(!narrow.valid(), "calibrazione fallita non e' valida");
-    nearly(narrow.velocity(5.0, kDt), 0.0, 1e-12, "calibrazione fallita -> velocita' nulla");
+    nearly(narrow.velocity(5.0, kDt, kTune), 0.0, 1e-12,
+           "calibrazione fallita -> velocita' nulla");
 
     control::Calibration silent;
     silent.start();
@@ -220,42 +226,103 @@ void testExtremaVelocity() {
     nearly(cal.neutral(), 1.0, 1e-9, "neutro a 1.0");
 
     // Nessun warm-up: velocita' utile al primo tick dopo la calibrazione.
-    const double first = cal.velocity(1.4, kDt);
+    const double first = cal.velocity(1.4, kDt, kTune);
     check(first > 0.0, "nessun warm-up: zoom in gia' al primo campione");
 
-    // Saturazione al 75% del tragitto M->estremo: c >= 1 + 0.75*0.5 = 1.375
+    // All'estremo assoluto ampiezza e gate valgono entrambi 1: velocita' piena.
     control::Calibration sat;
     calibrateTo(sat, 0.5, 1.5);
-    nearly(sat.velocity(1.5, kDt), config::kExtremaGain, 1e-9,
-           "saturazione a EXTREMA_GAIN all'estremo assoluto");
+    nearly(sat.velocity(1.5, kDt, kTune), kTune.gain(), 1e-9,
+           "saturazione al gain pieno all'estremo assoluto");
 
-    control::Calibration mid;
-    calibrateTo(mid, 0.5, 1.5);
-    // c = 1.1875 = M + 0.5*(satFrac*(absMax-M)) -> meta' della velocita' piena
-    nearly(mid.velocity(1.1875, kDt), config::kExtremaGain * 0.5, 1e-9,
-           "meta' del tragitto di saturazione -> meta' velocita'");
+    // Zona morta: sul neutro esatto il controllo e' fermo, senza deriva.
+    control::Calibration dead;
+    calibrateTo(dead, 0.5, 1.5);
+    nearly(dead.velocity(1.0, kDt, kTune), 0.0, 1e-12,
+           "sul neutro -> velocita' esattamente nulla (zona morta)");
 
-    // Isteresi: scendendo sotto il massimo locale la velocita' si annulla.
-    control::Calibration hyst;
-    calibrateTo(hyst, 0.5, 1.5);
-    check(hyst.velocity(1.4, kDt) > 0.0, "spinta iniziale -> zoom in");
-    nearly(hyst.velocity(1.30, kDt), 0.0, 1e-12,
-           "sotto il massimo locale -> velocita' nulla (stop dello zoom in)");
+    // Monotonia: piu' ci si allontana dal neutro, piu' si va veloci.
+    control::Calibration a, b;
+    calibrateTo(a, 0.5, 1.5);
+    calibrateTo(b, 0.5, 1.5);
+    check(a.velocity(1.15, kDt, kTune) < b.velocity(1.30, kDt, kTune),
+          "velocita' monotona nella distanza dal neutro");
 
     // Sotto il minimo locale si va in zoom out.
     control::Calibration out;
     calibrateTo(out, 0.5, 1.5);
-    const double back = out.velocity(0.6, kDt);
+    const double back = out.velocity(0.6, kDt, kTune);
     check(back < 0.0, "sotto il minimo locale -> zoom out");
-    nearly(back, -config::kExtremaGain, 1e-9, "zoom out saturato vicino all'estremo basso");
+    nearly(back, -kTune.gain(), 1e-9, "zoom out saturato vicino all'estremo basso");
 
     // La banda locale non esce mai dagli estremi assoluti.
     control::Calibration clampd;
     calibrateTo(clampd, 0.5, 1.5);
-    clampd.velocity(99.0, kDt);
+    clampd.velocity(99.0, kDt, kTune);
     check(clampd.localMax() <= 1.5 + 1e-12, "il massimo locale non supera l'assoluto");
-    clampd.velocity(-99.0, kDt);
+    clampd.velocity(-99.0, kDt, kTune);
     check(clampd.localMin() >= 0.5 - 1e-12, "il minimo locale non scende sotto l'assoluto");
+
+    // Carattere fasico conservato: un calo VERO chiude comunque il gate.
+    control::Calibration drop;
+    calibrateTo(drop, 0.5, 1.5);
+    check(drop.velocity(1.4, kDt, kTune) > 0.0, "spinta iniziale -> zoom in");
+    nearly(drop.velocity(1.15, kDt, kTune), 0.0, 1e-12,
+           "calo netto sotto la banda -> velocita' nulla, il controllo resta fasico");
+}
+
+void testTolerance() {
+    group("9. Tolleranza di attivazione");
+
+    // Questo e' IL comportamento nuovo. Col bordo netto di prima, un indice che
+    // scendeva anche di poco sotto il massimo locale dava esattamente 0: l'uscita
+    // era un segnale commutato, non un controllo.
+    control::Calibration cal;
+    calibrateTo(cal, 0.5, 1.5);
+    cal.velocity(1.4, kDt, kTune);                     // fissa il massimo locale
+    const double partial = cal.velocity(1.25, kDt, kTune);
+    check(partial > 0.0, "poco sotto il massimo locale -> autorita' PARZIALE, non zero");
+    check(partial < kTune.gain(), "l'autorita' parziale resta sotto il gain pieno");
+
+    // Con tolleranza nulla si torna esattamente al gradino di prima: e' la prova
+    // che la tolleranza e' l'unica cosa che cambia.
+    control::Tunables hard = kTune;
+    hard.localTolerance = 0.0;
+    control::Calibration step;
+    calibrateTo(step, 0.5, 1.5);
+    step.velocity(1.4, kDt, hard);
+    nearly(step.velocity(1.25, kDt, hard), 0.0, 1e-12,
+           "tolleranza 0 -> ritorna il gradino netto");
+
+    // Le due componenti sono esposte separatamente: servono a capire QUALE delle
+    // due sta bloccando, perche' richiedono correzioni opposte.
+    check(cal.gate() > 0.0 && cal.gate() < 1.0, "gate parziale osservabile");
+    check(cal.magnitude() > 0.0, "ampiezza osservabile");
+}
+
+void testContinuity() {
+    group("10. Continuita' dell'uscita");
+
+    // Un indice che oscilla attorno a un valore alto: e' il caso in cui la legge
+    // precedente produceva il pettine, alternando zero e velocita' piena.
+    control::Calibration cal;
+    calibrateTo(cal, 0.5, 1.5);
+
+    int    zeros   = 0;
+    double maxJump = 0.0;
+    double prev    = 0.0;
+    for (int i = 0; i < 120; ++i) {
+        const double c = 1.28 + 0.05 * std::sin(2.0 * std::numbers::pi * i / 9.0);
+        const double v = cal.velocity(c, kDt, kTune);
+        if (i > 12) {                       // scarta il transitorio di aggancio
+            if (v == 0.0) ++zeros;
+            maxJump = std::max(maxJump, std::fabs(v - prev));
+        }
+        prev = v;
+    }
+    check(zeros == 0, "su segnale oscillante l'uscita non collassa mai a zero");
+    check(maxJump < 0.15 * kTune.gain(),
+          "nessuno scalino oltre il 15% del gain fra campioni adiacenti");
 }
 
 void testSmoother() {
@@ -263,9 +330,55 @@ void testSmoother() {
 
     control::IndexSmoother s;
     check(!s.initialized(), "non inizializzato prima del primo campione");
-    nearly(s.push(2.0), 2.0, 1e-12, "il primo campione inizializza senza transitorio");
-    nearly(s.push(3.0), 2.0 + 1.0 * config::kCalibIndexEma, 1e-12,
-           "EMA di denoise sul secondo campione");
+    nearly(s.push(2.0, kDt), 2.0, 1e-12, "il primo campione inizializza senza transitorio");
+
+    // Reiezione dei campioni anomali: e' il motivo per cui la mediana sta PRIMA
+    // dell'EMA. Un EMA da solo lo attenuerebbe ma poi lo spalmerebbe sulla coda.
+    control::IndexSmoother spike;
+    for (int i = 0; i < config::kIndexMedianTaps; ++i) spike.push(2.0, kDt);
+    const double before = spike.value();
+    const double after  = spike.push(50.0, kDt);
+    nearly(after, before, 1e-9, "un singolo campione anomalo non passa la mediana");
+
+    // Convergenza: su un ingresso costante l'uscita ci arriva.
+    control::IndexSmoother conv;
+    for (int i = 0; i < 400; ++i) conv.push(3.0, kDt);
+    nearly(conv.value(), 3.0, 1e-3, "su ingresso costante l'uscita converge");
+
+    // Due poli: l'uscita non insegue lo scalino quanto un polo singolo.
+    control::IndexSmoother slope;
+    for (int i = 0; i < config::kIndexMedianTaps; ++i) slope.push(0.0, kDt);
+    for (int i = 0; i < config::kIndexMedianTaps; ++i) slope.push(1.0, kDt);
+    check(slope.value() > 0.0 && slope.value() < 1.0,
+          "l'uscita resta fra i due livelli durante la transizione");
+}
+
+void testSmoothingPrimitives() {
+    group("11. Primitive di smoothing");
+
+    // Le costanti di tempo devono dare lo stesso risultato a rate diversi: e'
+    // tutto il motivo per cui non si usano gli alfa.
+    util::Ema fast, slow;
+    for (int i = 0; i < 600; ++i) fast.push(1.0, 1.0 / 60.0, 0.5);
+    for (int i = 0; i < 60;  ++i) slow.push(1.0, 1.0 / 6.0,  0.5);
+    nearly(fast.value(), slow.value(), 1e-3,
+           "stessa costante di tempo, rate diversi -> stesso valore a 10 s");
+
+    nearly(util::smoothstep01(0.0), 0.0, 1e-12, "smoothstep(0) = 0");
+    nearly(util::smoothstep01(1.0), 1.0, 1e-12, "smoothstep(1) = 1");
+    nearly(util::smoothstep01(0.5), 0.5, 1e-12, "smoothstep(0.5) = 0.5");
+    nearly(util::smoothstep01(-3.0), 0.0, 1e-12, "smoothstep satura sotto zero");
+    nearly(util::smoothstep01(3.0), 1.0, 1e-12, "smoothstep satura sopra uno");
+
+    util::MedianFilter<5> med;
+    med.push(1.0); med.push(1.0); med.push(1.0); med.push(1.0);
+    nearly(med.push(99.0), 1.0, 1e-12, "la mediana ignora il valore isolato");
+
+    // Decadimento verso zero, per quando il segnale sorgente manca.
+    util::Ema fade;
+    fade.set(1.0);
+    for (int i = 0; i < 100; ++i) fade.decay(1.0 / 60.0, 0.2);
+    check(fade.value() < 0.01, "senza segnale la velocita' decade a zero");
 }
 
 void testZoom() {
@@ -285,21 +398,49 @@ void testZoom() {
     nearly(z.authorityVelocity(0.0, control::Phase::Handover, config::kPhaseHandoverS),
            0.0, 1e-12, "handover a fine -> tutta autorita' all'input");
 
-    // Detent: sotto la soglia di aggancio la velocita' viene azzerata.
+    // Detent: l'aggancio richiede PERMANENZA. Un singolo frame sotto soglia non
+    // e' un utente fermo, e' un attraversamento dello zero: agganciare subito
+    // annullava il movimento appena guadagnato.
     control::ZoomController d;
-    const double weak = config::kEnterHoldFrac * config::kExtremaGain * 0.5;
-    nearly(d.applyHoldSelect(weak, kDt), 0.0, 1e-12, "velocita' debole -> aggancio del detent");
-    check(d.locked(), "il detent risulta agganciato");
+    const double weak = config::kEnterHoldFrac * kTune.gain() * 0.5;
+    d.applyHoldSelect(weak, kDt, kTune);
+    check(!d.locked(), "un solo frame sotto soglia NON aggancia");
+
+    double waited = kDt;
+    while (waited < config::kEnterHoldDwellS + kDt) {
+        d.applyHoldSelect(weak, kDt, kTune);
+        waited += kDt;
+    }
+    check(d.locked(), "dopo la permanenza richiesta il detent aggancia");
 
     // Sopra la soglia di sgancio si torna liberi.
-    const double strong = config::kBreakHoldFrac * config::kExtremaGain * 1.1;
-    nearly(d.applyHoldSelect(strong, kDt), strong, 1e-12, "spinta forte -> sgancio del detent");
+    const double strong = config::kBreakHoldFrac * kTune.gain() * 1.1;
+    nearly(d.applyHoldSelect(strong, kDt, kTune), strong, 1e-12,
+           "spinta forte -> sgancio del detent");
     check(!d.locked(), "il detent risulta sganciato");
+
+    // Refrattarieta': dopo lo sgancio si ottiene una finestra di movimento vera,
+    // non un singolo frame.
+    for (int i = 0; i < 4; ++i) d.applyHoldSelect(weak, kDt, kTune);
+    check(!d.locked(), "durante la refrattarieta' il lock non torna");
+    check(d.refractory() > 0.0, "la finestra refrattaria e' in corso");
+
+    // Interruttore diagnostico: con hold spento la velocita' passa intatta.
+    control::ZoomController off;
+    control::Tunables noHold = kTune;
+    noHold.holdEnabled = false;
+    for (int i = 0; i < 20; ++i) {
+        nearly(off.applyHoldSelect(weak, kDt, noHold), weak, 1e-12,
+               "hold spento -> la velocita' passa senza gating");
+        break;   // una asserzione basta, il resto e' solo per verificare il non-lock
+    }
+    for (int i = 0; i < 20; ++i) off.applyHoldSelect(weak, kDt, noHold);
+    check(!off.locked(), "hold spento -> non aggancia mai");
 
     // Integrazione: concentrandosi il focus sale e resta nel dominio [0,1].
     control::ZoomController run;
     for (int i = 0; i < 600; ++i) {
-        run.update(config::kExtremaGain, 1.0 / 60.0, control::Phase::Interactive, 0.0);
+        run.update(kTune.gain(), 1.0 / 60.0, control::Phase::Interactive, 0.0, kTune);
     }
     check(run.targetFocus() > 0.0, "velocita' positiva sostenuta -> il focus avanza");
     check(run.targetFocus() <= 1.0 && run.currentFocus() <= 1.0, "il focus resta in [0,1]");
@@ -315,7 +456,7 @@ void testZoom() {
     // L'outro e' scriptato: converge a prescindere dall'input.
     control::ZoomController outro;
     for (int i = 0; i < 3000; ++i) {
-        outro.update(0.0, 1.0 / 60.0, control::Phase::Outro, 0.0);
+        outro.update(0.0, 1.0 / 60.0, control::Phase::Outro, 0.0, kTune);
     }
     nearly(outro.targetFocus(), config::kOutroTargetFocus, 0.05,
            "l'outro converge sul focus finale");
@@ -334,6 +475,9 @@ int main() {
     testExtremaVelocity();
     testSmoother();
     testZoom();
+    testTolerance();
+    testContinuity();
+    testSmoothingPrimitives();
 
     std::printf("\n=== %d passed, %d failed ===\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
