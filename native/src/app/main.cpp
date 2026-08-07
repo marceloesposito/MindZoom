@@ -1073,6 +1073,24 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
         return 2;
     }
 
+    // Le immagini vanno decodificate PRIMA di creare i render target: è
+    // createTarget() a caricarne le bitmap di device, e se le sorgenti non ci
+    // sono ancora ne carica zero. Il risultato non è un errore, è un programma
+    // che gira senza mostrare nulla.
+    const std::wstring assets = exeDirectory() + L"\\assets";
+    if (!graphics.loadSprites(assets, config::kTotalImages)) {
+        if (!selfTest) {
+            MessageBoxW(hwnd,
+                        (L"Immagini non caricate da:\n" + assets +
+                         L"\n\nServono 1..12 in .webp oppure .png.\n\n"
+                         L"Se i file ci sono, probabilmente manca il codec WebP: "
+                         L"installa \"Estensioni immagini WebP\" dal Microsoft Store "
+                         L"oppure affianca gli stessi file convertiti in .png.").c_str(),
+                        L"Mind Zoom", MB_ICONERROR);
+        }
+        return 3;
+    }
+
     render::Renderer renderer;
     render::Renderer projRenderer;
     if (!renderer.init(graphics, hwnd)) {
@@ -1088,18 +1106,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
         g.projHwnd = nullptr;
     }
 
-    const std::wstring assets = exeDirectory() + L"\\assets";
-    if (!graphics.loadSprites(assets, config::kTotalImages)) {
+    // Le bitmap devono essere davvero arrivate sul target. Senza questo
+    // controllo un programma che non disegna nulla esce comunque con successo:
+    // è esattamente il modo in cui il difetto precedente è passato inosservato.
+    if (renderer.spriteCount() != config::kTotalImages) {
         if (!selfTest) {
-            MessageBoxW(hwnd,
-                        (L"Immagini non caricate da:\n" + assets +
-                         L"\n\nServono 1..12 in .webp oppure .png.\n\n"
-                         L"Se i file ci sono, probabilmente manca il codec WebP: "
-                         L"installa \"Estensioni immagini WebP\" dal Microsoft Store "
-                         L"oppure affianca gli stessi file convertiti in .png.").c_str(),
+            MessageBoxW(hwnd, L"Le immagini non sono state caricate sulla scheda grafica.",
                         L"Mind Zoom", MB_ICONERROR);
         }
-        return 3;
+        return 6;
     }
 
     if (selfTest) {

@@ -127,6 +127,8 @@ public:
 
     D2D1_SIZE_F size() const;
     bool        ready() const noexcept { return static_cast<bool>(target_); }
+    /** Bitmap effettivamente caricate SU QUESTO target, non quelle decodificate. */
+    int         spriteCount() const noexcept { return static_cast<int>(sprites_.size()); }
 
 private:
     bool createTarget();
