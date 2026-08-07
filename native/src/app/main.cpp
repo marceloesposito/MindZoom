@@ -8,7 +8,9 @@
 // La comunicazione è senza lock: ring SPSC verso il DSP, double buffer atomico
 // verso il render. Il thread di render non si blocca mai in attesa del segnale.
 
+#include "app/displays.hpp"
 #include "app/shared_state.hpp"
+#include "app/telemetry.hpp"
 #include "ble/muse.hpp"
 #include "ble/recording.hpp"
 #include "config.hpp"
@@ -56,6 +58,10 @@ constexpr render::Color kBad       {0.94f, 0.36f, 0.36f, 1.0f};
 constexpr render::Color kPanel     {0.05f, 0.06f, 0.09f, 0.92f};
 constexpr render::Color kRailBg    {1.0f, 1.0f, 1.0f, 0.08f};
 constexpr render::Color kTargetZone{0.30f, 0.85f, 0.55f, 0.22f};
+constexpr render::Color kGrid      {1.0f, 1.0f, 1.0f, 0.10f};
+constexpr render::Color kPlotBg    {0.04f, 0.05f, 0.07f, 0.88f};
+
+const app::PlotTheme kPlotTheme{kInk, kMuted, kAccent, kOk, kWarn, kBad, kGrid, kPlotBg};
 
 struct Shared {
     util::SpscRing<ble::Sample, 16384> ring;
@@ -86,6 +92,18 @@ struct Shared {
     // Riproduzione da file invece che dalla fascia.
     bool         replaying = false;
     std::wstring replayPath;
+
+    // --- schermi ---
+    // Con un monitor solo si resta a finestra unica, immagini con pannello
+    // sovrapposto: e' il comportamento di sempre e non deve mai rompersi.
+    std::vector<app::Display> displays;
+    HWND                 opHwnd   = nullptr;   // operatore: telemetria
+    HWND                 projHwnd = nullptr;   // proiezione: solo l'immagine
+    int                  projIndex = -1;       // indice in displays
+    std::atomic<bool>    choosing{false};      // schermata di scelta in corso
+    std::atomic<int>     candidate{-1};        // schermo evidenziato durante la scelta
+
+    bool dualScreen() const noexcept { return projHwnd != nullptr; }
 
     std::mutex                bleLogMutex;
     std::deque<std::wstring>  bleLog;
@@ -137,6 +155,31 @@ std::wstring newRecordingPath() {
 std::wstring fileNameOf(const std::wstring& path) {
     const auto slash = path.find_last_of(L"\\/");
     return (slash == std::wstring::npos) ? path : path.substr(slash + 1);
+}
+
+/** Sposta la finestra di proiezione sullo schermo indicato, a tutto schermo. */
+void placeProjection(int index) {
+    if (!g.projHwnd || index < 0 || index >= static_cast<int>(g.displays.size())) return;
+
+    const RECT& b = g.displays[static_cast<std::size_t>(index)].bounds;
+    SetWindowPos(g.projHwnd, HWND_TOPMOST, b.left, b.top,
+                 b.right - b.left, b.bottom - b.top, SWP_SHOWWINDOW);
+    g.candidate.store(index, std::memory_order_relaxed);
+}
+
+/** Conferma lo schermo di proiezione e ricorda la scelta per la prossima volta. */
+void confirmProjection(int index) {
+    if (index < 0 || index >= static_cast<int>(g.displays.size())) return;
+
+    g.projIndex = index;
+    g.choosing.store(false, std::memory_order_release);
+    placeProjection(index);
+    app::saveDisplayChoice(g.displays[static_cast<std::size_t>(index)].deviceName,
+                      app::layoutSignature(g.displays));
+
+    // La finestra dell'operatore deve tornare davanti: durante la scelta era la
+    // proiezione ad avere il fuoco, e i tasti servono qui.
+    if (g.opHwnd) SetForegroundWindow(g.opHwnd);
 }
 
 // ---------------------------------------------------------------------------
@@ -508,6 +551,85 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
     }
 }
 
+/**
+ * Sullo schermo candidato: un numero gigante col nome e la risoluzione.
+ *
+ * La finestra salta fisicamente da uno schermo all'altro mentre si scorre, così
+ * la scelta si conferma guardando, non leggendo un elenco e sperando che
+ * "DISPLAY2" sia quello giusto.
+ */
+void drawScreenPicker(render::Renderer& r, int candidate) {
+    const auto win = r.size();
+    r.fillRect(D2D1::RectF(0, 0, win.width, win.height), {0.03f, 0.05f, 0.08f, 1.0f});
+
+    const std::wstring number =
+        std::to_wstring(candidate + 1);
+    r.drawText(number,
+               D2D1::RectF(0, win.height * 0.5f - 190.0f, win.width, win.height * 0.5f + 60.0f),
+               260.0f, kAccent, render::TextAlign::Center, true);
+
+    std::wstring caption = L"Questo schermo";
+    if (candidate >= 0 && candidate < static_cast<int>(g.displays.size())) {
+        caption += L"  -  " + g.displays[static_cast<std::size_t>(candidate)].describe();
+    }
+    r.drawText(caption,
+               D2D1::RectF(0, win.height * 0.5f + 70.0f, win.width, win.height * 0.5f + 110.0f),
+               22.0f, kInk, render::TextAlign::Center);
+
+    r.drawText(L"Frecce per cambiare schermo   -   INVIO per confermare",
+               D2D1::RectF(0, win.height * 0.5f + 130.0f, win.width, win.height * 0.5f + 170.0f),
+               18.0f, kMuted, render::TextAlign::Center);
+}
+
+/** Sullo schermo dell'operatore: l'elenco, con evidenziato il candidato. */
+void drawScreenPickerPanel(render::Renderer& r, int candidate) {
+    const auto win = r.size();
+    const float cx = win.width * 0.5f;
+
+    r.fillRect(D2D1::RectF(0, 0, win.width, win.height), {0.0f, 0.0f, 0.0f, 0.78f});
+
+    const float panelW = 620.0f;
+    const float rowH   = 52.0f;
+    const float panelH = 250.0f + rowH * static_cast<float>(g.displays.size());
+    const D2D1_RECT_F panel = D2D1::RectF(cx - panelW / 2, win.height * 0.5f - panelH / 2,
+                                          cx + panelW / 2, win.height * 0.5f + panelH / 2);
+    r.fillRect(panel, kPanel, 18.0f);
+    r.drawRectOutline(panel, {1, 1, 1, 0.10f}, 1.0f, 18.0f);
+
+    float y = panel.top + 34.0f;
+    r.drawText(L"Su quale schermo proiettare?",
+               D2D1::RectF(panel.left, y, panel.right, y + 40.0f), 28.0f, kInk,
+               render::TextAlign::Center, true);
+    y += 56.0f;
+
+    r.drawText(L"Il partecipante vedra' solo l'immagine, a schermo intero.\n"
+               L"Qui restano la telemetria e i comandi.",
+               D2D1::RectF(panel.left + 36, y, panel.right - 36, y + 60.0f), 16.0f, kMuted);
+    y += 76.0f;
+
+    for (std::size_t i = 0; i < g.displays.size(); ++i) {
+        const bool sel = (static_cast<int>(i) == candidate);
+        const D2D1_RECT_F row = D2D1::RectF(panel.left + 30, y, panel.right - 30, y + rowH - 8.0f);
+        if (sel) {
+            r.fillRect(row, {kAccent.r, kAccent.g, kAccent.b, 0.20f}, 8.0f);
+            r.drawRectOutline(row, {kAccent.r, kAccent.g, kAccent.b, 0.65f}, 1.5f, 8.0f);
+        }
+        r.drawText(std::to_wstring(i + 1) + L".   " + g.displays[i].describe(),
+                   D2D1::RectF(row.left + 18, row.top + 10, row.right - 18, row.bottom),
+                   18.0f, sel ? kInk : kMuted, render::TextAlign::Left, sel);
+        y += rowH;
+    }
+
+    y += 14.0f;
+    r.drawText(L"Frecce per cambiare   -   INVIO per confermare",
+               D2D1::RectF(panel.left, y, panel.right, y + 30.0f), 17.0f, kAccent,
+               render::TextAlign::Center, true);
+    y += 34.0f;
+    r.drawText(L"Il numero compare a schermo intero sullo schermo evidenziato.",
+               D2D1::RectF(panel.left + 30, y, panel.right - 30, y + 26.0f), 13.0f,
+               {0.45f, 0.48f, 0.55f, 1.0f}, render::TextAlign::Center);
+}
+
 void drawHud(render::Renderer& r, const app::ControlState& st, const control::ZoomController& zoom,
              const control::CrossfadeState* cf, const control::Tunables& t) {
     const float x = 24.0f;
@@ -644,17 +766,86 @@ void drawHud(render::Renderer& r, const app::ControlState& st, const control::Zo
 // Finestra
 // ---------------------------------------------------------------------------
 
+/**
+ * Tasti della fase di scelta dello schermo. È una modalità a sé, prima
+ * dell'esperienza: qui le frecce scelgono il monitor, dopo la conferma tornano
+ * a significare tolleranza e sensibilità.
+ */
+bool handlePickerKey(WPARAM wp) {
+    const int n = static_cast<int>(g.displays.size());
+    if (n <= 0) return false;
+
+    int cur = g.candidate.load(std::memory_order_relaxed);
+    if (cur < 0) cur = 0;
+
+    switch (wp) {
+        case VK_LEFT:
+        case VK_UP:
+            placeProjection((cur - 1 + n) % n);
+            return true;
+        case VK_RIGHT:
+        case VK_DOWN:
+            placeProjection((cur + 1) % n);
+            return true;
+        case VK_RETURN:
+            confirmProjection(cur);
+            return true;
+        default:
+            // Anche i tasti numerici: con più di due schermi è più rapido.
+            if (wp >= '1' && wp < static_cast<WPARAM>('1' + n)) {
+                confirmProjection(static_cast<int>(wp - '1'));
+                return true;
+            }
+            return false;
+    }
+}
+
 LRESULT CALLBACK windowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_DESTROY:
-            g.running.store(false, std::memory_order_release);
-            PostQuitMessage(0);
+            // Solo la finestra dell'operatore chiude l'applicazione: la
+            // proiezione viene distrutta insieme, non è lei a comandare.
+            if (hwnd == g.opHwnd) {
+                g.running.store(false, std::memory_order_release);
+                PostQuitMessage(0);
+            }
             return 0;
 
+        case WM_DISPLAYCHANGE:
+            // Uno schermo scollegato o aggiunto: la finestra di proiezione
+            // potrebbe essere finita fuori dal desktop visibile, cioè invisibile
+            // e irraggiungibile. Si riparte dalla scelta.
+            if (hwnd == g.opHwnd) {
+                g.displays = app::enumerateDisplays();
+                if (g.projHwnd && g.displays.size() >= 2) {
+                    const int match = app::matchStoredChoice(g.displays);
+                    if (match >= 0) {
+                        confirmProjection(match);
+                    } else {
+                        g.choosing.store(true, std::memory_order_release);
+                        placeProjection(g.displays.size() > 1 ? 1 : 0);
+                    }
+                }
+            }
+            return 0;
+
+        case WM_SETCURSOR:
+            // Sul proiettore il puntatore non deve comparire: è nell'inquadratura
+            // del partecipante.
+            if (hwnd == g.projHwnd && LOWORD(lp) == HTCLIENT) {
+                SetCursor(nullptr);
+                return TRUE;
+            }
+            break;
+
         case WM_KEYDOWN:
+            // Durante la scelta i tasti hanno un altro significato. La
+            // proiezione inoltra qui: da qualunque finestra si prema, funziona.
+            if (g.choosing.load(std::memory_order_acquire) && handlePickerKey(wp)) return 0;
+
             switch (wp) {
                 case VK_ESCAPE:
-                    PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                    PostMessageW(g.opHwnd ? g.opHwnd : hwnd, WM_CLOSE, 0, 0);
                     return 0;
                 case VK_RETURN: {
                     const auto st = g.state.read();
@@ -668,6 +859,13 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     }
                     return 0;
                 }
+                case 'D':
+                    // Riapre la scelta dello schermo senza riavviare.
+                    if (g.displays.size() >= 2 && g.projHwnd) {
+                        g.choosing.store(true, std::memory_order_release);
+                        placeProjection(g.projIndex >= 0 ? g.projIndex : 1);
+                    }
+                    return 0;
                 case 'H':
                     g.hudVisible.store(!g.hudVisible.load(std::memory_order_relaxed),
                                        std::memory_order_relaxed);
@@ -700,16 +898,21 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
 
         default:
-            return DefWindowProcW(hwnd, msg, wp, lp);
+            break;
     }
+    // Ci si arriva anche da WM_SETCURSOR sulla finestra dell'operatore, dove il
+    // puntatore deve restare quello di sistema.
+    return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
 /** Opzioni da riga di comando. */
 struct Options {
     bool         selfTest = false;
+    bool         listScreens = false;
     bool         record   = true;    // la registrazione è il default: serve dopo,
                                      // e chiederla ogni volta significa non averla
                                      // proprio la volta in cui servirebbe
+    bool         singleScreen = false;   // forza il comportamento a finestra unica
     std::wstring replayPath;
     bool         badArg   = false;
     std::wstring badArgText;
@@ -724,7 +927,9 @@ Options parseOptions(PWSTR cmdLine) {
     for (int i = 0; i < argc; ++i) {
         const std::wstring a = argv[i];
         if (a == L"--selftest")            o.selfTest = true;
+        else if (a == L"--schermi")        o.listScreens = true;
         else if (a == L"--senza-log")      o.record = false;
+        else if (a == L"--schermo-singolo") o.singleScreen = true;
         else if (a == L"--riproduci" && i + 1 < argc) o.replayPath = argv[++i];
         else if (!a.empty() && a[0] == L'-') {
             o.badArg = true;
@@ -738,6 +943,67 @@ Options parseOptions(PWSTR cmdLine) {
     // copia della stessa cosa.
     if (!o.replayPath.empty()) o.record = false;
     return o;
+}
+
+/**
+ * Scrive sulla console che ha lanciato il programma, se c'è.
+ *
+ * L'applicazione è del sottosistema grafico e non ha una console propria: senza
+ * questo, una diagnostica da riga di comando dovrebbe uscire in una finestra
+ * modale, che blocca chi la sta usando da uno script.
+ * @return false se non c'era nessuna console: allora serve la finestra.
+ */
+bool writeToParentConsole(const std::wstring& text) {
+    if (!AttachConsole(ATTACH_PARENT_PROCESS)) return false;
+
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (out == INVALID_HANDLE_VALUE || out == nullptr) {
+        FreeConsole();
+        return false;
+    }
+    DWORD written = 0;
+    // WriteConsoleW vale solo su una console vera: con l'output rediretto su file
+    // o pipe l'handle non lo è, e va scritto a byte in UTF-8.
+    if (!WriteConsoleW(out, text.c_str(), static_cast<DWORD>(text.size()), &written, nullptr)) {
+        const int n = WideCharToMultiByte(CP_UTF8, 0, text.c_str(),
+                                          static_cast<int>(text.size()),
+                                          nullptr, 0, nullptr, nullptr);
+        if (n > 0) {
+            std::string utf8(static_cast<std::size_t>(n), '\0');
+            WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()),
+                                utf8.data(), n, nullptr, nullptr);
+            WriteFile(out, utf8.data(), static_cast<DWORD>(utf8.size()), &written, nullptr);
+        }
+    }
+    FreeConsole();
+    return true;
+}
+
+/** --schermi: elenco dei monitor rilevati, senza aprire nulla. */
+int reportScreens() {
+    const auto displays = app::enumerateDisplays();
+
+    std::wstring text = L"Schermi rilevati: " + std::to_wstring(displays.size()) + L"\n\n";
+    for (std::size_t i = 0; i < displays.size(); ++i) {
+        text += std::to_wstring(i + 1) + L".  " + displays[i].describe() + L"\n     " +
+                displays[i].deviceName + L"\n";
+    }
+
+    if (displays.size() < 2) {
+        text += L"\nCon un solo schermo il programma resta a finestra unica:\n"
+                L"immagini e pannello diagnostico insieme.";
+    } else {
+        const int stored = app::matchStoredChoice(displays);
+        text += L"\nProiezione: ";
+        text += (stored >= 0) ? (L"schermo " + std::to_wstring(stored + 1) + L" (memorizzato)")
+                              : std::wstring(L"da scegliere al prossimo avvio");
+    }
+    text += L"\n";
+
+    if (!writeToParentConsole(L"\n" + text + L"\n")) {
+        MessageBoxW(nullptr, text.c_str(), L"Mind Zoom - schermi", MB_ICONINFORMATION);
+    }
+    return 0;
 }
 
 } // namespace
@@ -755,14 +1021,22 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
                      L"Opzioni disponibili:\n"
                      L"  --riproduci FILE.mzr   rigioca una sessione registrata,\n"
                      L"                         senza usare la fascia\n"
-                     L"  --senza-log            non registrare questa sessione\n\n"
+                     L"  --senza-log            non registrare questa sessione\n"
+                     L"  --schermi              elenca i monitor rilevati ed esce\n"
+                     L"  --schermo-singolo      non usare il secondo schermo\n\n"
                      L"Senza opzioni il programma registra da solo in registrazioni\\.")
                         .c_str(),
                     L"Mind Zoom", MB_ICONINFORMATION);
         return 1;
     }
 
+    if (opt.listScreens) return reportScreens();
+
     if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return 1;
+
+    // --- schermi ---
+    g.displays = app::enumerateDisplays();
+    const bool wantDual = !selfTest && !opt.singleScreen && g.displays.size() >= 2;
 
     WNDCLASSEXW wc{};
     wc.cbSize        = sizeof(wc);
@@ -773,21 +1047,49 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
     wc.lpszClassName = L"MindZoomWindow";
     RegisterClassExW(&wc);
 
+    WNDCLASSEXW pc = wc;
+    pc.lpszClassName = L"MindZoomProjection";
+    pc.hCursor       = nullptr;   // sul proiettore il puntatore non deve comparire
+    RegisterClassExW(&pc);
+
     HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"Mind Zoom",
                                 WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 1280, 800,
                                 nullptr, nullptr, instance, nullptr);
     if (!hwnd) return 1;
+    g.opHwnd = hwnd;
 
-    render::Renderer renderer;
-    if (!renderer.init(hwnd)) {
+    // Finestra di proiezione: senza bordo, sopra tutto, dimensionata sul monitor.
+    if (wantDual) {
+        g.projHwnd = CreateWindowExW(WS_EX_TOPMOST, pc.lpszClassName, L"Mind Zoom",
+                                     WS_POPUP, 0, 0, 640, 480,
+                                     nullptr, nullptr, instance, nullptr);
+    }
+
+    render::GraphicsCore graphics;
+    if (!graphics.init()) {
         if (!selfTest) {
             MessageBoxW(hwnd, L"Inizializzazione di Direct2D fallita.", L"Mind Zoom", MB_ICONERROR);
         }
         return 2;
     }
 
+    render::Renderer renderer;
+    render::Renderer projRenderer;
+    if (!renderer.init(graphics, hwnd)) {
+        if (!selfTest) {
+            MessageBoxW(hwnd, L"Inizializzazione di Direct2D fallita.", L"Mind Zoom", MB_ICONERROR);
+        }
+        return 2;
+    }
+    if (g.projHwnd && !projRenderer.init(graphics, g.projHwnd)) {
+        // La proiezione è un di più: se non si inizializza si continua a schermo
+        // singolo invece di negare l'esperienza.
+        DestroyWindow(g.projHwnd);
+        g.projHwnd = nullptr;
+    }
+
     const std::wstring assets = exeDirectory() + L"\\assets";
-    if (!renderer.loadSprites(assets, config::kTotalImages)) {
+    if (!graphics.loadSprites(assets, config::kTotalImages)) {
         if (!selfTest) {
             MessageBoxW(hwnd,
                         (L"Immagini non caricate da:\n" + assets +
@@ -801,12 +1103,27 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
     }
 
     if (selfTest) {
-        // Un frame completo: sprite in crossfade, scheda di calibrazione e HUD,
-        // cioè ogni percorso di disegno dell'applicazione.
+        // Un frame completo: sprite in crossfade, scheda di calibrazione, HUD,
+        // scelta schermo e telemetria, cioè ogni percorso di disegno.
         control::ZoomController probe;
         app::ControlState st;
         st.calibStage = static_cast<int>(control::CalibStage::Concentrate);
         st.calibRemaining = 12.0;
+        st.calibValid = true;
+        st.absMin = 0.5; st.absMax = 1.5; st.neutral = 1.0;
+        st.localMin = 0.9; st.localMax = 1.2;
+
+        // Un po' di storia finta: senza, le tracce non verrebbero disegnate e il
+        // percorso delle spezzate resterebbe non verificato.
+        app::TelemetryHistory history;
+        for (int i = 0; i < 200; ++i) {
+            st.frames = static_cast<std::uint64_t>(i) + 1;
+            st.smoothedIndex = 1.0 + 0.3 * std::sin(i * 0.1);
+            st.rawIndex      = st.smoothedIndex + 0.05;
+            st.velocity      = 0.2 * std::sin(i * 0.07);
+            st.maxAbsRaw     = 80.0 + 20.0 * std::sin(i * 0.05);
+            history.append(st, 0.4, 0.38, i % 40 < 5);
+        }
 
         renderer.begin(kBg);
         const auto cf = probe.crossfade();
@@ -814,17 +1131,35 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
                             static_cast<float>(cf.activeAlpha));
         renderer.drawSprite(cf.activeIndex + 1, static_cast<float>(cf.nextScale),
                             static_cast<float>(cf.nextAlpha));
+        app::drawTelemetry(renderer, D2D1::RectF(20, 20, 600, 700), history, st,
+                      control::Tunables{}, kPlotTheme);
         drawCalibrationCard(renderer, st, 0.6);
         drawHud(renderer, st, probe, &cf, control::Tunables{});
+        drawScreenPickerPanel(renderer, 0);
+        drawScreenPicker(renderer, 0);
         const bool drawn = renderer.end();
 
         renderer.shutdown();
+        graphics.shutdown();
         DestroyWindow(hwnd);
         CoUninitialize();
         return drawn ? 0 : 4;
     }
 
     ShowWindow(hwnd, showCmd);
+
+    // --- scelta dello schermo di proiezione ---
+    if (g.projHwnd) {
+        const int stored = app::matchStoredChoice(g.displays);
+        if (stored >= 0) {
+            confirmProjection(stored);
+        } else {
+            // Candidato di partenza: il primo schermo NON primario, che è quasi
+            // sempre quello giusto. Resta comunque da confermare guardando.
+            g.choosing.store(true, std::memory_order_release);
+            placeProjection(1);
+        }
+    }
 
     // --- sorgente del segnale: la fascia, oppure una registrazione ---
     std::vector<ble::Sample> replaySamples;
@@ -876,6 +1211,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
     control::ZoomController zoom;
     double squarePos = 0.5;   // posizione filtrata del quadratino (EMA a frame rate)
     util::Ema velRender;      // interpola la velocità dai 5.3 Hz del DSP al vsync
+    app::TelemetryHistory history;   // storia per i grafici
 
     g.publishTunables();      // il DSP deve trovare i default già pubblicati
 
@@ -901,9 +1237,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
         GetClientRect(hwnd, &rc);
         renderer.resize(static_cast<UINT>(rc.right - rc.left),
                         static_cast<UINT>(rc.bottom - rc.top));
+        if (g.projHwnd) {
+            RECT pr{};
+            GetClientRect(g.projHwnd, &pr);
+            projRenderer.resize(static_cast<UINT>(pr.right - pr.left),
+                                static_cast<UINT>(pr.bottom - pr.top));
+        }
 
         const auto st = g.state.read();
         const auto phase = static_cast<control::Phase>(st.phase);
+        const bool choosing = g.choosing.load(std::memory_order_acquire);
 
         // Interpolazione 5.3 Hz -> vsync. Il DSP pubblica un valore nuovo ogni
         // 187 ms: applicandolo tale e quale si sente uno scalino ad ogni
@@ -919,20 +1262,75 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
         // movimento deve essere a 60.
         squarePos += (st.calibDisplayTarget - squarePos) * config::kCalibDisplayEma;
 
-        renderer.begin(kBg);
+        // Storia per i grafici: si appende solo sui frame nuovi del DSP, non a
+        // 60 Hz, altrimenti ogni valore comparirebbe undici volte.
+        history.append(st, zoom.targetFocus(), zoom.currentFocus(), zoom.locked());
 
         const auto cf = zoom.crossfade();
-        renderer.drawSprite(cf.activeIndex, static_cast<float>(cf.activeScale),
-                            static_cast<float>(cf.activeAlpha));
-        renderer.drawSprite(cf.activeIndex + 1, static_cast<float>(cf.nextScale),
-                            static_cast<float>(cf.nextAlpha));
+        const bool showCard = (phase == control::Phase::Onboarding);
 
-        if (phase == control::Phase::Onboarding) {
+        // --- schermo di proiezione: il partecipante ---
+        // In interazione qui NON va disegnato nulla oltre all'immagine.
+        if (g.projHwnd) {
+            projRenderer.begin(kBg);
+            projRenderer.drawSprite(cf.activeIndex, static_cast<float>(cf.activeScale),
+                                    static_cast<float>(cf.activeAlpha));
+            projRenderer.drawSprite(cf.activeIndex + 1, static_cast<float>(cf.nextScale),
+                                    static_cast<float>(cf.nextAlpha));
+            if (choosing) {
+                drawScreenPicker(projRenderer, g.candidate.load(std::memory_order_relaxed));
+            } else if (showCard) {
+                drawCalibrationCard(projRenderer, st, squarePos);
+            }
+            projRenderer.end();
+        }
+
+        // --- schermo dell'operatore ---
+        renderer.begin(kBg);
+
+        if (g.projHwnd) {
+            // Telemetria a tutto campo. L'immagine resta come miniatura: serve a
+            // vedere cosa sta guardando il partecipante senza girarsi.
+            const auto win = renderer.size();
+            const float thumbW = std::min(360.0f, win.width * 0.32f);
+            const float thumbH = thumbW * 0.62f;
+            const D2D1_RECT_F thumb = D2D1::RectF(win.width - thumbW - 20.0f, 20.0f,
+                                                  win.width - 20.0f, 20.0f + thumbH);
+
+            app::drawTelemetry(renderer,
+                          D2D1::RectF(20.0f, 20.0f, std::max(320.0f, win.width - thumbW - 44.0f),
+                                      win.height - 20.0f),
+                          history, st, g.tune, kPlotTheme);
+
+            renderer.drawSpriteIn(cf.activeIndex, thumb, static_cast<float>(cf.activeScale),
+                                  static_cast<float>(cf.activeAlpha));
+            renderer.drawSpriteIn(cf.activeIndex + 1, thumb, static_cast<float>(cf.nextScale),
+                                  static_cast<float>(cf.nextAlpha));
+            renderer.drawRectOutline(thumb, {1, 1, 1, 0.18f}, 1.0f, 6.0f);
+            renderer.drawText(L"proiezione   " + std::to_wstring(cf.magnification) + L"x",
+                              D2D1::RectF(thumb.left, thumb.bottom + 4.0f, thumb.right,
+                                          thumb.bottom + 22.0f),
+                              12.0f, kMuted, render::TextAlign::Center);
+        } else {
+            // Schermo singolo: comportamento di sempre, immagine a tutto campo.
+            renderer.drawSprite(cf.activeIndex, static_cast<float>(cf.activeScale),
+                                static_cast<float>(cf.activeAlpha));
+            renderer.drawSprite(cf.activeIndex + 1, static_cast<float>(cf.nextScale),
+                                static_cast<float>(cf.nextAlpha));
+        }
+
+        // La scheda di calibrazione compare su ENTRAMBI gli schermi: l'operatore
+        // deve vedere esattamente ciò che vede il partecipante mentre lo guida.
+        if (showCard && !choosing) {
             drawCalibrationCard(renderer, st, squarePos);
         }
 
-        if (g.hudVisible.load(std::memory_order_relaxed)) {
+        if (g.hudVisible.load(std::memory_order_relaxed) && !choosing) {
             drawHud(renderer, st, zoom, &cf, g.tune);
+        }
+
+        if (choosing) {
+            drawScreenPickerPanel(renderer, g.candidate.load(std::memory_order_relaxed));
         }
 
         renderer.end();
@@ -951,7 +1349,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
     const double secs = g.recorder.seconds();
     g.recorder.close();
 
+    projRenderer.shutdown();
     renderer.shutdown();
+    graphics.shutdown();
     CoUninitialize();
 
     if (saved) {

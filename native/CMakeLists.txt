@@ -43,7 +43,7 @@ enable_testing()
 
 # Test numerici: port dei .test.js, stesse attese sugli stessi valori.
 add_executable(mz_tests tests/test_main.cpp)
-target_link_libraries(mz_tests PRIVATE mz_core)
+target_link_libraries(mz_tests PRIVATE mz_core mz_platform)
 add_test(NAME core COMMAND mz_tests)
 
 # Sonda da console: connette il Muse e stampa la diagnostica del DSP nativo,
@@ -61,9 +61,17 @@ add_library(mz_render STATIC src/render/renderer.cpp)
 target_link_libraries(mz_render PUBLIC mz_core d2d1 dwrite windowscodecs)
 
 # L'applicazione. WIN32 = sottosistema grafico, niente finestra di console.
-# shell32: CommandLineToArgvW, per le opzioni di registrazione/riproduzione.
-add_executable(mz_app WIN32 src/app/main.cpp)
-target_link_libraries(mz_app PRIVATE mz_ble mz_render shlwapi shell32)
+# Enumerazione dei monitor e memoria della scelta. In libreria a sé perché i
+# test devono poterla esercitare senza tirarsi dietro finestre e Direct2D.
+add_library(mz_platform STATIC src/app/displays.cpp)
+target_link_libraries(mz_platform PUBLIC mz_core shell32 ole32)
+
+# shell32: CommandLineToArgvW e SHGetKnownFolderPath (opzioni, scelta schermo).
+add_executable(mz_app WIN32
+    src/app/main.cpp
+    src/app/telemetry.cpp
+)
+target_link_libraries(mz_app PRIVATE mz_ble mz_render mz_platform shlwapi)
 set_target_properties(mz_app PROPERTIES OUTPUT_NAME "MindZoom")
 
 # Gli asset viaggiano accanto all'eseguibile: l'app li cerca in <exe>\assets.

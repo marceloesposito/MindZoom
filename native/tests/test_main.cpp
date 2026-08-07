@@ -2,6 +2,7 @@
 // tests/stft.test.js: stesse attese sugli stessi valori, così il port si valida
 // contro la pipeline JS già tarata sul campo invece che contro sé stesso.
 
+#include "app/displays.hpp"
 #include "ble/recording.hpp"
 #include "config.hpp"
 #include "control/calibration.hpp"
@@ -579,6 +580,40 @@ void testRecording() {
     _wremove(L"mz_test_garbage.mzr");
 }
 
+void testDisplays() {
+    group("14. Enumerazione degli schermi");
+
+    const auto displays = app::enumerateDisplays();
+    std::printf("        (rilevati %zu schermi su questa macchina)\n", displays.size());
+
+    check(!displays.empty(), "almeno uno schermo viene rilevato");
+    if (displays.empty()) return;
+
+    check(displays[0].primary, "il primario e' il primo: e' il candidato per l'operatore");
+
+    bool sane = true;
+    for (const auto& d : displays) {
+        if (d.width() <= 0 || d.height() <= 0 || d.deviceName.empty()) sane = false;
+    }
+    check(sane, "ogni schermo ha nome e dimensioni sensate");
+    check(!displays[0].describe().empty(), "la descrizione non e' vuota");
+
+    // La firma deve cambiare col layout: e' cio' su cui si decide se la scelta
+    // memorizzata e' ancora valida. Se non cambiasse, si proietterebbe su uno
+    // schermo che non e' piu' quello di prima.
+    const auto sig = app::layoutSignature(displays);
+    check(!sig.empty(), "la firma del layout non e' vuota");
+    check(app::layoutSignature(displays) == sig, "la firma e' stabile a parita' di layout");
+
+    auto moved = displays;
+    moved[0].bounds.right += 1;
+    check(app::layoutSignature(moved) != sig, "la firma cambia se cambia una risoluzione");
+
+    auto fewer = displays;
+    fewer.pop_back();
+    check(app::layoutSignature(fewer) != sig, "la firma cambia se cambia il numero di schermi");
+}
+
 } // namespace
 
 int main() {
@@ -597,6 +632,7 @@ int main() {
     testFrameRateIndependence();
     testSmoothingPrimitives();
     testRecording();
+    testDisplays();
 
     std::printf("\n=== %d passed, %d failed ===\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
