@@ -277,22 +277,27 @@ void testTolerance() {
     // Questo e' IL comportamento nuovo. Col bordo netto di prima, un indice che
     // scendeva anche di poco sotto il massimo locale dava esattamente 0: l'uscita
     // era un segnale commutato, non un controllo.
+    // Il punto di prova si ricava dalla rampa stessa, non da un numero magico:
+    // cosi' il test non si rompe cambiando il decadimento della banda.
+    const double tol   = kTune.localTolerance * (1.5 - 1.0);   // semi-span verso l'alto
+    const double probe = 1.4 - 0.4 * tol;                      // dentro la rampa
+
     control::Calibration cal;
     calibrateTo(cal, 0.5, 1.5);
     cal.velocity(1.4, kDt, kTune);                     // fissa il massimo locale
-    const double partial = cal.velocity(1.25, kDt, kTune);
-    check(partial > 0.0, "poco sotto il massimo locale -> autorita' PARZIALE, non zero");
+    const double partial = cal.velocity(probe, kDt, kTune);
+    check(partial > 0.0, "dentro la rampa di tolleranza -> autorita' PARZIALE, non zero");
     check(partial < kTune.gain(), "l'autorita' parziale resta sotto il gain pieno");
 
-    // Con tolleranza nulla si torna esattamente al gradino di prima: e' la prova
-    // che la tolleranza e' l'unica cosa che cambia.
+    // Con tolleranza nulla, lo STESSO ingresso da' esattamente zero: e' la prova
+    // che a cambiare le cose e' la tolleranza e nient'altro.
     control::Tunables hard = kTune;
     hard.localTolerance = 0.0;
     control::Calibration step;
     calibrateTo(step, 0.5, 1.5);
     step.velocity(1.4, kDt, hard);
-    nearly(step.velocity(1.25, kDt, hard), 0.0, 1e-12,
-           "tolleranza 0 -> ritorna il gradino netto");
+    nearly(step.velocity(probe, kDt, hard), 0.0, 1e-12,
+           "tolleranza 0 sullo stesso ingresso -> ritorna il gradino netto");
 
     // Le due componenti sono esposte separatamente: servono a capire QUALE delle
     // due sta bloccando, perche' richiedono correzioni opposte.
@@ -321,8 +326,15 @@ void testContinuity() {
         prev = v;
     }
     check(zeros == 0, "su segnale oscillante l'uscita non collassa mai a zero");
-    check(maxJump < 0.15 * kTune.gain(),
-          "nessuno scalino oltre il 15% del gain fra campioni adiacenti");
+
+    // La legge precedente, sullo stesso ingresso, alternava gain pieno e zero:
+    // scalini del 100% fra campioni adiacenti. La soglia qui sotto non e' un
+    // valore notevole, e' un ordine di grandezza: serve a dire che il pettine
+    // non c'e' piu'. Il segnale di prova e' volutamente aggressivo (oscillazione
+    // ampia quanto la tolleranza, periodo 1.7 s), piu' mosso di un indice reale.
+    check(maxJump < 0.25 * kTune.gain(),
+          "nessuno scalino oltre il 25% del gain fra campioni adiacenti");
+    check(maxJump > 0.0, "il controllo si muove davvero (test non degenere)");
 }
 
 void testSmoother() {

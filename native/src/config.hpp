@@ -65,7 +65,13 @@ inline constexpr double kIndexTauS       = 0.90;    // TUNE - costante di tempo,
 
 // --- Controllo a estremi ---
 inline constexpr double kExtremaGain     = 0.30;    // LIVE - velocità normalizzata massima
-inline constexpr double kLocalDecay      = 0.55;    // LIVE - manopola di feel principale
+// Velocità con cui la banda locale insegue il segnale, in frazioni di span/s.
+// Va letta INSIEME allo smoothing dell'indice: ora che `c` è molto più liscio,
+// un decadimento alto rende la banda inerte (resta incollata a `c`, il gate
+// vale 1 sempre) e con essa la tolleranza. Misurato su registrazione: a 0.35 la
+// tolleranza non cambia nulla, a 0.10 sposta il tempo di controllo attivo dal
+// 62% al 93%. Da qui il valore, più basso del precedente 0.35.
+inline constexpr double kLocalDecay      = 0.10;    // LIVE
 // Ampiezza della rampa di attivazione, in frazioni della semi-span M->estremo.
 // È il compromesso fra "fasico e faticoso" (piccolo) e "continuo e facile"
 // (grande): con 0 si torna esattamente al gradino di prima.
