@@ -36,6 +36,17 @@ INVIO   avvia la calibrazione (e la ripete se non riesce)
 H       mostra o nasconde il pannello di diagnostica
 ESC     esci
 
+Taratura dal vivo, a programma aperto (i valori si leggono nel pannello H):
+
+FRECCE SU / GIU'      sensibilita': quanto e' veloce lo zoom
+FRECCE SIN / DES      tolleranza: quanto e' facile far partire il movimento
+S / MAIUSC+S          smoothing: piu' alto = piu' fluido ma piu' lento
+L                     accende e spegne l'aggancio ai livelli (diagnostico)
+R                     riporta tutto ai valori di partenza
+
+Non serve ricompilare nulla: si prova con la fascia in testa e si tiene il
+valore che va meglio.
+
 
 LA CALIBRAZIONE
 ---------------
@@ -75,9 +86,50 @@ Il pannello di diagnostica (tasto H) dice sempre a che punto e' il sistema.
   rilassa la mandibola: i muscoli del viso disturbano molto la lettura.
 
 Lo zoom non si muove
-  Controlla che la calibrazione sia stata completata: il pannello deve mostrare
-  una "Banda" con due valori, non "calibrazione in corso".
+  Controlla prima che la calibrazione sia stata completata: il pannello deve
+  mostrare una "Banda" con due valori, non "calibrazione in corso".
+
+  Poi guarda la BARRA DI ATTIVAZIONE nel pannello H. Il segnalino azzurro e' la
+  tua concentrazione adesso; la fascia verde a destra e la gialla a sinistra
+  sono le zone in cui lo zoom si attiva. Sotto, due numeri:
+
+    Gate basso      la banda non sta lasciando passare: allarga la tolleranza
+                    con la freccia DESTRA, o spingi in modo piu' deciso.
+    Ampiezza bassa  sei vicino al neutro: serve concentrarti di piu', oppure
+                    una calibrazione con un contrasto piu' marcato fra le fasi.
+
+  Sono due situazioni diverse e chiedono correzioni opposte: per questo i due
+  numeri sono separati.
+
+  Se premendo L (che spegne l'aggancio ai livelli) lo zoom comincia a rispondere,
+  il problema e' l'aggancio, non la lettura: alza la sensibilita' con la freccia SU.
 
 La fascia si scollega dopo poco
   Quasi sempre e' la batteria in esaurimento. Mettila in carica.
   Il programma prova comunque a riagganciarsi da solo.
+
+
+REGISTRARE UNA SESSIONE (facoltativo)
+-------------------------------------
+Nella cartella c'e' anche mz_probe.exe, uno strumento da riga di comando.
+Serve a registrare una sessione e a ritararla dopo, offline, senza dover
+rimettere la fascia ad ogni tentativo.
+
+Apri il Prompt dei comandi nella cartella e scrivi:
+
+  mz_probe.exe --record sessione.mzr
+
+Indossa la fascia e fai la calibrazione come faresti nel programma: prima 15
+secondi di concentrazione, poi 15 di rilassamento, poi usa lo zoom
+normalmente. Ctrl+C per chiudere.
+
+Poi puoi riprovare la stessa registrazione con tarature diverse:
+
+  mz_probe.exe --replay sessione.mzr --tolleranza 0.10
+  mz_probe.exe --replay sessione.mzr --tolleranza 0.30
+
+Alla fine di ogni prova compare un riepilogo. La riga che conta e'
+"tempo con controllo attivo": piu' e' alta, piu' lo zoom risulta guidabile.
+Il valore che ti convince diventa quello da impostare con le frecce.
+
+  mz_probe.exe --help    per l'elenco completo delle opzioni
