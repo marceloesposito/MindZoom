@@ -353,6 +353,46 @@ void testSmoother() {
           "l'uscita resta fra i due livelli durante la transizione");
 }
 
+void testFrameRateIndependence() {
+    group("12. Indipendenza dal frame rate");
+
+    // Stesso tempo simulato, tre frequenze di frame diverse: lo zoom deve
+    // arrivare allo stesso punto. Prima le costanti si applicavano PER
+    // CHIAMATA, quindi un monitor a 144 Hz correva 2.4 volte piu' veloce.
+    const auto runFor = [](double dt, int steps) {
+        control::ZoomController z;
+        for (int i = 0; i < steps; ++i) {
+            z.update(kTune.gain(), dt, control::Phase::Interactive, 0.0, kTune);
+        }
+        return z.targetFocus();
+    };
+
+    const double at60  = runFor(1.0 / 60.0,  600);   // 10 s
+    const double at144 = runFor(1.0 / 144.0, 1440);  // 10 s
+    const double at30  = runFor(1.0 / 30.0,  300);   // 10 s
+
+    nearly(at144, at60, 1e-6, "144 Hz e 60 Hz percorrono lo stesso focus in 10 s");
+    nearly(at30,  at60, 1e-6, "30 Hz e 60 Hz percorrono lo stesso focus in 10 s");
+    check(at60 > 0.0, "il focus e' effettivamente avanzato");
+
+    // L'easing di currentFocus segue la stessa regola, ma non puo' combaciare
+    // alla cifra: rateAdjust e' esatto quando il bersaglio sta fermo, e qui il
+    // bersaglio si muove DENTRO il passo. Il residuo e' del secondo ordine in dt
+    // - qui vale lo 0.05% - e non e' percepibile. La tolleranza dice questo, non
+    // nasconde un errore.
+    const auto easedFor = [](double dt, int steps) {
+        control::ZoomController z;
+        for (int i = 0; i < steps; ++i) {
+            z.update(kTune.gain(), dt, control::Phase::Interactive, 0.0, kTune);
+        }
+        return z.currentFocus();
+    };
+    const double eased60  = easedFor(1.0 / 60.0,  600);
+    const double eased144 = easedFor(1.0 / 144.0, 1440);
+    check(std::fabs(eased144 - eased60) < 0.005 * eased60,
+          "l'easing del focus resta entro lo 0.5% fra 144 Hz e 60 Hz");
+}
+
 void testSmoothingPrimitives() {
     group("11. Primitive di smoothing");
 
@@ -477,6 +517,7 @@ int main() {
     testZoom();
     testTolerance();
     testContinuity();
+    testFrameRateIndependence();
     testSmoothingPrimitives();
 
     std::printf("\n=== %d passed, %d failed ===\n", g_pass, g_fail);

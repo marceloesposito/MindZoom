@@ -4,6 +4,19 @@
 #include <cmath>
 
 namespace mz::control {
+namespace {
+
+/**
+ * Converte un coefficiente di easing tarato "per frame a 60 Hz" nel suo
+ * equivalente su k frame. Con k = 1 restituisce esattamente alpha, quindi a
+ * 60 Hz non cambia nulla.
+ */
+double rateAdjust(double alpha, double k) noexcept {
+    if (k == 1.0) return alpha;
+    return 1.0 - std::pow(1.0 - alpha, k);
+}
+
+} // namespace
 
 const char* toString(Phase phase) noexcept {
     switch (phase) {
@@ -59,6 +72,7 @@ double ZoomController::applyHoldSelect(double velocity, double dt, const Tunable
     const double absV    = std::fabs(velocity);
     const double step    = 1.0 / (config::kTotalImages - 1);
     const double nearest = std::round(targetFocus_ / step) * step;
+    const double snapK   = std::min(dt * 60.0, 3.0);   // vedi update()
 
     // Le soglie sono FRAZIONI della velocità massima che l'input può produrre,
     // non valori assoluti: così cambiare il gain non rende un detent inescapabile.
@@ -89,7 +103,7 @@ double ZoomController::applyHoldSelect(double velocity, double dt, const Tunable
         }
         // Agganciato: attrattore verso il livello, nessuna deriva.
         lockTimer_ += dt;
-        targetFocus_ += (lockedLevel_ - targetFocus_) * config::kSnapStrength;
+        targetFocus_ += (lockedLevel_ - targetFocus_) * rateAdjust(config::kSnapStrength, snapK);
         return 0.0;
     }
 
@@ -109,7 +123,7 @@ double ZoomController::applyHoldSelect(double velocity, double dt, const Tunable
     }
 
     if (absV < snapThreshold) {
-        targetFocus_ += (nearest - targetFocus_) * config::kSnapStrength;
+        targetFocus_ += (nearest - targetFocus_) * rateAdjust(config::kSnapStrength, snapK);
     }
 
     return velocity;
@@ -117,19 +131,28 @@ double ZoomController::applyHoldSelect(double velocity, double dt, const Tunable
 
 void ZoomController::update(double inputVelocity, double dt, Phase phase,
                             double phaseElapsed, const Tunables& t) {
+    // Le costanti di rate control sono tarate sul ticker a 60 Hz della versione
+    // web e vengono applicate PER CHIAMATA. Su un monitor a 144 Hz lo zoom
+    // correva 2.4 volte piu' veloce del tarato, su uno a 30 la meta'.
+    // A 60 Hz esatti k vale 1 e nulla cambia: questo non e' un cambio di feel,
+    // e' cio' che rende il feel indipendente dallo schermo. Il clamp evita lo
+    // scatto quando un frame lungo (stallo, minimizzazione) allunga dt.
+    const double k = std::min(dt * 60.0, 3.0);
+
     if (phase == Phase::Outro || phase == Phase::Done) {
         // Conclusione scriptata: garanzia della FSM, non una speranza sull'EEG.
-        targetFocus_ += (config::kOutroTargetFocus - targetFocus_) * config::kOutroEasing;
+        targetFocus_ += (config::kOutroTargetFocus - targetFocus_) *
+                        rateAdjust(config::kOutroEasing, k);
     } else {
         double velocity = authorityVelocity(inputVelocity, phase, phaseElapsed);
         if (phase == Phase::Interactive) {
             velocity = applyHoldSelect(velocity, dt, t);
         }
-        targetFocus_ += velocity * config::kZoomSpeedFactor;
+        targetFocus_ += velocity * config::kZoomSpeedFactor * k;
     }
 
     targetFocus_  = std::clamp(targetFocus_, 0.0, 1.0);
-    currentFocus_ += (targetFocus_ - currentFocus_) * config::kFocusEasing;
+    currentFocus_ += (targetFocus_ - currentFocus_) * rateAdjust(config::kFocusEasing, k);
 }
 
 CrossfadeState ZoomController::crossfade() const {
