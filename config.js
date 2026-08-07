@@ -17,22 +17,47 @@ const CONFIG = {
     CALIB_CONCENTRATE_S: 15.0,  // durata fase di concentrazione
     CALIB_RELAX_S: 15.0,        // durata fase di rilassamento
     CALIB_LEADIN_S: 1.5,        // scarto iniziale di ogni fase (transitorio di reazione)
-    CALIB_INDEX_EMA: 0.30,      // TUNE - EMA di denoise sull'indice (NON normalizzazione)
     CALIB_DISPLAY_EMA: 0.20,    // TUNE - EMA di posizione del quadratino a 60 Hz
-    CALIB_CONC_FRACTION: 0.75,  // la velocità piena si raggiunge al 75% del tragitto M->estremo
+    CALIB_CONC_FRACTION: 0.50,  // la velocità piena si raggiunge al 50% del tragitto M->estremo
     CALIB_DONE_HOLD_S: 1.6,     // schermata "completata" prima dell'auto-avanzo all'interazione
     // Span minima accettabile fra i due estremi, relativa al neutro M: sotto questa
     // la calibrazione è considerata fallita (segnale piatto / utente non modulante).
     CALIB_MIN_SPAN_REL: 0.08,   // TUNE
 
+    // --- Condizionamento dell'indice di Pope ---
+    // L'indice è un rapporto fra potenze di banda: ha code pesanti, un singolo
+    // campione anomalo passerebbe dritto in un EMA. Prima la mediana lo toglie,
+    // poi due poli in cascata smussano senza lasciare spigoli.
+    INDEX_MEDIAN_TAPS: 5,       // dispari; latenza (n-1)/2 campioni
+    INDEX_TAU_S: 0.90,          // TUNE - costante di tempo, non un alfa
+
     // --- Controllo dello zoom a estremi (post-calibrazione) ---
     // Velocità di zoom in funzione della concentrazione relativa agli estremi
     // assoluti (calibrazione) e a una banda locale di isteresi.
-    EXTREMA_GAIN: 0.25,         // TUNE - velocità normalizzata massima (ex ZOOM_GAIN)
+    //
+    // La banda locale ha una TOLLERANZA: il suo bordo non è una soglia netta ma
+    // una rampa. Con un bordo netto la velocità collassava a zero ogni volta che
+    // l'indice scendeva - circa metà del tempo - e l'uscita era un segnale
+    // commutato a 5.3 Hz invece di un controllo.
+    EXTREMA_GAIN: 0.30,         // TUNE - velocità normalizzata massima (ex ZOOM_GAIN)
     // Quanto in fretta gli estremi LOCALI seguono il segnale, in frazioni di span/s.
     // Piccolo -> un plateau ferma lo zoom, bisogna spingere ancora (fasico).
-    // Grande -> controllo più continuo.
-    LOCAL_DECAY: 0.35,          // TUNE
+    // Grande -> la banda resta incollata al segnale e la tolleranza non morde più.
+    // Va letto INSIEME a INDEX_TAU_S: più l'indice è liscio, più questo va basso.
+    LOCAL_DECAY: 0.10,          // TUNE
+    // Ampiezza della rampa di attivazione, in frazioni della semi-span M->estremo.
+    // È il compromesso fra "fasico e faticoso" (piccolo) e "continuo e facile"
+    // (grande): con 0 si torna esattamente al gradino netto di prima.
+    LOCAL_TOLERANCE: 0.18,      // TUNE
+    // Zona morta attorno al neutro, in frazioni di u: toglie la deriva a riposo
+    // senza reintrodurre una soglia netta.
+    NEUTRAL_DEADZONE: 0.10,     // TUNE
+
+    // --- Smoothing della velocità ---
+    // Costanti di tempo, non alfa: indipendenti dal rate a cui si applicano.
+    VEL_TAU_S: 0.35,            // TUNE - a valle della legge di controllo
+    VEL_RENDER_TAU_S: 0.12,     // TUNE - interpolazione 5.3 Hz -> 60 Hz
+    VEL_STALE_TAU_S: 0.50,      // TUNE - decadimento quando il segnale manca
 
     // --- Onboarding legacy (percorso passivo, USE_ADAPTIVE_PIPELINE con semina 5s) ---
     MODAL_UNLOCK_S: 6.0,        // quando il pulsante diventa cliccabile
@@ -91,10 +116,17 @@ const CONFIG = {
     // così cambiare ZOOM_GAIN non rende un detent inescapabile.
     SNAP_STRENGTH: 0.06,        // forza dell'attrattore verso il livello
     SNAP_VEL_FRAC: 0.25,        // sotto cui si attiva lo snap al livello
-    ENTER_HOLD_FRAC: 0.25,      // TUNE - soglia di aggancio di un detent
-    BREAK_HOLD_FRAC: 0.55,      // TUNE - soglia di sgancio (deve essere > ENTER_HOLD_FRAC)
+    ENTER_HOLD_FRAC: 0.15,      // TUNE - soglia di aggancio di un detent
+    BREAK_HOLD_FRAC: 0.32,      // TUNE - soglia di sgancio (deve essere > ENTER_HOLD_FRAC)
     LOCK_DWELL_S: 3.0,          // dwell-to-lock
-    LOCK_DWELL_MULT: 1.5,       // TUNE - moltiplicatore della soglia di sgancio dopo il dwell
+    LOCK_DWELL_MULT: 1.25,      // TUNE - moltiplicatore della soglia di sgancio dopo il dwell
+    // L'aggancio richiede PERMANENZA sotto soglia: senza, un controllo che passa
+    // per zero fra un impulso e l'altro si riagganciava ad ogni frame e annullava
+    // il movimento appena ottenuto.
+    ENTER_HOLD_DWELL_S: 0.90,   // TUNE
+    // Dopo uno sgancio il lock resta disabilitato per questo tempo, così si
+    // ottiene una finestra di movimento vera invece di un singolo frame.
+    BREAK_REFRACTORY_S: 1.50,   // TUNE
 
     // --- Gating artefatti ---
     // Il gating è RELATIVO, non assoluto: una soglia fissa in µV non funziona con

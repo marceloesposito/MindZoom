@@ -51,6 +51,47 @@ const CALIB = {
 
 function clamp01(x) { return x < 0 ? 0 : (x > 1 ? 1 : x); }
 
+/**
+ * Rampa liscia 0->1 su [0,1], con derivata nulla ai due estremi. È ciò che
+ * sostituisce le soglie nette nella legge di controllo: stesso significato,
+ * senza il gradino che si vedeva come scatto.
+ */
+function smoothstep01(x) {
+    const t = clamp01(x);
+    return t * t * (3 - 2 * t);
+}
+
+/**
+ * Coefficiente EMA equivalente a una costante di tempo `tau` su un passo `dt`.
+ * I filtri si tarano in SECONDI, non in alfa: un alfa è legato al rate a cui
+ * viene applicato, e qui i rate sono due diversi (5.3 Hz il controllo, 60 il
+ * ticker). La stessa costante di tempo dà lo stesso comportamento su entrambi.
+ */
+function emaAlpha(dt, tau) {
+    if (dt <= 0) return 0;
+    if (tau <= 0) return 1;
+    return 1 - Math.exp(-dt / tau);
+}
+
+/** Mediana di un array corto. Usata sull'indice, prima dell'EMA. */
+function median(values) {
+    const sorted = [...values].sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)];
+}
+
+/**
+ * Converte un coefficiente di easing tarato "per frame a 60 Hz" nel suo
+ * equivalente su un passo dt. Con dt = 1/60 restituisce esattamente alpha,
+ * quindi a 60 Hz non cambia nulla: serve solo a impedire che un monitor a
+ * 144 Hz faccia correre tutto 2.4 volte più veloce del tarato.
+ */
+function frameScale(dt) { return Math.min(dt * 60, 3.0); }
+
+function easedPerFrame(alpha, dt) {
+    const k = frameScale(dt);
+    return (k === 1) ? alpha : 1 - Math.pow(1 - alpha, k);
+}
+
 const AppState = {
     currentView: "LANDING",
     targetFocus: 0.0,
@@ -74,9 +115,24 @@ const AppState = {
     eegStalled: false,     // flusso EEG fermo (vedi checkEEGWatchdog)
     watchdogRetries: 0,
 
-    // --- Indice smussato (denoise EMA, condiviso calibrazione/interazione) ---
+    // --- Indice smussato (denoise, condiviso calibrazione/interazione) ---
+    // Due stadi: mediana (toglie i campioni anomali, che in un rapporto fra
+    // potenze di banda sono frequenti) e poi due poli in cascata (smussa senza
+    // lasciare spigoli). Calibrazione ed esercizio usano lo STESSO `c`, così gli
+    // estremi misurati e il segnale su cui si guida restano coerenti.
+    indexMedianBuf: [],
+    smoothedStage1: 0.0,
     smoothedIndex: 0.0,
     smoothedInit: false,
+
+    // --- Smoothing della velocità ---
+    velSmoothed: 0.0,      // a valle della legge di controllo (rate del controllo)
+    velRender: 0.0,        // interpolata al frame rate del ticker
+    velRenderInit: false,
+
+    // --- Diagnostica della legge di controllo ---
+    ctrlGate: 0.0,         // quanto la banda locale lascia passare [0,1]
+    ctrlMagnitude: 0.0,    // quanto si è lontani dal neutro, dopo la zona morta
 
     // --- Calibrazione attiva ---
     calibStage: CALIB.INTRO,
@@ -100,7 +156,9 @@ const AppState = {
     // --- Hold / select ---
     locked: false,
     lockedLevel: 0.0,
-    lockTimer: 0.0
+    lockTimer: 0.0,
+    lockQuietTimer: 0.0,   // da quanto la velocità sta sotto ENTER_HOLD_FRAC
+    lockRefractory: 0.0    // quanto manca alla riabilitazione del lock
 };
 
 let lastRenderedMagnification = -1;
@@ -462,6 +520,7 @@ function processAdaptiveIndex(brainData) {
     // calibrazione questo mette anche in pausa il conteggio (vedi updateOnboardingModal).
     if (!quality.contactOk) {
         AppState.eegVelocity = 0.0;
+        AppState.velSmoothed = 0.0;
         AppState.gatedWindows++;
         return;
     }
@@ -493,17 +552,42 @@ function processAdaptiveIndex(brainData) {
 
     // Interazione: velocità dallo scostamento della concentrazione rispetto agli
     // estremi (assoluti dalla calibrazione + banda locale di isteresi).
-    AppState.eegVelocity = computeExtremaVelocity(c, 1 / controlRateHz());
+    const dt = 1 / controlRateHz();
+    AppState.eegVelocity = computeExtremaVelocity(c, dt);
+
+    // Smoothing a valle del controllo: la legge produce un valore ogni ~190 ms
+    // e senza filtro il ticker ne vede lo scalino.
+    AppState.velSmoothed +=
+        (AppState.eegVelocity - AppState.velSmoothed) * emaAlpha(dt, CONFIG.VEL_TAU_S);
 }
 
-/** EMA di denoise sull'indice Pope; inizializza al primo campione (niente transitorio). */
+/**
+ * Denoise dell'indice Pope: mediana e poi due poli in cascata.
+ *
+ * La mediana va PRIMA dell'EMA, non dopo: un EMA attenua un campione anomalo ma
+ * lo spalma su tutta la sua coda, mentre la mediana lo elimina del tutto. Costa
+ * una latenza di (N-1)/2 campioni.
+ *
+ * Ogni polo prende tau/2, così il tempo di salita complessivo resta
+ * confrontabile con quello di un polo singolo di costante INDEX_TAU_S.
+ */
 function updateSmoothedIndex(index) {
+    const buf = AppState.indexMedianBuf;
+    buf.push(index);
+    while (buf.length > CONFIG.INDEX_MEDIAN_TAPS) buf.shift();
+    const filtered = median(buf);
+
     if (!AppState.smoothedInit) {
-        AppState.smoothedIndex = index;
+        AppState.smoothedStage1 = filtered;
+        AppState.smoothedIndex = filtered;
         AppState.smoothedInit = true;
-    } else {
-        AppState.smoothedIndex += (index - AppState.smoothedIndex) * CONFIG.CALIB_INDEX_EMA;
+        return AppState.smoothedIndex;
     }
+
+    const dt = 1 / controlRateHz();
+    const a = emaAlpha(dt, CONFIG.INDEX_TAU_S * 0.5);
+    AppState.smoothedStage1 += (filtered - AppState.smoothedStage1) * a;
+    AppState.smoothedIndex += (AppState.smoothedStage1 - AppState.smoothedIndex) * a;
     return AppState.smoothedIndex;
 }
 
@@ -515,13 +599,25 @@ function updateSmoothedIndex(index) {
  * Velocità di zoom dalla concentrazione `c` relativa agli estremi.
  * - Neutro M = media dei due estremi assoluti: sopra = concentrazione (zoom in),
  *   sotto = distrazione (zoom out).
- * - Una banda LOCALE di isteresi (localMin, localMax) che segue lentamente il segnale
- *   rende il controllo fasico: la velocità va a 0 appena `c` scende sotto il massimo
- *   locale (ferma lo zoom in) e diventa negativa sotto il minimo locale (zoom out).
- * - Gli estremi ASSOLUTI (dalla calibrazione) delimitano la banda e definiscono la
- *   saturazione: piena velocità al `CALIB_CONC_FRACTION` del tragitto M->estremo.
+ * - Gli estremi ASSOLUTI (dalla calibrazione) definiscono la saturazione: piena
+ *   velocità al `CALIB_CONC_FRACTION` del tragitto M->estremo.
+ * - Una banda LOCALE di isteresi che segue lentamente il segnale rende il
+ *   controllo fasico.
+ *
+ * Forma: AMPIEZZA x GATE, entrambi continui.
+ *  - ampiezza: distanza dal neutro in unità personali, con zona morta al centro
+ *    e rampa liscia fino alla saturazione;
+ *  - gate: quanto si è vicini al proprio estremo recente, su una rampa larga
+ *    LOCAL_TOLERANCE invece che su un gradino.
+ *
+ * Il bordo netto di prima faceva collassare la velocità a zero ogni volta che
+ * `c` scendeva - circa metà del tempo - e l'uscita era un segnale commutato a
+ * 5.3 Hz invece di un controllo. Con LOCAL_TOLERANCE a 0 si torna esattamente
+ * a quel comportamento.
  */
 function computeExtremaVelocity(c, dt) {
+    AppState.ctrlGate = 0.0;
+    AppState.ctrlMagnitude = 0.0;
     if (!AppState.calibValid) return 0.0;
 
     const absMax = AppState.absMax, absMin = AppState.absMin, M = AppState.neutralM;
@@ -533,18 +629,25 @@ function computeExtremaVelocity(c, dt) {
     AppState.localMax = Math.min(absMax, Math.max(c, AppState.localMax - stepv));
     AppState.localMin = Math.max(absMin, Math.min(c, AppState.localMin + stepv));
 
-    const gain = CONFIG.EXTREMA_GAIN;
-    const frac = CONFIG.CALIB_CONC_FRACTION;
+    const up = (c >= M);
+    const half = up ? (absMax - M) : (M - absMin);
+    if (half <= 0) return 0.0;
 
-    if (c >= AppState.localMax) {
-        const denom = frac * (absMax - M);
-        return (denom > 0) ? gain * clamp01((c - M) / denom) : 0.0;      // zoom in
-    }
-    if (c <= AppState.localMin) {
-        const denom = frac * (M - absMin);
-        return (denom > 0) ? -gain * clamp01((M - c) / denom) : 0.0;     // zoom out
-    }
-    return 0.0;                                                          // hold
+    // --- 1. AMPIEZZA: distanza dal neutro in unità personali ---
+    const u = clamp01(Math.abs(c - M) / (CONFIG.CALIB_CONC_FRACTION * half));
+    const dz = CONFIG.NEUTRAL_DEADZONE;
+    const mag = (u <= dz) ? 0.0 : smoothstep01((u - dz) / (1 - dz));
+
+    // --- 2. GATE: quanto la banda locale lascia passare ---
+    const tol = Math.max(1e-9, CONFIG.LOCAL_TOLERANCE * half);
+    const gate = up
+        ? smoothstep01((c - (AppState.localMax - tol)) / tol)
+        : smoothstep01(((AppState.localMin + tol) - c) / tol);
+
+    AppState.ctrlGate = gate;
+    AppState.ctrlMagnitude = mag;
+
+    return (up ? 1 : -1) * CONFIG.EXTREMA_GAIN * mag * gate;
 }
 
 /* ------------------------------------------------------------------ *
@@ -623,9 +726,15 @@ function updatePhase(dt) {
     }
 }
 
-/** Velocità di input corrente, indipendentemente dall'autorità della fase. */
+/**
+ * Velocità di input corrente, indipendentemente dall'autorità della fase.
+ *
+ * È la versione interpolata al frame rate: il controllo pubblica un valore ogni
+ * ~190 ms e applicarlo tale e quale si sente come uno scalino ad ogni
+ * aggiornamento. È il punto che toglie la maggior parte della ruvidità.
+ */
 function currentInputVelocity() {
-    return AppState.eegVelocity;
+    return AppState.velRender;
 }
 
 /** Risolve chi comanda lo zoom nella fase corrente. */
@@ -671,27 +780,47 @@ function applyHoldSelect(velocity, dt) {
         : CONFIG.BREAK_HOLD_FRAC * maxInput;
     const breakThreshold = Math.min(rawBreak, maxInput * 0.95);
 
+    if (AppState.lockRefractory > 0) {
+        AppState.lockRefractory = Math.max(0, AppState.lockRefractory - dt);
+    }
+
     if (AppState.locked) {
         if (absV >= breakThreshold) {
             AppState.locked = false;
             AppState.lockTimer = 0.0;
+            AppState.lockQuietTimer = 0.0;
+            // Finestra utilizzabile dopo lo sgancio: senza, la velocità che
+            // ricade sotto enterHold al frame successivo riagganciava subito e
+            // lo sforzo appena fatto veniva sprecato.
+            AppState.lockRefractory = CONFIG.BREAK_REFRACTORY_S;
             return velocity;
         }
         // Agganciato: attrattore verso il livello, nessuna deriva.
         AppState.lockTimer += dt;
-        AppState.targetFocus += (AppState.lockedLevel - AppState.targetFocus) * CONFIG.SNAP_STRENGTH;
+        AppState.targetFocus += (AppState.lockedLevel - AppState.targetFocus) *
+                                easedPerFrame(CONFIG.SNAP_STRENGTH, dt);
         return 0.0;
     }
 
+    // Aggancio solo dopo PERMANENZA continuativa sotto soglia. Un singolo frame
+    // sotto enterHold non è un utente fermo: è un attraversamento dello zero.
     if (absV < enterHold) {
-        AppState.locked = true;
-        AppState.lockedLevel = nearest;
-        AppState.lockTimer = 0.0;
-        return 0.0;
+        AppState.lockQuietTimer += dt;
+        if (AppState.lockRefractory <= 0 &&
+            AppState.lockQuietTimer >= CONFIG.ENTER_HOLD_DWELL_S) {
+            AppState.locked = true;
+            AppState.lockedLevel = nearest;
+            AppState.lockTimer = 0.0;
+            AppState.lockQuietTimer = 0.0;
+            return 0.0;
+        }
+    } else {
+        AppState.lockQuietTimer = 0.0;
     }
 
     if (absV < snapThreshold) {
-        AppState.targetFocus += (nearest - AppState.targetFocus) * CONFIG.SNAP_STRENGTH;
+        AppState.targetFocus += (nearest - AppState.targetFocus) *
+                                easedPerFrame(CONFIG.SNAP_STRENGTH, dt);
     }
 
     return velocity;
@@ -727,6 +856,8 @@ function startCalibration() {
     AppState.calibPeak = -Infinity;
     AppState.calibTrough = Infinity;
     AppState.smoothedInit = false;
+    AppState.indexMedianBuf = [];
+    AppState.velSmoothed = 0.0;
     AppState.calibValid = false;
     AppState.calibDisplayPos = 0.0;
     AppState.calibDisplayTarget = 0.5;
@@ -913,6 +1044,15 @@ function startSession() {
     // Reset del controllo a estremi e della calibrazione.
     AppState.smoothedInit = false;
     AppState.smoothedIndex = 0.0;
+    AppState.smoothedStage1 = 0.0;
+    AppState.indexMedianBuf = [];
+    AppState.velSmoothed = 0.0;
+    AppState.velRender = 0.0;
+    AppState.velRenderInit = false;
+    AppState.ctrlGate = 0.0;
+    AppState.ctrlMagnitude = 0.0;
+    AppState.lockQuietTimer = 0.0;
+    AppState.lockRefractory = 0.0;
     AppState.calibValid = false;
     AppState.calibPeak = -Infinity;
     AppState.calibTrough = Infinity;
@@ -943,6 +1083,21 @@ function updateExperienceFrame() {
     const dt = pixiApp.ticker.deltaMS / 1000;
     updatePhase(dt);
 
+    // Interpolazione della velocità dal rate del controllo (~5.3 Hz) al ticker.
+    // Senza segnale fresco DECADE invece di restare congelata: prima, fra la
+    // perdita del flusso e lo scatto del watchdog a 3 s, lo zoom continuava a
+    // muoversi su dati morti.
+    const signalFresh = !AppState.eegStalled && AppState.lastEEGAt > 0 &&
+                        (performance.now() - AppState.lastEEGAt) < 1000;
+    const velTarget = signalFresh ? AppState.velSmoothed : 0.0;
+    const velTau = signalFresh ? CONFIG.VEL_RENDER_TAU_S : CONFIG.VEL_STALE_TAU_S;
+    if (!AppState.velRenderInit) {
+        AppState.velRender = velTarget;
+        AppState.velRenderInit = true;
+    } else {
+        AppState.velRender += (velTarget - AppState.velRender) * emaAlpha(dt, velTau);
+    }
+
     // Il watchdog va valutato a bassa frequenza: a 60 Hz esaurirebbe i tentativi
     // di ripresa in tre frame.
     watchdogTimer += dt;
@@ -952,22 +1107,30 @@ function updateExperienceFrame() {
     }
 
     // --- Accumulo velocità sul target zoom ---
+    // Le costanti di rate control sono tarate a 60 Hz ma venivano applicate PER
+    // FRAME: su un monitor a 144 Hz lo zoom correva 2.4 volte più veloce del
+    // tarato. A 60 Hz esatti k vale 1 e il comportamento è identico a prima. Il
+    // clamp evita lo scatto dopo un frame lungo (scheda in background).
+    const k = frameScale(dt);
+    const eased = (alpha) => easedPerFrame(alpha, dt);
+
     if (AppState.phase === PHASE.OUTRO || AppState.phase === PHASE.DONE) {
         // Conclusione scriptata: garanzia della FSM, non una speranza sull'EEG.
-        AppState.targetFocus += (CONFIG.OUTRO_TARGET_FOCUS - AppState.targetFocus) * CONFIG.OUTRO_EASING;
+        AppState.targetFocus +=
+            (CONFIG.OUTRO_TARGET_FOCUS - AppState.targetFocus) * eased(CONFIG.OUTRO_EASING);
     } else if (!CONFIG.USE_ADAPTIVE_PIPELINE) {
         // Percorso legacy invariato: velocità solo dopo la calibrazione a snapshot.
-        if (isCalibrated) AppState.targetFocus += AppState.targetVelocity * ZOOM_SPEED_FACTOR;
+        if (isCalibrated) AppState.targetFocus += AppState.targetVelocity * ZOOM_SPEED_FACTOR * k;
     } else {
         let velocity = resolveAuthorityVelocity();
         if (AppState.phase === PHASE.INTERACTIVE) {
             velocity = applyHoldSelect(velocity, dt);
         }
-        AppState.targetFocus += velocity * ZOOM_SPEED_FACTOR;
+        AppState.targetFocus += velocity * ZOOM_SPEED_FACTOR * k;
     }
 
     AppState.targetFocus = Math.max(0.0, Math.min(1.0, AppState.targetFocus));
-    AppState.currentFocus += (AppState.targetFocus - AppState.currentFocus) * FOCUS_EASING;
+    AppState.currentFocus += (AppState.targetFocus - AppState.currentFocus) * eased(FOCUS_EASING);
 
     const rawZoomIndex = AppState.currentFocus * (TOTAL_IMAGES - 1);
     const activeIndex = Math.min(Math.floor(rawZoomIndex), TOTAL_IMAGES - 2);

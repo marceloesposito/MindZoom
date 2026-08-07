@@ -224,8 +224,21 @@ const maxInput = CONFIG.EXTREMA_GAIN;
 const enterHold = CONFIG.ENTER_HOLD_FRAC * maxInput;
 const breakHold = CONFIG.BREAK_HOLD_FRAC * maxInput;
 
+AppState.lockQuietTimer = 0;
+AppState.lockRefractory = 0;
+
+// L'aggancio richiede PERMANENZA: un singolo frame sotto soglia non è un utente
+// fermo, è un attraversamento dello zero. Agganciando subito, un controllo che
+// passa per zero fra un impulso e l'altro si riagganciava ad ogni frame e
+// annullava il movimento appena ottenuto - era la ragione principale per cui lo
+// zoom sembrava non partire.
 let out = S.applyHoldSelect(enterHold * 0.2, 1 / 60);
-check('velocità sotto ENTER_HOLD -> aggancio e velocità soppressa',
+check('un solo frame sotto ENTER_HOLD non aggancia', !AppState.locked,
+      `locked=${AppState.locked} out=${out}`);
+
+const framesToLock = Math.ceil(CONFIG.ENTER_HOLD_DWELL_S * 60) + 1;
+for (let i = 0; i < framesToLock; i++) out = S.applyHoldSelect(enterHold * 0.2, 1 / 60);
+check('dopo ENTER_HOLD_DWELL_S il detent aggancia e sopprime la velocità',
       AppState.locked && out === 0, `locked=${AppState.locked} out=${out}`);
 
 for (let i = 0; i < 400; i++) S.applyHoldSelect(breakHold * 0.8, 1 / 60);
@@ -238,12 +251,93 @@ out = S.applyHoldSelect(maxInput, 1 / 60);
 check('sopra BREAK_HOLD -> sgancio e velocità passa', !AppState.locked && out === maxInput,
       `locked=${AppState.locked} out=${out}`);
 
+// Refrattarietà: dopo lo sgancio si ottiene una finestra di movimento vera. Senza,
+// la velocità che ricade sotto soglia al frame dopo riagganciava subito e lo
+// sforzo appena fatto veniva sprecato.
+check('lo sgancio apre una finestra refrattaria', AppState.lockRefractory > 0,
+      `refr=${AppState.lockRefractory.toFixed(2)}`);
+for (let i = 0; i < framesToLock; i++) S.applyHoldSelect(enterHold * 0.2, 1 / 60);
+check('durante la refrattarietà il lock non torna', !AppState.locked,
+      `locked=${AppState.locked} refr=${AppState.lockRefractory.toFixed(2)}`);
+
+AppState.lockRefractory = 0;
 AppState.locked = true;
 AppState.lockedLevel = 0.5;
 AppState.lockTimer = CONFIG.LOCK_DWELL_S + 1;
 out = S.applyHoldSelect(maxInput, 1 / 60);
 check('alla velocità massima il detent è sempre sganciabile', !AppState.locked,
       `locked=${AppState.locked}`);
+
+// ---------------------------------------------------------------
+console.log('\n[10b] Tolleranza di attivazione e continuità dell\'uscita');
+
+// È IL comportamento nuovo. Col bordo netto di prima, un indice che scendeva
+// anche di poco sotto il massimo locale dava esattamente 0: l'uscita era un
+// segnale commutato a 5.3 Hz, non un controllo.
+calibrate(0, 1);   // M = 0.5
+resetBand();
+const tolAbs = CONFIG.LOCAL_TOLERANCE * 0.5;      // semi-span verso l'alto
+S.computeExtremaVelocity(0.9, DT);                // fissa il massimo locale
+const cProbe = 0.9 - 0.4 * tolAbs;                // dentro la rampa
+const vPartial = S.computeExtremaVelocity(cProbe, DT);
+check('dentro la rampa di tolleranza -> autorità PARZIALE, non zero', vPartial > 0,
+      `v=${vPartial.toFixed(4)} gate=${AppState.ctrlGate.toFixed(3)}`);
+check('l\'autorità parziale resta sotto il gain pieno', vPartial < GAIN,
+      `v=${vPartial.toFixed(4)}`);
+
+// Con tolleranza nulla, lo STESSO ingresso dà zero: è la prova che a cambiare le
+// cose è la tolleranza e nient'altro.
+const savedTol = CONFIG.LOCAL_TOLERANCE;
+CONFIG.LOCAL_TOLERANCE = 0;
+resetBand();
+S.computeExtremaVelocity(0.9, DT);
+const vHard = S.computeExtremaVelocity(cProbe, DT);
+check('tolleranza 0 sullo stesso ingresso -> ritorna il gradino netto',
+      Math.abs(vHard) < 1e-12, `v=${vHard}`);
+CONFIG.LOCAL_TOLERANCE = savedTol;
+
+// Zona morta: sul neutro esatto, fermo, senza deriva.
+resetBand();
+check('sul neutro -> velocità esattamente nulla (zona morta)',
+      S.computeExtremaVelocity(0.5, DT) === 0);
+
+// Continuità su segnale oscillante: è il caso in cui la legge precedente
+// produceva il pettine, alternando zero e velocità piena.
+calibrate(0, 1);
+resetBand();
+let zeros = 0, maxJump = 0, prevV = 0;
+for (let i = 0; i < 120; i++) {
+    const c = 0.78 + 0.05 * Math.sin(2 * Math.PI * i / 9);
+    const v = S.computeExtremaVelocity(c, DT);
+    if (i > 12) {
+        if (v === 0) zeros++;
+        maxJump = Math.max(maxJump, Math.abs(v - prevV));
+    }
+    prevV = v;
+}
+check('su segnale oscillante l\'uscita non collassa mai a zero', zeros === 0,
+      `zeri=${zeros}`);
+check('nessuno scalino oltre il 25% del gain fra campioni adiacenti',
+      maxJump < 0.25 * GAIN, `max=${maxJump.toFixed(4)} soglia=${(0.25 * GAIN).toFixed(4)}`);
+
+// ---------------------------------------------------------------
+console.log('\n[10c] Denoise dell\'indice: la mediana precede l\'EMA');
+
+// Un EMA da solo attenua un campione anomalo ma poi lo spalma sulla coda; la
+// mediana lo elimina del tutto.
+AppState.smoothedInit = false;
+AppState.indexMedianBuf = [];
+for (let i = 0; i < CONFIG.INDEX_MEDIAN_TAPS; i++) S.updateSmoothedIndex(2.0);
+const beforeSpike = AppState.smoothedIndex;
+const afterSpike = S.updateSmoothedIndex(50.0);
+check('un singolo campione anomalo non passa la mediana',
+      Math.abs(afterSpike - beforeSpike) < 1e-9,
+      `prima=${beforeSpike.toFixed(6)} dopo=${afterSpike.toFixed(6)}`);
+
+AppState.smoothedInit = false;
+AppState.indexMedianBuf = [];
+check('il primo campione inizializza senza transitorio',
+      Math.abs(S.updateSmoothedIndex(3.0) - 3.0) < 1e-12);
 
 // ---------------------------------------------------------------
 console.log('\n[11] Crossfade di autorità in HANDOVER');
