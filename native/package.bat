@@ -25,8 +25,23 @@ if errorlevel 1 (
 )
 
 set DIST=dist\MindZoom
+
+REM Le registrazioni delle sessioni vivono dentro la cartella distribuita, ma
+REM sono dati dell'utente e non un prodotto della compilazione: vanno messe da
+REM parte prima di ricostruire, o il reimpacchettamento le distrugge.
+REM E' successo: due sessioni registrate sul campo sono andate perse cosi'.
+if exist "%DIST%\registrazioni" (
+    if exist dist\_registrazioni_tmp rmdir /s /q dist\_registrazioni_tmp
+    move "%DIST%\registrazioni" dist\_registrazioni_tmp >nul
+)
+
 if exist "%DIST%" rmdir /s /q "%DIST%"
 mkdir "%DIST%" 2>nul
+
+if exist dist\_registrazioni_tmp (
+    move dist\_registrazioni_tmp "%DIST%\registrazioni" >nul
+    echo [package] registrazioni preesistenti conservate.
+)
 
 copy /y build-release\MindZoom.exe "%DIST%\" >nul
 
