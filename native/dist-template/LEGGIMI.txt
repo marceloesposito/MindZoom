@@ -30,9 +30,61 @@ E' normale per un programma non firmato con un certificato commerciale:
 clicca su "Ulteriori informazioni" e poi su "Esegui comunque".
 
 
+DUE SCHERMI
+-----------
+Se al computer sono collegati due o piu' schermi, all'avvio il programma chiede
+su quale proiettare. Su uno schermo compare un numero gigante: e' quello
+evidenziato. Frecce per cambiarlo, INVIO per confermare.
+
+Da quel momento:
+
+  SCHERMO DI PROIEZIONE   solo l'immagine, a schermo intero, senza niente
+                          sopra. E' quello che guarda il partecipante.
+
+  SCHERMO OPERATORE       i grafici della telemetria, i comandi e una
+                          miniatura di cio' che si sta proiettando.
+
+La scelta viene ricordata: la volta dopo non te la richiede. Torna a chiederla
+solo se colleghi o scolleghi uno schermo, perche' in quel caso "il secondo"
+potrebbe non essere piu' lo stesso. Il tasto D la riapre quando vuoi.
+
+Durante la calibrazione la scheda col quadratino compare su ENTRAMBI gli
+schermi, cosi' chi guida vede esattamente quello che vede il partecipante.
+Appena si passa all'esperienza vera, il proiettore resta pulito.
+
+Con un solo schermo non cambia niente rispetto a prima: una finestra sola, con
+il pannello sovrapposto all'immagine.
+
+
+I GRAFICI (schermo operatore)
+-----------------------------
+Quattro tracce, gli ultimi 60 secondi, griglia ogni 10.
+
+  INDICE DI CONCENTRAZIONE
+    La linea azzurra e' il tuo indice filtrato, quella tenue il grezzo. Le tre
+    righe orizzontali sono il minimo, il neutro e il massimo della tua
+    calibrazione. La fascia chiara che si muove e' la banda locale: quando la
+    linea azzurra la tocca in alto, lo zoom entra.
+
+  VELOCITA' DI ZOOM
+    Sopra lo zero si scende nell'immagine, sotto si risale. Le righe
+    orizzontali sono le soglie di aggancio e sgancio dei livelli; il fondo piu'
+    chiaro segna i tratti in cui il controllo era agganciato.
+    Questa traccia dice in un secondo se il controllo e' sano: deve essere una
+    linea continua, non un pettine che salta fra zero e il massimo.
+
+  PROFONDITA' DI ZOOM
+    Dove sei nell'immagine. Le tacche sono i dodici livelli.
+
+  AMPIEZZA DEL SEGNALE
+    Quanto e' forte il segnale grezzo. Fondo rosso = contatto assente,
+    giallo = artefatto (movimento, battito di ciglia, mascella contratta).
+
+
 COMANDI
 -------
 INVIO   avvia la calibrazione (e la ripete se non riesce)
+D       riapre la scelta dello schermo di proiezione
 H       mostra o nasconde il pannello di diagnostica
 ESC     esci
 
@@ -143,7 +195,9 @@ sessione, quante volte vuoi, finche' non trovi i valori giusti.
 
 Altre opzioni:
 
-  MindZoom.exe --senza-log      non registrare questa sessione
+  MindZoom.exe --senza-log          non registrare questa sessione
+  MindZoom.exe --schermi            elenca i monitor rilevati ed esce
+  MindZoom.exe --schermo-singolo    ignora il secondo schermo
 
 
 ANALIZZARE UNA SESSIONE COI NUMERI
