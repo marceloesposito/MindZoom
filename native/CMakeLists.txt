@@ -71,7 +71,8 @@ add_executable(mz_app WIN32
     src/app/main.cpp
     src/app/telemetry.cpp
 )
-target_link_libraries(mz_app PRIVATE mz_ble mz_render mz_platform shlwapi)
+# comdlg32: la finestra di scelta della registrazione (tasto P).
+target_link_libraries(mz_app PRIVATE mz_ble mz_render mz_platform shlwapi comdlg32)
 set_target_properties(mz_app PROPERTIES OUTPUT_NAME "MindZoom")
 
 # Gli asset viaggiano accanto all'eseguibile: l'app li cerca in <exe>\assets.

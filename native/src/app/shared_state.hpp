@@ -12,7 +12,10 @@ namespace mz::app {
 enum class Command : int {
     None = 0,
     StartCalibration,
-    RetryCalibration
+    RetryCalibration,
+    // Riparte da zero: cambiata la sorgente del segnale, gli estremi calibrati
+    // su un'altra sessione non valgono più.
+    RestartSession
 };
 
 /** Motivo di fallimento della calibrazione, per scegliere il testo da mostrare. */

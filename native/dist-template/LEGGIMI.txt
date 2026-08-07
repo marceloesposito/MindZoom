@@ -84,6 +84,7 @@ Quattro tracce, gli ultimi 60 secondi, griglia ogni 10.
 COMANDI
 -------
 INVIO   avvia la calibrazione (e la ripete se non riesce)
+P       usa una sessione registrata al posto della fascia
 D       riapre la scelta dello schermo di proiezione
 H       mostra o nasconde il pannello di diagnostica
 ESC     esci
@@ -177,14 +178,22 @@ A cosa serve: puoi rivedere una sessione senza rimetterti la fascia.
 
 RIVEDERE UNA SESSIONE
 ---------------------
-Apri il Prompt dei comandi nella cartella (clic destro sulla cartella ->
-"Apri nel terminale") e scrivi:
+Il modo piu' semplice: a programma aperto premi P. Si apre la scelta del file,
+gia' posizionata sulla cartella "registrazioni". Scegli una sessione e il
+programma riparte da capo leggendo quella invece della fascia.
+
+Puoi premere P quante volte vuoi, anche per passare da una registrazione
+all'altra. Per tornare alla fascia si richiude e si riapre.
+
+In alternativa, dalla riga di comando (clic destro sulla cartella ->
+"Apri nel terminale"):
 
   MindZoom.exe --riproduci registrazioni\sessione-20260807-183340.mzr
 
-Il programma riparte identico - calibrazione compresa - ma legge il segnale dal
-file invece che dalla fascia, alla stessa velocita' con cui era stato
-registrato. Il pannello H mostra in alto "RIPRODUZIONE da file".
+In entrambi i casi il programma si comporta in modo identico - calibrazione
+compresa - ma legge il segnale dal file, alla stessa velocita' con cui era
+stato registrato. Il pannello H mostra in alto "RIPRODUZIONE" e il nome del
+file.
 
 Non e' un segnale finto: sono le tue onde cerebrali di quella sessione, che
 ripercorrono la stessa identica catena di elaborazione. Quello che vedi e'
