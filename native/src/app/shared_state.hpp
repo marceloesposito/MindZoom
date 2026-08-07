@@ -19,7 +19,14 @@ enum class Command : int {
 };
 
 /** Motivo di fallimento della calibrazione, per scegliere il testo da mostrare. */
-enum class FailReason : int { None = 0, NoSignal, WeakModulation };
+enum class FailReason : int {
+    None = 0,
+    NoSignal,
+    WeakModulation,
+    // Il segnale ricevuto non è EEG: nessuna calibrazione su questi dati
+    // significherebbe qualcosa, per quanto i numeri possano sembrare plausibili.
+    ImplausibleSignal
+};
 
 struct ControlState {
     // --- fase ---
@@ -54,6 +61,12 @@ struct ControlState {
     double maxAbsRaw = 0.0;
     bool   contactOk = true;
     bool   artifact  = false;
+
+    // --- plausibilità fisica: quello che arriva è un segnale biologico? ---
+    int    signalFault  = 0;    // dsp::SignalFault
+    double autocorr1    = 1.0;
+    double railFraction = 0.0;
+    double spreadCounts = 0.0;
     // Un frame è arrivato di recente. Distingue "fascia storta" (contatto scarso
     // ma dati presenti) da "fascia assente" (nessun dato): sono due messaggi
     // diversi da dare all'utente.

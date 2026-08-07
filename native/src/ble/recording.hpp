@@ -50,6 +50,14 @@ inline std::FILE* openFile(const std::wstring& path, const wchar_t* mode) {
 // diverso non darebbe un errore, darebbe EEG plausibile ma falso.
 inline constexpr char kRecordMagic[8] = {'M', 'Z', 'R', 'E', 'C', '\0', '\0', '\0'};
 
+// Versione 1: solo campioni decodificati, uno dopo l'altro.
+// Versione 2: record etichettati, e soprattutto i PACCHETTI GREZZI del
+//   Bluetooth accanto ai campioni. Una registrazione che conserva i byte
+//   originali si puo' ri-decodificare quando il decodificatore cambia; una che
+//   conserva solo l'uscita del decodificatore e' persa insieme a lui. Il primo
+//   difetto serio trovato sul campo e' stato proprio nel decodificatore.
+inline constexpr std::uint32_t kRecordVersion = 2;
+
 struct RecordHeader {
     char          magic[8];
     std::uint32_t version;
@@ -58,10 +66,13 @@ struct RecordHeader {
     std::uint32_t sampleBytes;
 };
 
+/** Etichetta di record, solo dalla versione 2 in poi. */
+enum class RecordTag : std::uint8_t { Sample = 1, RawPacket = 2 };
+
 inline RecordHeader makeRecordHeader() {
     RecordHeader h{};
     std::memcpy(h.magic, kRecordMagic, sizeof(kRecordMagic));
-    h.version     = 1;
+    h.version     = kRecordVersion;
     h.sampleRate  = config::kSampleRate;
     h.channels    = config::kChannels;
     h.sampleBytes = static_cast<std::uint32_t>(sizeof(Sample));
@@ -70,7 +81,7 @@ inline RecordHeader makeRecordHeader() {
 
 inline bool recordHeaderOk(const RecordHeader& h) {
     return std::memcmp(h.magic, kRecordMagic, sizeof(kRecordMagic)) == 0 &&
-           h.version == 1 &&
+           (h.version == 1 || h.version == 2) &&
            h.sampleRate == config::kSampleRate &&
            h.channels == config::kChannels &&
            h.sampleBytes == sizeof(Sample);
@@ -106,7 +117,25 @@ public:
     void write(const Sample& s) {
         if (!armed_) return;
         if (!f_ && !openNow()) return;
+        const auto tag = static_cast<std::uint8_t>(RecordTag::Sample);
+        if (std::fwrite(&tag, 1, 1, f_) != 1) return;
         if (std::fwrite(&s, sizeof(s), 1, f_) == 1) ++count_;
+    }
+
+    /**
+     * I byte esatti della notifica Bluetooth, prima di qualunque
+     * interpretazione. Sono l'unica cosa che resta utile se il decodificatore
+     * si rivela sbagliato: da questi si puo' ricostruire tutto, dai campioni
+     * decodificati no.
+     */
+    void writeRaw(const std::uint8_t* data, std::size_t len) {
+        if (!armed_ || !data || len == 0 || len > 0xFFFF) return;
+        if (!f_ && !openNow()) return;
+        const auto tag = static_cast<std::uint8_t>(RecordTag::RawPacket);
+        const auto n16 = static_cast<std::uint16_t>(len);
+        if (std::fwrite(&tag, 1, 1, f_) != 1) return;
+        if (std::fwrite(&n16, sizeof(n16), 1, f_) != 1) return;
+        if (std::fwrite(data, 1, len, f_) == len) ++packets_;
     }
 
     void close() {
@@ -119,10 +148,11 @@ public:
 
     /** Registrazione richiesta per questa sessione (anche se ancora senza dati). */
     bool armed() const noexcept { return armed_; }
-    /** Almeno un campione e' finito su disco: solo allora il file esiste. */
-    bool hasData() const noexcept { return count_ > 0; }
+    /** Almeno un record e' finito su disco: solo allora il file esiste. */
+    bool hasData() const noexcept { return count_ > 0 || packets_ > 0; }
 
     std::uint64_t      count() const noexcept { return count_; }
+    std::uint64_t      packets() const noexcept { return packets_; }
     double             seconds() const noexcept {
         return static_cast<double>(count_) / config::kSampleRate;
     }
@@ -149,13 +179,16 @@ private:
     std::wstring  path_;
     bool          armed_ = false;
     std::uint64_t count_ = 0;
+    std::uint64_t packets_ = 0;
 };
 
 /** Esito del caricamento, con il motivo in chiaro quando fallisce. */
 struct LoadResult {
-    std::vector<Sample> samples;
-    bool                ok = false;
-    std::string         error;
+    std::vector<Sample>                   samples;
+    std::vector<std::vector<std::uint8_t>> packets;   // vuoto per i file v1
+    std::uint32_t                         version = 0;
+    bool                                  ok = false;
+    std::string                           error;
 
     double seconds() const {
         return static_cast<double>(samples.size()) / config::kSampleRate;
@@ -179,8 +212,30 @@ inline LoadResult loadRecording(const std::wstring& path) {
         return r;
     }
 
-    Sample s;
-    while (std::fread(&s, sizeof(s), 1, f) == 1) r.samples.push_back(s);
+    r.version = h.version;
+
+    if (h.version == 1) {
+        // Formato originale: campioni uno dopo l'altro, senza etichetta.
+        Sample s;
+        while (std::fread(&s, sizeof(s), 1, f) == 1) r.samples.push_back(s);
+    } else {
+        std::uint8_t tag = 0;
+        while (std::fread(&tag, 1, 1, f) == 1) {
+            if (tag == static_cast<std::uint8_t>(RecordTag::Sample)) {
+                Sample s;
+                if (std::fread(&s, sizeof(s), 1, f) != 1) break;
+                r.samples.push_back(s);
+            } else if (tag == static_cast<std::uint8_t>(RecordTag::RawPacket)) {
+                std::uint16_t n = 0;
+                if (std::fread(&n, sizeof(n), 1, f) != 1) break;
+                std::vector<std::uint8_t> buf(n);
+                if (n && std::fread(buf.data(), 1, n, f) != n) break;
+                r.packets.push_back(std::move(buf));
+            } else {
+                break;   // etichetta sconosciuta: si smette invece di indovinare
+            }
+        }
+    }
     std::fclose(f);
 
     if (r.samples.empty()) {

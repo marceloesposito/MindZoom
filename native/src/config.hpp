@@ -113,6 +113,19 @@ inline constexpr int    kArtifactPeakHistory = 48;   // ~9 s di picchi a 5.3 Hz
 inline constexpr double kArtifactHoldMaxS   = 1.0;
 inline constexpr double kContactStdMin      = 0.5;   // TUNE - canale piatto = staccato
 
+// --- Plausibilità fisica del segnale ---
+// Rispondono alla domanda che precede ogni gating: quello che arriva è un
+// segnale biologico? Senza questi controlli una sessione intera si calibra su
+// rumore e nessuno se ne accorge, perché l'indice di Pope su rumore bianco vale
+// meccanicamente 17/8 = 2.1 e sembra un valore normale.
+//
+// L'autocorrelazione è la prova decisiva: a 256 Hz due campioni consecutivi
+// distano 4 ms, e l'EEG è fortemente passa-banda, quindi si somigliano quasi del
+// tutto. Valori reali stanno sopra 0.9; byte non interpretabili danno ~0.
+inline constexpr double kMinAutocorr1   = 0.50;  // TUNE - generoso di proposito
+inline constexpr double kMaxRailFraction = 0.02; // oltre il 2% ai fondo scala = saturo
+inline constexpr double kMinSpreadCounts = 2.0;  // sotto = canale piatto
+
 // --- Watchdog del flusso ---
 inline constexpr double kEegWatchdogS     = 3.0;
 inline constexpr int    kEegWatchdogRetry = 3;

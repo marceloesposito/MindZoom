@@ -614,6 +614,100 @@ void testRecording() {
     _wremove(L"mz_test_garbage.mzr");
 }
 
+/** Riempie la STFT con valori ADC dati da `gen`, finché non emette un frame. */
+template <typename Gen>
+void feedAdc(dsp::SlidingStft& stft, int samples, Gen gen) {
+    for (int n = 0; n < samples; ++n) {
+        std::array<double, config::kChannels> uv{};
+        std::array<std::uint16_t, config::kChannels> adc{};
+        for (std::size_t ch = 0; ch < config::kChannels; ++ch) {
+            const std::uint16_t a = gen(n, static_cast<int>(ch));
+            adc[ch] = a;
+            uv[ch]  = dsp::toMicrovolts(dsp::centerSample(a));
+        }
+        stft.pushSample(uv, adc);
+    }
+}
+
+void testPlausibility() {
+    group("15. Plausibilita' fisica del segnale");
+
+    // È il controllo che mancava. Una sessione reale è stata calibrata su
+    // rumore: l'indice di Pope su rumore bianco vale 17/8 = 2.1, che sembra un
+    // valore normale, e nessuna statistica a valle se ne accorgeva.
+
+    // 1. Sinusoide: forma d'onda vera, fortemente correlata fra campioni.
+    {
+        dsp::SlidingStft stft;
+        dsp::Gating gating;
+        feedSine(stft, 10.0, 60.0, config::kStftWindow * 2);
+        const auto q = gating.assess(stft);
+        check(q.fault == dsp::SignalFault::None, "una forma d'onda vera passa il controllo");
+        check(q.autocorr1 > 0.9, "autocorrelazione alta su segnale reale");
+    }
+
+    // 2. Rumore uniforme su tutto il fondo scala: è ESATTAMENTE quello che si è
+    //    presentato sul campo. Campioni indipendenti, distribuzione piatta.
+    {
+        dsp::SlidingStft stft;
+        dsp::Gating gating;
+        std::uint32_t seed = 12345;
+        feedAdc(stft, config::kStftWindow * 2, [&](int, int) {
+            seed = seed * 1664525u + 1013904223u;      // deterministico
+            return static_cast<std::uint16_t>((seed >> 8) & 0x3FFF);
+        });
+        const auto q = gating.assess(stft);
+        check(q.fault == dsp::SignalFault::Uncorrelated,
+              "rumore su tutto il fondo scala -> bocciato come 'non un segnale'");
+        check(q.autocorr1 < 0.5, "autocorrelazione prossima a zero sul rumore");
+        check(q.railFraction > 0.0, "il rumore tocca i fondo scala");
+    }
+
+    // 3. Canale piatto: elettrodo staccato.
+    {
+        dsp::SlidingStft stft;
+        dsp::Gating gating;
+        feedAdc(stft, config::kStftWindow * 2, [](int, int) {
+            return static_cast<std::uint16_t>(config::kAdcCenter);
+        });
+        const auto q = gating.assess(stft);
+        check(q.fault == dsp::SignalFault::Flat, "canale costante -> bocciato come piatto");
+    }
+
+    // 4. Onda vera ma satura: ampiezza oltre il fondo scala.
+    {
+        dsp::SlidingStft stft;
+        dsp::Gating gating;
+        feedAdc(stft, config::kStftWindow * 2, [](int n, int) {
+            const double s = std::sin(2.0 * std::numbers::pi * 6.0 * n / config::kSampleRate);
+            const double v = config::kAdcCenter + s * config::kAdcCenter * 1.6;
+            return static_cast<std::uint16_t>(std::clamp(v, 0.0, 16383.0));
+        });
+        const auto q = gating.assess(stft);
+        check(q.fault == dsp::SignalFault::Railing, "onda che sbatte sui limiti -> saturo");
+    }
+
+    // 5. Il criterio non deve dipendere dal canale peggiore: un elettrodo storto
+    //    non e' un formato sbagliato, e confonderli manderebbe a cercare il
+    //    problema nel posto sbagliato.
+    {
+        dsp::SlidingStft stft;
+        dsp::Gating gating;
+        std::uint32_t seed = 777;
+        feedAdc(stft, config::kStftWindow * 2, [&](int n, int ch) {
+            if (ch == config::kFrontalA) {
+                const double s = std::sin(2.0 * std::numbers::pi * 10.0 * n / config::kSampleRate);
+                return static_cast<std::uint16_t>(config::kAdcCenter + s * 600.0);
+            }
+            seed = seed * 1664525u + 1013904223u;
+            return static_cast<std::uint16_t>((seed >> 8) & 0x3FFF);
+        });
+        const auto q = gating.assess(stft);
+        check(q.fault == dsp::SignalFault::None,
+              "un frontale buono e uno rotto -> il segnale resta utilizzabile");
+    }
+}
+
 void testDisplays() {
     group("14. Enumerazione degli schermi");
 
@@ -666,6 +760,7 @@ int main() {
     testFrameRateIndependence();
     testSmoothingPrimitives();
     testRecording();
+    testPlausibility();
     testDisplays();
 
     std::printf("\n=== %d passed, %d failed ===\n", g_pass, g_fail);

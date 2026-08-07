@@ -33,6 +33,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <deque>
 #include <mutex>
 #include <string>
@@ -64,8 +65,21 @@ constexpr render::Color kPlotBg    {0.04f, 0.05f, 0.07f, 0.88f};
 
 const app::PlotTheme kPlotTheme{kInk, kMuted, kAccent, kOk, kWarn, kBad, kGrid, kPlotBg};
 
+/**
+ * Una notifica Bluetooth così com'è arrivata. Dimensione fissa per non allocare
+ * nel callback GATT, che non deve mai bloccarsi: i pacchetti del Muse sono di
+ * una ventina di byte, questo margine li copre tutti.
+ */
+struct RawPacket {
+    std::uint16_t len = 0;
+    std::uint8_t  data[256]{};
+};
+
 struct Shared {
     util::SpscRing<ble::Sample, 16384> ring;
+    // I grezzi passano da un secondo ring: così a scrivere sul file resta un
+    // thread solo, quello del DSP, e non serve nessun lock.
+    util::SpscRing<RawPacket, 2048> rawRing;
     util::DoubleBuffer<app::ControlState> state;
 
     // Manopole di taratura: la UI le muove coi tasti, il DSP le rilegge ad ogni
@@ -327,6 +341,7 @@ void dspThread() {
     double velocityRaw  = 0.0;     // uscita cruda della legge di controllo
     int    gatedWindows = 0;
     bool   contactOk    = false;   // finché non arriva un frame non si sa
+    bool   signalPlausible = false;
 
     // Smoothing a valle del controllo: la legge produce un valore ogni 187 ms e
     // senza filtro il render ne vede lo scalino.
@@ -366,6 +381,15 @@ void dspThread() {
         }
 
         const control::Tunables tune = g.tunables.read();
+
+        // I pacchetti grezzi si travasano sul file qui, dove c'è già l'unico
+        // scrittore. Vanno registrati sempre: se un giorno il decodificatore
+        // risultasse sbagliato, questi sono l'unica cosa che permette di
+        // ricostruire la sessione invece di buttarla.
+        RawPacket raw;
+        while (g.rawRing.pop(raw)) {
+            g.recorder.writeRaw(raw.data, raw.len);
+        }
 
         ble::Sample s;
         bool consumed = false;
@@ -418,6 +442,11 @@ void dspThread() {
             st.maxAbsRaw = quality.maxAbsRaw;
             st.contactOk = quality.contactOk;
             st.artifact  = quality.artifact;
+            st.signalFault  = static_cast<int>(quality.fault);
+            st.autocorr1    = quality.autocorr1;
+            st.railFraction = quality.railFraction;
+            st.spreadCounts = quality.spreadCounts;
+            signalPlausible = (quality.fault == dsp::SignalFault::None);
         }
 
         // --- avanzamento a tempo reale ---
@@ -436,7 +465,10 @@ void dspThread() {
         if (phase == control::Phase::Onboarding) {
             // Il conteggio avanza solo con segnale valido: una fascia storta o
             // assente mette in pausa invece di consumare la calibrazione.
-            calib.tick(elapsed, signalFresh && contactOk);
+            // E deve essere un segnale PLAUSIBILE: su rumore la calibrazione
+            // riesce lo stesso, perché le sue escursioni casuali superano
+            // abbondantemente la soglia di modulazione minima. È successo.
+            calib.tick(elapsed, signalFresh && contactOk && signalPlausible);
 
             if (calib.stage() == control::CalibStage::Done) {
                 doneHold += elapsed;
@@ -505,6 +537,10 @@ void dspThread() {
             st.failReason = static_cast<int>(
                 calib.absMax() == calib.absMin() ? app::FailReason::NoSignal
                                                  : app::FailReason::WeakModulation);
+        } else if (st.frames > 0 && !signalPlausible) {
+            // Non è un fallimento della calibrazione: è che non si può nemmeno
+            // cominciare. Va detto subito, non dopo trenta secondi.
+            st.failReason = static_cast<int>(app::FailReason::ImplausibleSignal);
         } else {
             st.failReason = static_cast<int>(app::FailReason::None);
         }
@@ -588,17 +624,24 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
 
     if (stage == control::CalibStage::Failed) {
         const auto reason = static_cast<app::FailReason>(st.failReason);
+        const wchar_t* detail =
+            reason == app::FailReason::NoSignal
+                ? L"Segnale assente durante la calibrazione.\n"
+                  L"Controlla che la fascia sia ben posizionata."
+            : reason == app::FailReason::ImplausibleSignal
+                ? L"Quello che arriva dalla fascia non e' un segnale cerebrale.\n"
+                  L"Spegni e riaccendi la fascia, poi riprova.\n"
+                  L"Se continua, e' un problema del programma, non tuo."
+                : L"Modulazione troppo debole: marca di piu' la differenza\n"
+                  L"fra concentrazione e rilassamento.";
+
         r.drawText(L"Calibrazione non riuscita",
                    D2D1::RectF(panel.left, win.height * 0.5f - 80, panel.right,
                                win.height * 0.5f - 30),
                    28.0f, kBad, render::TextAlign::Center, true);
-        r.drawText(reason == app::FailReason::NoSignal
-                       ? L"Segnale assente durante la calibrazione.\n"
-                         L"Controlla che la fascia sia ben posizionata."
-                       : L"Modulazione troppo debole: marca di piu' la differenza\n"
-                         L"fra concentrazione e rilassamento.",
+        r.drawText(detail,
                    D2D1::RectF(panel.left + 40, win.height * 0.5f - 10, panel.right - 40,
-                               win.height * 0.5f + 80),
+                               win.height * 0.5f + 90),
                    17.0f, kMuted);
         r.drawText(L"INVIO per riprovare",
                    D2D1::RectF(panel.left, panel.bottom - 80, panel.right, panel.bottom - 40),
@@ -654,6 +697,11 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
                    D2D1::RectF(panel.left + 24, panel.bottom - 60, panel.right - 24,
                                panel.bottom - 20),
                    15.0f, kWarn);
+    } else if (st.signalFault != 0) {
+        r.drawText(L"Il segnale non e' utilizzabile. Il conteggio e' in pausa.",
+                   D2D1::RectF(panel.left + 24, panel.bottom - 60, panel.right - 24,
+                               panel.bottom - 20),
+                   15.0f, kBad);
     } else if (!st.contactOk) {
         r.drawText(L"Contatto assente: sistema la fascia. Il conteggio e' in pausa.",
                    D2D1::RectF(panel.left + 24, panel.bottom - 60, panel.right - 24,
@@ -769,9 +817,21 @@ void drawHud(render::Renderer& r, const app::ControlState& st, const control::Zo
     if (zoom.locked()) phaseLine += L" (HOLD)";
     line(phaseLine, kInk);
 
-    const wchar_t* gate = !st.contactOk ? L"CONTATTO" : (st.artifact ? L"ARTEFATTO" : L"OK");
-    line(std::wstring(L"Segnale: ") + gate,
-         !st.contactOk ? kBad : (st.artifact ? kWarn : kOk));
+    // La plausibilità viene PRIMA del gating: se quello che arriva non è un
+    // segnale biologico, dire "artefatto" o "contatto" manda a cercare il
+    // problema sulla testa dell'utente invece che nel programma.
+    if (st.signalFault != 0) {
+        const wchar_t* faults[] = {L"OK", L"PIATTO", L"SATURO", L"NON E' UN SEGNALE"};
+        line(std::wstring(L"Segnale: ") + faults[std::clamp(st.signalFault, 0, 3)], kBad, 15.0f);
+        line(L"  correlazione " + fixed(st.autocorr1, 2) + L" (serve > " +
+                 fixed(config::kMinAutocorr1, 2) + L")   saturi " +
+                 fixed(st.railFraction * 100.0, 1) + L"%",
+             kMuted, 12.0f);
+    } else {
+        const wchar_t* gate = !st.contactOk ? L"CONTATTO" : (st.artifact ? L"ARTEFATTO" : L"OK");
+        line(std::wstring(L"Segnale: ") + gate,
+             !st.contactOk ? kBad : (st.artifact ? kWarn : kOk));
+    }
 
     if (st.stalled) line(L"Flusso fermo: ripresa in corso", kBad);
 
@@ -1317,6 +1377,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
     // quindi il resto del programma è identico.
     g_muse.onSample([](const ble::Sample& s) {
         if (!g.ring.push(s)) g.dropped.fetch_add(1, std::memory_order_relaxed);
+    });
+    g_muse.onRawPacket([](const std::uint8_t* d, std::size_t n) {
+        RawPacket p;
+        p.len = static_cast<std::uint16_t>(std::min<std::size_t>(n, sizeof(p.data)));
+        std::memcpy(p.data, d, p.len);
+        g.rawRing.push(p);   // se pieno si perde: la diagnostica non blocca il BLE
     });
     g_muse.onLog([](const std::string& msg) { g.pushBleLog(msg); });
     if (!g.replaying.load(std::memory_order_acquire)) g_muse.start();

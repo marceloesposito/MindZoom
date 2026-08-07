@@ -11,12 +11,32 @@
 
 namespace mz::dsp {
 
+/** Perché il segnale non è utilizzabile. Sono guasti diversi, con rimedi diversi. */
+enum class SignalFault {
+    None = 0,
+    Flat,          // canale piatto: elettrodo staccato
+    Railing,       // sbatte contro i fondo scala: amplificatore saturo
+    Uncorrelated   // campioni indipendenti fra loro: NON è una forma d'onda
+};
+
+const char* toString(SignalFault f) noexcept;
+
 struct Quality {
     double maxAbsRaw = 0.0;   // picco |µV| sui frontali, dopo la sola rimozione DC
     double medianPeak = 0.0;  // mediana dei picchi recenti (riferimento del gating)
     bool   artifact   = false; // finestra da scartare (blink, mascella, movimento)
     bool   contactOk  = true;  // proxy di qualità del contatto
     double adcMin = 0.0, adcMax = 0.0, adcMean = 0.0;  // diagnostica del decode
+
+    // --- plausibilità fisica del segnale ---
+    // Il gating sopra risponde a "questa finestra è sporca?". Questi campi
+    // rispondono alla domanda precedente, che nessuno faceva: "quello che sto
+    // ricevendo è un segnale biologico?". Una sessione intera è stata calibrata
+    // su rumore senza che niente se ne accorgesse.
+    double      railFraction = 0.0;  // frazione di campioni ai fondo scala
+    double      autocorr1    = 1.0;  // correlazione fra campioni adiacenti
+    double      spreadCounts = 0.0;  // deviazione standard in conteggi ADC
+    SignalFault fault        = SignalFault::None;
 };
 
 /**

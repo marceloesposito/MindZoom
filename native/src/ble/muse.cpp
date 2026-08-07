@@ -471,6 +471,11 @@ void MuseClient::Impl::handlePacket(const std::vector<std::uint8_t>& data) {
     // affatto, il che è un problema diverso dal formato non riconosciuto.
     self.rawPackets_.fetch_add(1, std::memory_order_relaxed);
 
+    // Prima di ogni interpretazione: quello che il dispositivo ha davvero
+    // mandato. Va consegnato anche per i pacchetti che verranno scartati -
+    // quelli scartati sono spesso proprio quelli da capire.
+    if (self.onRaw_ && !data.empty()) self.onRaw_(data.data(), data.size());
+
     const std::size_t len = data.size();
     if (len < 10) return;
 

@@ -36,6 +36,8 @@ class MuseClient {
 public:
     using SampleCallback = std::function<void(const Sample&)>;
     using LogCallback    = std::function<void(const std::string&)>;
+    /** Byte esatti della notifica, prima di qualunque interpretazione. */
+    using RawCallback    = std::function<void(const std::uint8_t*, std::size_t)>;
 
     MuseClient();
     ~MuseClient();
@@ -45,6 +47,12 @@ public:
 
     void onSample(SampleCallback cb) { onSample_ = std::move(cb); }
     void onLog(LogCallback cb) { onLog_ = std::move(cb); }
+    /**
+     * Notifica grezza. Serve a registrare i byte originali: sono l'unica cosa
+     * che resta utile se il decodificatore si rivela sbagliato, perché da lì si
+     * può ricostruire tutto mentre dai campioni decodificati no.
+     */
+    void onRawPacket(RawCallback cb) { onRaw_ = std::move(cb); }
 
     /**
      * Avvia scansione e connessione in background. Ritorna subito.
@@ -85,6 +93,7 @@ private:
 
     SampleCallback onSample_;
     LogCallback    onLog_;
+    RawCallback    onRaw_;
 
     std::atomic<State>        state_{State::Disconnected};
     std::atomic<std::int64_t> lastPacketAt_{0};

@@ -29,9 +29,6 @@ if exist "%DIST%" rmdir /s /q "%DIST%"
 mkdir "%DIST%" 2>nul
 
 copy /y build-release\MindZoom.exe "%DIST%\" >nul
-REM Sonda diagnostica: serve a registrare una sessione e a ritararla offline
-REM senza rimettere la fascia ad ogni tentativo.
-copy /y build-release\mz_probe.exe "%DIST%\" >nul
 
 echo.
 echo [package] conversione degli asset in JPEG (niente codec WebP richiesto)...

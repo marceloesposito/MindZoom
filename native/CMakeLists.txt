@@ -46,10 +46,10 @@ add_executable(mz_tests tests/test_main.cpp)
 target_link_libraries(mz_tests PRIVATE mz_core mz_platform)
 add_test(NAME core COMMAND mz_tests)
 
-# Sonda da console: connette il Muse e stampa la diagnostica del DSP nativo,
-# nello stesso formato dei log JS. Serve a confrontare i due porti.
-add_executable(mz_probe tools/muse_probe.cpp)
-target_link_libraries(mz_probe PRIVATE mz_ble)
+# La sonda da console e' stata rimossa: chiedeva di imparare un secondo
+# programma per ottenere quello che l'applicazione fa gia' da sola. Registra,
+# riproduce e mostra la diagnostica MindZoom.exe; le registrazioni si analizzano
+# direttamente, il formato e' documentato in src/ble/recording.hpp.
 
 # Conversione degli asset in JPEG per la distribuzione: toglie la dipendenza dal
 # codec WebP, che su Windows 10 può mancare.

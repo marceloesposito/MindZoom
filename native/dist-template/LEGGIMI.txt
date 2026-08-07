@@ -173,6 +173,11 @@ nella cartella "registrazioni", con la data e l'ora nel nome:
 Quando chiudi, una finestrella ti dice quanti secondi sono stati registrati e
 dove sta il file. Non devi fare niente perche' accada.
 
+Il file contiene sia le letture elaborate sia i dati grezzi esattamente come
+sono arrivati dalla fascia. E' importante: se si scopre un errore nel modo in
+cui il programma li interpreta, le sessioni gia' registrate si possono
+rileggere con la correzione, invece di essere perse.
+
 A cosa serve: puoi rivedere una sessione senza rimetterti la fascia.
 
 
@@ -209,20 +214,27 @@ Altre opzioni:
   MindZoom.exe --schermo-singolo    ignora il secondo schermo
 
 
-ANALIZZARE UNA SESSIONE COI NUMERI
-----------------------------------
-Nella cartella c'e' anche mz_probe.exe: legge gli stessi file e, invece di
-mostrare le immagini, stampa i numeri.
+SE IL PROGRAMMA DICE CHE IL SEGNALE NON E' UTILIZZABILE
+-------------------------------------------------------
+Prima di guardare le onde cerebrali, il programma controlla che quello che
+arriva dalla fascia sia davvero un segnale biologico. Se non lo e', lo dice e
+si ferma: calibrare su dati senza senso produce numeri che sembrano normali e
+non lo sono.
 
-  mz_probe.exe --replay registrazioni\sessione-20260807-183340.mzr
+Nel pannello H compaiono tre diciture possibili:
 
-Alla fine compare un riepilogo. La riga che conta e' "tempo con controllo
-attivo": piu' e' alta, piu' lo zoom risulta guidabile. Puoi confrontare due
-tarature sulla stessa identica sessione:
+  PIATTO             Il canale non si muove: elettrodo staccato.
+                     Sistema la fascia sulla fronte.
 
-  mz_probe.exe --replay sessione.mzr --tolleranza 0.10
-  mz_probe.exe --replay sessione.mzr --tolleranza 0.30
+  SATURO             Il segnale sbatte contro i limiti dell'amplificatore.
+                     Di solito e' contatto pessimo o fascia mal indossata.
 
-Il valore che ti convince e' quello da impostare con le frecce nel programma.
+  NON E' UN SEGNALE  I campioni non hanno alcuna relazione fra loro. Non e'
+                     un problema di come indossi la fascia: il programma non
+                     sta interpretando correttamente quello che riceve.
+                     Spegni e riaccendi la fascia; se persiste, e' un difetto
+                     del programma e le registrazioni servono a correggerlo.
 
-  mz_probe.exe --help    per l'elenco completo delle opzioni
+Sotto la dicitura c'e' il numero su cui si basa il giudizio: la correlazione
+fra campioni consecutivi. Un segnale cerebrale sta sopra 0,9; sotto 0,5 quello
+che arriva non e' una forma d'onda.
