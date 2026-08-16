@@ -39,12 +39,28 @@ void SlidingStft::reset() {
 
 bool SlidingStft::pushSample(const std::array<double, config::kChannels>& uv,
                              const std::array<std::uint16_t, config::kChannels>& rawAdc) {
-    for (std::size_t ch = 0; ch < config::kChannels; ++ch) {
+    // Il canale bipolare è una DERIVAZIONE, non un elettrodo: la differenza fra
+    // i due frontali. Il ronzio di rete arriva identico su entrambi (modo
+    // comune) e qui si cancella; l'attività cerebrale, che sui due elettrodi è
+    // diversa, resta. Va costruita PRIMA dei filtri, sui µV grezzi, perché due
+    // catene di filtri separate introdurrebbero differenze di fase che poi la
+    // sottrazione trasformerebbe in segnale inventato.
+    const double bipolarUv =
+        uv[static_cast<std::size_t>(config::kFrontalA)] -
+        uv[static_cast<std::size_t>(config::kFrontalB)];
+    const auto bipolarAdc = static_cast<double>(config::kAdcCenter) +
+                            static_cast<double>(rawAdc[static_cast<std::size_t>(config::kFrontalA)]) -
+                            static_cast<double>(rawAdc[static_cast<std::size_t>(config::kFrontalB)]);
+
+    for (std::size_t ch = 0; ch < config::kStftChannels; ++ch) {
         Chain& chain = chains_[ch];
+
+        const bool   bip = (ch == static_cast<std::size_t>(config::kBipolar));
+        const double in  = bip ? bipolarUv : uv[ch];
 
         // 1. Rimozione DC. Il segnale a valle di questa e a monte dei filtri in
         //    banda è quello su cui ha senso il gating d'ampiezza.
-        const double dcFree = chain.dc.process(uv[ch]);
+        const double dcFree = chain.dc.process(in);
 
         // 2-3. Notch (rete elettrica) e passa-basso.
         const double filtered = chain.lp.process(chain.notch.process(dcFree));
@@ -55,7 +71,7 @@ bool SlidingStft::pushSample(const std::array<double, config::kChannels>& uv,
         const auto i = static_cast<std::size_t>(idx);
         filtered_[ch][i] = static_cast<float>(filtered);
         dcFree_[ch][i]   = static_cast<float>(dcFree);
-        adc_[ch][i]      = static_cast<float>(rawAdc[ch]);
+        adc_[ch][i]      = static_cast<float>(bip ? bipolarAdc : rawAdc[ch]);
     }
 
     // Un tick di hop per campione (non per canale): i 4 canali avanzano insieme.
@@ -71,7 +87,7 @@ bool SlidingStft::pushSample(const std::array<double, config::kChannels>& uv,
 }
 
 void SlidingStft::runFft() {
-    for (std::size_t ch = 0; ch < config::kChannels; ++ch) {
+    for (std::size_t ch = 0; ch < config::kStftChannels; ++ch) {
         // Il ring va riordinato: il campione più vecchio sta subito dopo la testa
         // di scrittura. La finestra di Hann si applica in ordine temporale.
         const int tail = writeIndex_[ch];
@@ -131,8 +147,16 @@ void SlidingStft::runFft() {
 std::optional<double> popeIndex(const SlidingStft& stft, Bands* outBands) {
     double theta = 0.0, alpha = 0.0, beta = 0.0;
 
-    for (const int ch : {config::kFrontalA, config::kFrontalB}) {
-        const float* m = stft.mags(ch);
+    // Sulla derivazione bipolare AF7-AF8, non sulla somma dei due canali presi
+    // singolarmente. Sommandoli si sommava anche il ronzio di rete, che sui due
+    // elettrodi è lo stesso segnale: misurato, l'81% della potenza. Sulla
+    // differenza scende all'8%, e la potenza in banda aumenta.
+    //
+    // L'indice è adimensionale e la calibrazione misura gli estremi PERSONALI,
+    // quindi il cambio di derivazione viene assorbito dalla calibrazione: non
+    // c'è nessuna soglia assoluta da ritarare.
+    {
+        const float* m = stft.mags(config::kBipolar);
         // Bin inclusivi come nel JS: 1 bin = 1 Hz con N=256 @256 Hz.
         for (int b = config::kThetaLo; b <= config::kThetaHi; ++b) theta += m[b];
         for (int b = config::kAlphaLo; b <= config::kAlphaHi; ++b) alpha += m[b];

@@ -68,7 +68,19 @@ void calibrateTo(control::Calibration& cal, double lo, double hi) {
     cal.tick(config::kCalibRelaxS, true);         // -> finalize
 }
 
-/** Alimenta la STFT con una sinusoide sui frontali finché non emette un frame. */
+/**
+ * Alimenta la STFT con una sinusoide, finché non emette un frame.
+ *
+ * Lo stesso ritmo arriva ai due frontali con AMPIEZZA DIVERSA (AF8 al 30% di
+ * AF7). Prima arrivava identico su entrambi, il che e' fisicamente impossibile
+ * - sono due elettrodi in due punti diversi del cranio - e con la derivazione
+ * bipolare si annulla per costruzione: i test misuravano una situazione che non
+ * puo' esistere, e sono crollati appena la derivazione e' diventata
+ * differenziale. Ampiezze diverse sullo stesso ritmo e' cio' che succede
+ * davvero, e lascia alla differenza uno spettro della stessa forma.
+ */
+inline constexpr double kAf8Rapporto = 0.30;
+
 bool feedSine(dsp::SlidingStft& stft, double freqHz, double amplitudeUv, int samples) {
     bool emitted = false;
     for (int n = 0; n < samples; ++n) {
@@ -78,10 +90,13 @@ bool feedSine(dsp::SlidingStft& stft, double freqHz, double amplitudeUv, int sam
         std::array<double, config::kChannels> uv{};
         std::array<std::uint16_t, config::kChannels> adc{};
         for (std::size_t ch = 0; ch < config::kChannels; ++ch) {
-            const bool frontal = (ch == config::kFrontalA || ch == config::kFrontalB);
-            uv[ch] = frontal ? v : 0.0;
+            double q = 0.0;
+            if (ch == static_cast<std::size_t>(config::kFrontalA))      q = v;
+            else if (ch == static_cast<std::size_t>(config::kFrontalB)) q = v * kAf8Rapporto;
+
+            uv[ch]  = q;
             adc[ch] = static_cast<std::uint16_t>(
-                config::kAdcCenter + static_cast<int>(v / config::kAdcToMicrovolts));
+                config::kAdcCenter + static_cast<int>(q / config::kAdcToMicrovolts));
         }
         if (stft.pushSample(uv, adc)) emitted = true;
     }
@@ -783,11 +798,15 @@ void testPlausibility() {
     }
 
     // 4. Onda vera ma satura: ampiezza oltre il fondo scala.
+    //    I due frontali saturano a frequenze diverse: se saturasse solo uno, il
+    //    criterio "il migliore dei due" prenderebbe l'altro e direbbe OK - che
+    //    e' il comportamento voluto, ma non e' quello sotto esame qui.
     {
         dsp::SlidingStft stft;
         dsp::Gating gating;
-        feedAdc(stft, config::kStftWindow * 2, [](int n, int) {
-            const double s = std::sin(2.0 * std::numbers::pi * 6.0 * n / config::kSampleRate);
+        feedAdc(stft, config::kStftWindow * 2, [](int n, int ch) {
+            const double f = (ch == config::kFrontalB) ? 7.0 : 6.0;
+            const double s = std::sin(2.0 * std::numbers::pi * f * n / config::kSampleRate);
             const double v = config::kAdcCenter + s * config::kAdcCenter * 1.6;
             return static_cast<std::uint16_t>(std::clamp(v, 0.0, 16383.0));
         });
@@ -833,24 +852,48 @@ void testPlausibility() {
               "solo rete -> bocciato come 'RETE 50 Hz'");
     }
 
-    // 7. Segnale in banda con un po' di rete sopra: deve passare. Il rilevatore
-    //    serve a trovare l'elettrodo che non tocca, non a pretendere una stanza
-    //    schermata.
+    // 7. IL CASO CHE CONTA: rete in MODO COMUNE - identica sui due frontali,
+    //    com'e' nella realta' - sovrapposta a un EEG differenziale.
+    //
+    //    Misurato sul campo il 2026-08-16: fra AF7 e AF8 il ronzio ha 1,4 gradi
+    //    di sfasamento e rapporto di ampiezza 1,01. La derivazione bipolare lo
+    //    cancella, e infatti sui dati veri la quota di rete passa dall'81%
+    //    all'8%. Qui la rete e' DIECI VOLTE l'EEG: sui canali presi
+    //    singolarmente dominerebbe, sulla differenza deve sparire.
     {
         dsp::SlidingStft stft;
         dsp::Gating gating;
-        feedAdc(stft, config::kStftWindow * 2, [](int n, int) {
+        feedAdc(stft, config::kStftWindow * 2, [](int n, int ch) {
             const double t    = static_cast<double>(n) / config::kSampleRate;
-            const double eeg  = std::sin(2.0 * std::numbers::pi * 10.0 * t) * 400.0;
-            const double rete = std::sin(2.0 * std::numbers::pi * config::kMainsHz * t) * 80.0;
+            const double rete = std::sin(2.0 * std::numbers::pi * config::kMainsHz * t) * 3000.0;
+            const double eeg  = (ch == config::kFrontalA)
+                                    ? std::sin(2.0 * std::numbers::pi * 10.0 * t) * 300.0
+                                    : 0.0;
             return static_cast<std::uint16_t>(
                 std::clamp(config::kAdcCenter + eeg + rete, 0.0, 16383.0));
         });
         const auto q = gating.assess(stft);
-        check(q.mainsFraction < config::kMaxMainsFraction,
-              "segnale in banda + rete minore: quota di rete sotto la soglia");
+        check(q.mainsFraction < 0.10,
+              "rete di modo comune: sulla derivazione bipolare quasi sparisce");
         check(q.fault == dsp::SignalFault::None,
-              "un po' di rete su segnale vero non fa scattare l'allarme");
+              "rete dieci volte l'EEG, ma di modo comune -> segnale utilizzabile");
+    }
+
+    // 8. Rete di modo comune SENZA alcun EEG: la differenza e' nulla e non c'e'
+    //    niente da leggere. Deve dirlo, non inventarsi un indice.
+    {
+        dsp::SlidingStft stft;
+        dsp::Gating gating;
+        feedAdc(stft, config::kStftWindow * 2, [](int n, int) {
+            const double t = static_cast<double>(n) / config::kSampleRate;
+            return static_cast<std::uint16_t>(std::clamp(
+                config::kAdcCenter +
+                    std::sin(2.0 * std::numbers::pi * config::kMainsHz * t) * 3000.0,
+                0.0, 16383.0));
+        });
+        const auto q = gating.assess(stft);
+        check(q.fault != dsp::SignalFault::None,
+              "solo rete di modo comune -> nessun segnale utilizzabile");
     }
 }
 
@@ -928,6 +971,11 @@ void testNotch() {
 } // namespace
 
 int main() {
+    // Senza questo, con l'output rediretto su file la printf e' bufferizzata a
+    // blocchi: se un test fa crashare il processo non si vede NIENTE, nemmeno i
+    // test passati prima, e non si sa da dove cominciare a guardare.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+
     std::printf("Mind Zoom - test del core nativo\n");
 
     testDecode();

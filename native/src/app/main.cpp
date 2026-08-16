@@ -848,9 +848,9 @@ void drawHud(render::Renderer& r, const app::ControlState& st, const control::Zo
             // e in quel caso capta la rete per accoppiamento capacitivo PUR
             // toccando. Il rimedio e' inumidire, non premere.
             line(L"  " + fixed(st.mainsFraction * 100.0, 0) +
-                     L"% della potenza a 50 Hz: contatto elettrico scarso",
+                     L"% a 50 Hz DOPO la derivazione bipolare: non e' modo comune",
                  kMuted, 12.0f);
-            line(L"  inumidisci gli elettrodi e scosta i capelli (toccare non basta)",
+            line(L"  i due frontali leggono cose diverse: uno dei due non e' accoppiato",
                  kMuted, 12.0f);
         } else {
             line(L"  correlazione " + fixed(st.autocorr1, 2) + L" (serve > " +
@@ -1332,12 +1332,19 @@ int reportRecording(const std::wstring& path) {
         } else if (okPct > 70.0) {
             text += L"VERDETTO: segnale utilizzabile.\n";
         } else if (faults[1] > frames / 2) {
-            text += L"VERDETTO: la fascia leggeva la rete elettrica, non te.\n"
-                    L"Il contatto ELETTRICO era scarso, il che non vuol dire che la\n"
-                    L"fascia fosse indossata male: un elettrodo secco puo' appoggiare\n"
-                    L"perfettamente e avere comunque un'impedenza altissima, e allora\n"
-                    L"capta la rete per accoppiamento capacitivo pur toccando.\n"
-                    L"Il rimedio e' inumidire gli elettrodi e scostare i capelli.\n";
+            // Il ronzio residuo e' quello che la derivazione bipolare NON ha
+            // cancellato, quindi non e' modo comune: i due frontali stanno
+            // captando cose diverse, il che accade quando uno dei due non e'
+            // accoppiato. Niente consigli di inumidire: in un contesto pubblico
+            // non e' praticabile.
+            text += L"VERDETTO: quello che resta dopo la derivazione bipolare e'\n"
+                    L"ancora rete elettrica, quindi NON e' di modo comune: i due\n"
+                    L"frontali stanno leggendo cose diverse, e di solito vuol dire\n"
+                    L"che uno dei due non e' accoppiato alla pelle.\n"
+                    L"Da provare, in quest'ordine: pulire gli elettrodi con una\n"
+                    L"salvietta all'alcol isopropilico (sgrassa e disinfetta),\n"
+                    L"scostare i capelli sotto la fascia, spostare la fascia di\n"
+                    L"qualche millimetro, allontanarsi dagli alimentatori.\n";
         } else if (faults[4] > frames / 2) {
             text += L"VERDETTO: i campioni non formano una forma d'onda.\n"
                     L"Questo si' che indica un difetto di decodifica nel programma.\n"

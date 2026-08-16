@@ -71,16 +71,16 @@ private:
     };
 
     template <typename T, std::size_t N>
-    using PerChannel = std::array<std::array<T, N>, config::kChannels>;
+    using PerChannel = std::array<std::array<T, N>, config::kStftChannels>;
 
-    std::array<Chain, config::kChannels> chains_{};
+    std::array<Chain, config::kStftChannels> chains_{};
 
     PerChannel<float, kN>    filtered_{};
     PerChannel<float, kN>    dcFree_{};
     PerChannel<float, kN>    adc_{};
     PerChannel<float, kBins> mags_{};
 
-    std::array<int, config::kChannels> writeIndex_{};
+    std::array<int, config::kStftChannels> writeIndex_{};
 
     std::array<float, kN>     hann_{};
     std::array<float, kN * 2> twiddle_{};

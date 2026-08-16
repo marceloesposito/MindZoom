@@ -19,6 +19,30 @@ inline constexpr int    kChannels     = 4;     // TP9, AF7, AF8, TP10
 inline constexpr int    kFrontalA     = 1;     // AF7
 inline constexpr int    kFrontalB     = 2;     // AF8
 
+// --- Derivazione bipolare AF7 - AF8 ---
+// L'indice si calcola sulla DIFFERENZA fra i due frontali, non sulla somma dei
+// due canali presi singolarmente.
+//
+// Motivo, misurato il 2026-08-16 su 173 finestre di segnale reale: il ronzio di
+// rete arriva in modo comune, cioe' identico sui due elettrodi - differenza di
+// fase +1,4 gradi, rapporto di ampiezza 1,01, il 96% delle finestre entro
+// +-30 gradi. Sottraendo si cancella.
+//
+//     AF7 da solo    rete 81,3%   banda 4-30:  58 uV^2
+//     AF8 da solo    rete 88,4%   banda 4-30:  34 uV^2
+//     AF7 - AF8      rete  8,0%   banda 4-30:  89 uV^2
+//
+// La potenza in banda AUMENTA invece di calare, e 89 e' circa 58+34: i due
+// canali si sommano in potenza, il che vuol dire che il loro contenuto in banda
+// e' scorrelato. Non si sta cancellando segnale cerebrale, si sta togliendo
+// solo cio' che i due elettrodi hanno in comune, che e' il disturbo.
+//
+// NON usare il riferimento medio dei quattro canali: misurato, peggiora
+// (rete 98,2%), perche' TP9 e TP10 saturano il 41% del tempo e mediarli
+// significa iniettare la loro saturazione dentro i frontali.
+inline constexpr int    kBipolar      = kChannels;      // indice del canale virtuale
+inline constexpr int    kStftChannels = kChannels + 1;  // i 4 fisici + il bipolare
+
 // --- STFT a finestra scorrevole ---
 inline constexpr int    kStftWindow   = 256;   // 1 s @256 Hz: risolve theta a 4 Hz
 inline constexpr int    kStftHop      = 48;    // -> ~5.33 Hz di update del controllo

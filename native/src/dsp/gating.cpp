@@ -199,15 +199,11 @@ Quality Gating::assess(const SlidingStft& stft) {
     bool        first     = true;
 
     for (const int ch : {config::kFrontalA, config::kFrontalB}) {
-        auto s = rawStats(stft.adc(ch), kN);
-        s.mainsFraction = mainsFraction(stft.dcFree(ch), kN,
-                                        static_cast<double>(config::kSampleRate));
+        const auto s = rawStats(stft.adc(ch), kN);
 
         SignalFault f;
         if (s.spread < config::kMinSpreadCounts) {
             f = SignalFault::Flat;                    // niente segnale: il resto non dice nulla
-        } else if (s.mainsFraction > config::kMaxMainsFraction) {
-            f = SignalFault::Mains;                   // prima di SATURO: è la diagnosi utile
         } else if (s.railFraction > config::kMaxRailFraction) {
             f = SignalFault::Railing;
         } else if (s.autocorr1 < config::kMinAutocorr1) {
@@ -221,6 +217,25 @@ Quality Gating::assess(const SlidingStft& stft) {
             bestFault = f;
             first     = false;
         }
+    }
+
+    // Il ronzio si misura sulla DERIVAZIONE BIPOLARE, non sui canali singoli:
+    // è quella che l'indice consuma, ed è l'unica su cui la domanda ha senso.
+    // Sui canali presi uno per uno il modo comune c'è sempre, anche quando la
+    // sottrazione lo elimina completamente - misurato: 81% sul canale, 8% sulla
+    // differenza, con lo stesso identico segnale.
+    const auto bip = rawStats(stft.adc(config::kBipolar), kN);
+    best.mainsFraction = mainsFraction(stft.dcFree(config::kBipolar), kN,
+                                       static_cast<double>(config::kSampleRate));
+
+    if (bip.spread < config::kMinSpreadCounts) {
+        // I due frontali danno lo stesso identico segnale: la differenza è nulla
+        // e l'indice non avrebbe niente da leggere. Succede se un elettrodo è
+        // scollegato e l'ingresso segue l'altro.
+        bestFault = SignalFault::Flat;
+    } else if (bestFault == SignalFault::None &&
+               best.mainsFraction > config::kMaxMainsFraction) {
+        bestFault = SignalFault::Mains;
     }
 
     q.railFraction  = best.railFraction;

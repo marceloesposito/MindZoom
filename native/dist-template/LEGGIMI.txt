@@ -279,13 +279,16 @@ non lo sono.
 
 Nel pannello H compaiono quattro diciture possibili:
 
-  RETE 50 Hz         Quasi tutta la potenza sta sulla frequenza della rete
-                     elettrica. Gli elettrodi non toccano la pelle: la fascia
-                     sta captando l'impianto della stanza invece di te.
-                     E' il caso piu' frequente in assoluto, ed e' anche il piu'
-                     facile da risolvere. Sposta la fascia sulla fronte
-                     scostando i capelli e inumidisci i due contatti dietro le
-                     orecchie. La quota scende subito sotto il 5%.
+  RETE 50 Hz         Il ronzio della rete elettrica domina ANCHE dopo la
+                     derivazione bipolare (vedi sotto), e questo e' il punto:
+                     vuol dire che non e' di modo comune, cioe' i due elettrodi
+                     frontali stanno leggendo cose diverse. Di solito significa
+                     che uno dei due non fa contatto elettrico.
+                     Da provare in quest'ordine: pulire gli elettrodi con una
+                     salvietta all'alcol isopropilico al 70% (sgrassa, e ti
+                     serve comunque fra un partecipante e l'altro), scostare i
+                     capelli sotto la fascia, spostarla di qualche millimetro,
+                     allontanare la postazione dagli alimentatori.
 
   PIATTO             Il canale non si muove: elettrodo staccato.
                      Sistema la fascia sulla fronte.
@@ -307,3 +310,30 @@ Il solo controllo di correlazione dichiarava quindi "OK" una fascia appoggiata
 sul tavolo. Misurato il 16 agosto 2026 su una sessione vera: correlazione 0,32
 e l'87% della potenza a 50 Hz. Sono due domande diverse - "e' una forma d'onda?"
 e "e' la TUA forma d'onda?" - e servono entrambe.
+
+
+PERCHE' IL RONZIO DI RETE NON E' PIU' UN PROBLEMA
+------------------------------------------------
+Il programma non legge AF7 e AF8 separatamente: legge la loro DIFFERENZA.
+
+Il ronzio della rete arriva agli elettrodi in "modo comune", cioe' identico su
+tutti, perche' e' il corpo intero a trovarsi a quel potenziale. Misurato sul
+campo il 16 agosto 2026 su 173 finestre di segnale vero: fra AF7 e AF8 il
+ronzio ha 1,4 gradi di sfasamento e rapporto di ampiezza 1,01, cioe' e' lo
+stesso identico segnale. L'attivita' cerebrale invece e' diversa sui due
+elettrodi, perche' viene da zone diverse.
+
+Sottraendo, il ronzio si cancella e il cervello resta:
+
+                    quota rete    banda 4-30 Hz
+  AF7 da solo          81,3%          58 uV^2
+  AF8 da solo          88,4%          34 uV^2
+  AF7 - AF8             8,0%          89 uV^2
+
+La potenza utile AUMENTA (89 e' circa 58+34): i due canali si sommano invece di
+cancellarsi, il che dimostra che non si sta perdendo segnale cerebrale.
+
+Effetto su una sessione reale di 226 secondi: finestre utilizzabili dal 40,2%
+al 70,6%, e il 100% negli ultimi 30 secondi.
+
+Non serve inumidire niente, e non serve una stanza schermata.
