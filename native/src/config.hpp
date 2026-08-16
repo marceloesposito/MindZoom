@@ -133,6 +133,22 @@ inline constexpr double kMinAutocorr1   = 0.25;  // TUNE - prudente di proposito
 inline constexpr double kMaxRailFraction = 0.02; // oltre il 2% ai fondo scala = saturo
 inline constexpr double kMinSpreadCounts = 2.0;  // sotto = canale piatto
 
+// Quota di potenza attorno ai 50 Hz oltre la quale il canale sta leggendo la
+// rete elettrica e non la persona.
+//
+// Serve perché l'autocorrelazione da sola NON distingue i due casi: un canale
+// di solo ronzio vale 0.33, cioè sopra kMinAutocorr1, e passerebbe per buono.
+// È successo davvero: misurato il 2026-08-16 su una sessione con la fascia
+// appoggiata male, quattro canali su otto avevano fra l'87% e il 99% della
+// potenza nei bin 49-51 Hz, con l'autocorrelazione a 0.332 su tutti - cioè
+// esattamente cos(2*pi*50/256), la firma di una sinusoide pura a 50 Hz.
+//
+// Un elettrodo che tocca la pelle cortocircuita l'accoppiamento capacitivo con
+// la rete: la quota crolla. Su quella stessa registrazione i canali con un
+// minimo di contatto stavano sotto il 5%. La soglia a metà è larghissima.
+inline constexpr double kMainsHz          = 50.0;  // Europa; 60 in Nord America
+inline constexpr double kMaxMainsFraction = 0.50;
+
 // --- Watchdog del flusso ---
 inline constexpr double kEegWatchdogS     = 3.0;
 inline constexpr int    kEegWatchdogRetry = 3;

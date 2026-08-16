@@ -444,9 +444,10 @@ void dspThread() {
             st.contactOk = quality.contactOk;
             st.artifact  = quality.artifact;
             st.signalFault  = static_cast<int>(quality.fault);
-            st.autocorr1    = quality.autocorr1;
-            st.railFraction = quality.railFraction;
-            st.spreadCounts = quality.spreadCounts;
+            st.autocorr1     = quality.autocorr1;
+            st.railFraction  = quality.railFraction;
+            st.spreadCounts  = quality.spreadCounts;
+            st.mainsFraction = quality.mainsFraction;
             signalPlausible = (quality.fault == dsp::SignalFault::None);
         }
 
@@ -831,12 +832,26 @@ void drawHud(render::Renderer& r, const app::ControlState& st, const control::Zo
     // segnale biologico, dire "artefatto" o "contatto" manda a cercare il
     // problema sulla testa dell'utente invece che nel programma.
     if (st.signalFault != 0) {
-        const wchar_t* faults[] = {L"OK", L"PIATTO", L"SATURO", L"NON E' UN SEGNALE"};
-        line(std::wstring(L"Segnale: ") + faults[std::clamp(st.signalFault, 0, 3)], kBad, 15.0f);
-        line(L"  correlazione " + fixed(st.autocorr1, 2) + L" (serve > " +
-                 fixed(config::kMinAutocorr1, 2) + L")   saturi " +
-                 fixed(st.railFraction * 100.0, 1) + L"%",
-             kMuted, 12.0f);
+        // L'ordine segue dsp::SignalFault.
+        const wchar_t* faults[] = {L"OK", L"RETE 50 Hz", L"SATURO", L"PIATTO",
+                                   L"NON E' UN SEGNALE"};
+        const int fi = std::clamp(st.signalFault, 0, 4);
+        line(std::wstring(L"Segnale: ") + faults[fi], kBad, 15.0f);
+
+        // Il rimedio e' diverso per ciascuno, quindi lo si scrive: "RETE"
+        // manda a sistemare la fascia, "NON E' UN SEGNALE" manda a guardare il
+        // programma, e confonderli fa perdere una sessione intera.
+        if (fi == static_cast<int>(dsp::SignalFault::Mains)) {
+            line(L"  " + fixed(st.mainsFraction * 100.0, 0) +
+                     L"% della potenza a 50 Hz: l'elettrodo non tocca la pelle",
+                 kMuted, 12.0f);
+        } else {
+            line(L"  correlazione " + fixed(st.autocorr1, 2) + L" (serve > " +
+                     fixed(config::kMinAutocorr1, 2) + L")   saturi " +
+                     fixed(st.railFraction * 100.0, 1) + L"%   rete " +
+                     fixed(st.mainsFraction * 100.0, 0) + L"%",
+                 kMuted, 12.0f);
+        }
     } else {
         const wchar_t* gate = !st.contactOk ? L"CONTATTO" : (st.artifact ? L"ARTEFATTO" : L"OK");
         line(std::wstring(L"Segnale: ") + gate,
@@ -1102,6 +1117,7 @@ struct Options {
                                      // proprio la volta in cui servirebbe
     bool         singleScreen = false;   // forza il comportamento a finestra unica
     std::wstring replayPath;
+    std::wstring inspectPath;            // --controlla: verdetto su una registrazione
     bool         badArg   = false;
     std::wstring badArgText;
 };
@@ -1119,6 +1135,7 @@ Options parseOptions(PWSTR cmdLine) {
         else if (a == L"--senza-log")      o.record = false;
         else if (a == L"--schermo-singolo") o.singleScreen = true;
         else if (a == L"--riproduci" && i + 1 < argc) o.replayPath = argv[++i];
+        else if (a == L"--controlla" && i + 1 < argc) o.inspectPath = argv[++i];
         else if (!a.empty() && a[0] == L'-') {
             o.badArg = true;
             o.badArgText = a;
@@ -1194,6 +1211,109 @@ int reportScreens() {
     return 0;
 }
 
+/**
+ * --controlla: verdetto su una registrazione, senza aprire nulla.
+ *
+ * Fa passare la sessione per la STESSA catena dell'esperienza - decodifica,
+ * STFT, gating - e riporta cosa ne esce. Serve a rispondere in dieci secondi
+ * alla domanda che conta dopo ogni sessione: quello che è stato registrato è
+ * segnale, oppure no? Guardarlo dal pannello richiede di rifare la sessione.
+ */
+int reportRecording(const std::wstring& path) {
+    const auto rec = ble::loadRecording(path);
+
+    std::wstring text = L"File: " + path + L"\n";
+    if (!rec.ok) {
+        text += L"\nNON UTILIZZABILE\n  " +
+                std::wstring(rec.error.begin(), rec.error.end()) + L"\n";
+        if (!writeToParentConsole(L"\n" + text + L"\n")) {
+            MessageBoxW(nullptr, text.c_str(), L"Mind Zoom - controllo", MB_ICONWARNING);
+        }
+        return 2;
+    }
+
+    auto num = [](double v, int dec) {
+        std::wstringstream ss;
+        ss.imbue(std::locale::classic());
+        ss << std::fixed << std::setprecision(dec) << v;
+        return ss.str();
+    };
+
+    text += L"Formato v" + std::to_wstring(rec.version) +
+            L"   notifiche grezze: " + std::to_wstring(rec.packets.size()) +
+            L"   campioni: " + std::to_wstring(rec.samples.size()) +
+            L"   durata: " + num(rec.seconds(), 1) + L" s\n";
+    if (rec.redecoded) {
+        text += L"I campioni sono stati RICOSTRUITI dai pacchetti grezzi con il\n"
+                L"decodificatore attuale, non letti da quelli salvati allora.\n";
+    }
+
+    // Stessa catena dell'esperienza: se qui il verdetto e' buono, lo e' anche li'.
+    dsp::SlidingStft stft;
+    dsp::Gating      gating;
+    int  frames = 0;
+    std::array<int, 5> faults{};
+    double sumAutocorr = 0.0, sumMains = 0.0, sumAmp = 0.0;
+
+    for (const auto& s : rec.samples) {
+        std::array<double, config::kChannels>        uv{};
+        std::array<std::uint16_t, config::kChannels> adc{};
+        for (std::size_t c = 0; c < config::kChannels; ++c) {
+            uv[c]  = s.uv[c];
+            adc[c] = s.adc[c];
+        }
+        if (!stft.pushSample(uv, adc)) continue;
+
+        const auto q = gating.assess(stft);
+        const int  f = std::clamp(static_cast<int>(q.fault), 0, 4);
+        ++faults[static_cast<std::size_t>(f)];
+        sumAutocorr += q.autocorr1;
+        sumMains    += q.mainsFraction;
+        sumAmp      += q.maxAbsRaw;
+        ++frames;
+    }
+
+    if (frames == 0) {
+        text += L"\nTroppo corta per un verdetto: servono almeno 256 campioni.\n";
+    } else {
+        const wchar_t* names[] = {L"OK", L"RETE 50 Hz", L"SATURO", L"PIATTO",
+                                  L"NON E' UN SEGNALE"};
+        text += L"\nFinestre analizzate: " + std::to_wstring(frames) + L"\n";
+        for (std::size_t i = 0; i < faults.size(); ++i) {
+            if (faults[i] == 0) continue;
+            const double pct = 100.0 * faults[i] / frames;
+            text += L"  " + std::wstring(names[i]) + L": " + num(pct, 1) + L"%\n";
+        }
+        text += L"\nCorrelazione fra campioni: " + num(sumAutocorr / frames, 3) +
+                L"   (serve > " + num(config::kMinAutocorr1, 2) + L")\n";
+        text += L"Potenza a 50 Hz:           " + num(100.0 * sumMains / frames, 1) +
+                L"%   (serve < " + num(100.0 * config::kMaxMainsFraction, 0) + L"%)\n";
+        text += L"Ampiezza media:            " + num(sumAmp / frames, 1) + L" uV\n";
+
+        const double okPct = 100.0 * faults[0] / frames;
+        text += L"\n";
+        if (okPct > 70.0) {
+            text += L"VERDETTO: segnale utilizzabile.\n";
+        } else if (faults[1] > frames / 2) {
+            text += L"VERDETTO: la fascia leggeva la rete elettrica, non te.\n"
+                    L"Gli elettrodi non toccavano la pelle. Non e' un difetto del\n"
+                    L"programma: sposta la fascia sulla fronte scostando i capelli e\n"
+                    L"inumidisci i contatti dietro le orecchie.\n";
+        } else if (faults[4] > frames / 2) {
+            text += L"VERDETTO: i campioni non formano una forma d'onda.\n"
+                    L"Questo si' che indica un difetto di decodifica nel programma.\n"
+                    L"I pacchetti grezzi sono nel file: si puo' correggere a posteriori.\n";
+        } else {
+            text += L"VERDETTO: segnale disturbato a tratti, utilizzabile solo in parte.\n";
+        }
+    }
+
+    if (!writeToParentConsole(L"\n" + text + L"\n")) {
+        MessageBoxW(nullptr, text.c_str(), L"Mind Zoom - controllo", MB_ICONINFORMATION);
+    }
+    return 0;
+}
+
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
@@ -1209,6 +1329,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
                      L"Opzioni disponibili:\n"
                      L"  --riproduci FILE.mzr   rigioca una sessione registrata,\n"
                      L"                         senza usare la fascia\n"
+                     L"  --controlla FILE.mzr   dice se quella sessione contiene\n"
+                     L"                         segnale vero, ed esce\n"
                      L"  --senza-log            non registrare questa sessione\n"
                      L"  --schermi              elenca i monitor rilevati ed esce\n"
                      L"  --schermo-singolo      non usare il secondo schermo\n\n"
@@ -1219,6 +1341,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
     }
 
     if (opt.listScreens) return reportScreens();
+    if (!opt.inspectPath.empty()) return reportRecording(opt.inspectPath);
 
     if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return 1;
 

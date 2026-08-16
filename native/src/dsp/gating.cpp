@@ -17,10 +17,57 @@ namespace {
  * casuali possono benissimo sembrare plausibili.
  */
 struct RawStats {
-    double railFraction = 0.0;
-    double autocorr1    = 1.0;
-    double spread       = 0.0;
+    double railFraction  = 0.0;
+    double autocorr1     = 1.0;
+    double spread        = 0.0;
+    double mainsFraction = 0.0;
 };
+
+/**
+ * Potenza alla frequenza del bin k, con l'algoritmo di Goertzel.
+ *
+ * Due comodità che rendono la cosa esatta e quasi gratuita: con finestra 256 a
+ * 256 Hz un bin vale esattamente 1 Hz, quindi i 50 Hz cadono su un bin intero
+ * senza dispersione; e il buffer è un ring che non serve riordinare, perché una
+ * rotazione ciclica cambia la fase di un bin esatto ma non il suo modulo.
+ */
+double goertzelPower(const float* x, int n, int k) {
+    const double w     = 2.0 * 3.14159265358979323846 * k / n;
+    const double coeff = 2.0 * std::cos(w);
+    double s1 = 0.0, s2 = 0.0;
+    for (int i = 0; i < n; ++i) {
+        const double s0 = static_cast<double>(x[static_cast<std::size_t>(i)]) +
+                          coeff * s1 - s2;
+        s2 = s1;
+        s1 = s0;
+    }
+    return s1 * s1 + s2 * s2 - coeff * s1 * s2;
+}
+
+/**
+ * Quota di potenza attorno alla frequenza di rete, su segnale con la sola DC
+ * rimossa (sul filtrato non si vedrebbe: il notch l'ha già tolta).
+ *
+ * Si sommano i bin 49-51 invece del solo 50: la finestra non è apodizzata e uno
+ * scarto minimo della frequenza di rete disperderebbe energia sui vicini.
+ */
+double mainsFraction(const float* dcFree, int n, double fs) {
+    if (n < 8) return 0.0;
+
+    double total = 0.0;
+    for (int i = 0; i < n; ++i) {
+        const double v = dcFree[static_cast<std::size_t>(i)];
+        total += v * v;
+    }
+    if (total <= 1e-12) return 0.0;
+
+    const int centre = static_cast<int>((config::kMainsHz * n / fs) + 0.5);
+    double    mains  = 0.0;
+    for (int k = centre - 1; k <= centre + 1; ++k) {
+        if (k > 0 && k < n / 2) mains += 2.0 * goertzelPower(dcFree, n, k) / n;
+    }
+    return std::min(1.0, mains / total);
+}
 
 RawStats rawStats(const float* adc, int n) {
     RawStats r;
@@ -55,6 +102,7 @@ RawStats rawStats(const float* adc, int n) {
 const char* toString(SignalFault f) noexcept {
     switch (f) {
         case SignalFault::None:         return "OK";
+        case SignalFault::Mains:        return "RETE 50 Hz";
         case SignalFault::Flat:         return "PIATTO";
         case SignalFault::Railing:      return "SATURO";
         case SignalFault::Uncorrelated: return "NON UN SEGNALE";
@@ -142,26 +190,44 @@ Quality Gating::assess(const SlidingStft& stft) {
     // Si prende il canale MIGLIORE dei due frontali: se anche solo uno legge
     // qualcosa di sensato, il problema è di posizionamento e non di formato.
     // Bocciare sul peggiore farebbe scattare l'allarme ad ogni elettrodo storto.
-    RawStats best;
-    best.autocorr1 = -2.0;
+    //
+    // "Migliore" si decide sul GUASTO, non sulla sola autocorrelazione: un
+    // canale di solo ronzio di rete ha autocorrelazione 0.33 e vincerebbe il
+    // confronto contro un canale davvero collegato ma rumoroso.
+    RawStats    best;
+    SignalFault bestFault = SignalFault::Uncorrelated;
+    bool        first     = true;
+
     for (const int ch : {config::kFrontalA, config::kFrontalB}) {
-        const auto s = rawStats(stft.adc(ch), kN);
-        if (s.autocorr1 > best.autocorr1) best = s;
+        auto s = rawStats(stft.adc(ch), kN);
+        s.mainsFraction = mainsFraction(stft.dcFree(ch), kN,
+                                        static_cast<double>(config::kSampleRate));
+
+        SignalFault f;
+        if (s.spread < config::kMinSpreadCounts) {
+            f = SignalFault::Flat;                    // niente segnale: il resto non dice nulla
+        } else if (s.mainsFraction > config::kMaxMainsFraction) {
+            f = SignalFault::Mains;                   // prima di SATURO: è la diagnosi utile
+        } else if (s.railFraction > config::kMaxRailFraction) {
+            f = SignalFault::Railing;
+        } else if (s.autocorr1 < config::kMinAutocorr1) {
+            f = SignalFault::Uncorrelated;
+        } else {
+            f = SignalFault::None;
+        }
+
+        if (first || static_cast<int>(f) < static_cast<int>(bestFault)) {
+            best      = s;
+            bestFault = f;
+            first     = false;
+        }
     }
 
-    q.railFraction = best.railFraction;
-    q.autocorr1    = best.autocorr1;
-    q.spreadCounts = best.spread;
-
-    if (best.spread < config::kMinSpreadCounts) {
-        q.fault = SignalFault::Flat;
-    } else if (best.autocorr1 < config::kMinAutocorr1) {
-        q.fault = SignalFault::Uncorrelated;
-    } else if (best.railFraction > config::kMaxRailFraction) {
-        q.fault = SignalFault::Railing;
-    } else {
-        q.fault = SignalFault::None;
-    }
+    q.railFraction  = best.railFraction;
+    q.autocorr1     = best.autocorr1;
+    q.spreadCounts  = best.spread;
+    q.mainsFraction = best.mainsFraction;
+    q.fault         = bestFault;
 
     return q;
 }

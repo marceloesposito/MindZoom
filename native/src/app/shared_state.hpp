@@ -63,10 +63,11 @@ struct ControlState {
     bool   artifact  = false;
 
     // --- plausibilità fisica: quello che arriva è un segnale biologico? ---
-    int    signalFault  = 0;    // dsp::SignalFault
-    double autocorr1    = 1.0;
-    double railFraction = 0.0;
-    double spreadCounts = 0.0;
+    int    signalFault   = 0;    // dsp::SignalFault
+    double autocorr1     = 1.0;
+    double railFraction  = 0.0;
+    double spreadCounts  = 0.0;
+    double mainsFraction = 0.0;  // quota di potenza a 50 Hz: elettrodo che non tocca
     // Un frame è arrivato di recente. Distingue "fascia storta" (contatto scarso
     // ma dati presenti) da "fascia assente" (nessun dato): sono due messaggi
     // diversi da dare all'utente.

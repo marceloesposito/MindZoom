@@ -11,11 +11,16 @@
 
 namespace mz::dsp {
 
-/** Perché il segnale non è utilizzabile. Sono guasti diversi, con rimedi diversi. */
+/**
+ * Perché il segnale non è utilizzabile. Sono guasti diversi, con rimedi diversi:
+ * l'ordine dell'enum è anche l'ordine di gravità con cui si sceglie quale
+ * canale rappresenta la fascia.
+ */
 enum class SignalFault {
     None = 0,
-    Flat,          // canale piatto: elettrodo staccato
+    Mains,         // quasi tutta la potenza a 50 Hz: l'elettrodo non tocca la pelle
     Railing,       // sbatte contro i fondo scala: amplificatore saturo
+    Flat,          // canale piatto: elettrodo staccato
     Uncorrelated   // campioni indipendenti fra loro: NON è una forma d'onda
 };
 
@@ -36,6 +41,7 @@ struct Quality {
     double      railFraction = 0.0;  // frazione di campioni ai fondo scala
     double      autocorr1    = 1.0;  // correlazione fra campioni adiacenti
     double      spreadCounts = 0.0;  // deviazione standard in conteggi ADC
+    double      mainsFraction = 0.0; // quota di potenza attorno ai 50 Hz
     SignalFault fault        = SignalFault::None;
 };
 
