@@ -82,17 +82,33 @@ inline PacketType packetType(std::uint8_t tag) noexcept {
     return static_cast<PacketType>(tag & 0x0F);
 }
 
-/** Byte di payload di un pacchetto, oppure -1 se la dimensione non è nota. */
+/**
+ * Byte di payload di un pacchetto, oppure -1 se la dimensione non è nota.
+ *
+ * Queste dimensioni sono MISURATE sui pacchetti veri della fascia, non dedotte
+ * da quanti bit servirebbero. Il metodo: il byte dopo l'etichetta è un contatore
+ * che avanza di 1 fra pacchetti dello stesso tipo, quindi due pacchetti EEG8
+ * consecutivi delimitano una regione di lunghezza nota e ciò che sta in mezzo si
+ * ricava per differenza. Verifica finale: la catena deve piastrellare la
+ * notifica fino all'ultimo byte, e con questa tabella lo fa su 788 notifiche
+ * su 797 (98,9%); le 9 restanti hanno etichette senza senso, cioè notifiche
+ * corrotte.
+ *
+ * Le dimensioni dedotte a tavolino erano sbagliate proprio dove contava: OPT16
+ * "3 campioni × 16 canali × 20 bit" darebbe 120, ma il pacchetto vero ne porta
+ * 40. Con 120 la catena si spezzava e non usciva NIENTE, perché un tipo di
+ * dimensione ignota interrompe anche la lettura dei pacchetti EEG che seguono.
+ */
 inline int payloadBytes(PacketType t) noexcept {
     switch (t) {
-        case PacketType::Eeg4:     return  2 *  4 * 14 / 8;   // 14
-        case PacketType::Eeg8:     return  2 *  8 * 14 / 8;   // 28
-        case PacketType::Optics4:  return  3 *  4 * 20 / 8;   // 30
-        case PacketType::Optics8:  return  3 *  8 * 20 / 8;   // 60
-        case PacketType::Optics16: return  3 * 16 * 20 / 8;   // 120
-        case PacketType::Imu:      return  3 *  6 * 12 / 8;   // 27
-        // DRL/REF e batteria non sono documentati: incontrandoli la catena non
-        // può proseguire, perché non si sa di quanto avanzare.
+        case PacketType::Eeg4:     return  14;   // 2 campioni × 4 canali × 14 bit
+        case PacketType::Eeg8:     return  28;   // 2 campioni × 8 canali × 14 bit
+        case PacketType::DrlRef:   return  24;   // misurato, 56 osservazioni su 56
+        case PacketType::Optics4:  return  30;
+        case PacketType::Optics8:  return  60;
+        case PacketType::Optics16: return  40;   // misurato (NON 120)
+        case PacketType::Imu:      return  36;   // misurato: 3 campioni × 6 × 16 bit
+        case PacketType::Battery:  return  20;   // misurato
         default:                   return -1;
     }
 }
@@ -144,8 +160,71 @@ inline std::size_t walkPackets(const std::uint8_t* data, std::size_t len, std::s
     return i - start;
 }
 
-/** Byte che possono restare non consumati in fondo a una notifica valida. */
-inline constexpr std::size_t kChainTailSlack = 3;
+/** Esito della lettura di una notifica. */
+struct ChainResult {
+    int  eegSamples = 0;      // campioni multi-canale emessi
+    bool sawEeg     = false;  // c'era almeno un pacchetto EEG
+};
+
+/**
+ * Percorre la catena da `start` ed emette i campioni EEG che incontra.
+ *
+ * `fn(const std::uint16_t* adc, int numChannels)` viene chiamata una volta per
+ * campione. Sta qui, e non dentro il trasporto Bluetooth, perché serve in due
+ * posti: sulle notifiche dal vivo e sui pacchetti grezzi di una registrazione
+ * che si vuole ri-decodificare. Due copie della stessa aritmetica sarebbero due
+ * cose da tenere allineate, e la seconda non verrebbe mai esercitata.
+ */
+template <typename Fn>
+ChainResult forEachEegSample(const std::uint8_t* data, std::size_t len,
+                             std::size_t start, Fn&& fn) {
+    ChainResult r;
+    if (!data || start >= len) return r;
+
+    std::size_t i = start;
+    while (i < len) {
+        const auto type = packetType(data[i]);
+        const int  size = payloadBytes(type);
+        if (size < 0) break;
+
+        const std::size_t payloadAt = i + kPacketHeaderBytes;
+        const std::size_t next      = payloadAt + static_cast<std::size_t>(size);
+        if (next > len) break;
+
+        if (isEeg(type)) {
+            r.sawEeg = true;
+            const int          numChannels = eegChannels(type);
+            const std::uint8_t* payload    = data + payloadAt;
+            const auto          payloadLen = static_cast<std::size_t>(size);
+            const std::size_t   numSamples = samplesInPayload(payloadLen, numChannels);
+
+            std::size_t bitOffset = 0;
+            for (std::size_t s = 0; s < numSamples; ++s) {
+                std::uint16_t adc[16] = {};
+                const int n = (numChannels < 16) ? numChannels : 16;
+                for (int ch = 0; ch < n; ++ch) {
+                    adc[ch] = unpack14(payload, payloadLen, bitOffset);
+                    bitOffset += 14;
+                }
+                fn(static_cast<const std::uint16_t*>(adc), n);
+                ++r.eegSamples;
+            }
+        }
+        i = next;
+    }
+    return r;
+}
+
+/**
+ * Byte che possono restare non consumati in fondo a una notifica valida.
+ *
+ * Zero: la catena chiude ESATTAMENTE sull'ultimo byte. Valeva 3 finché le
+ * dimensioni dei pacchetti erano dedotte a tavolino e la catena non chiudeva
+ * quasi mai; con le dimensioni misurate chiude su 788 notifiche su 797, e la
+ * tolleranza serviva solo a nascondere l'errore. Pretendere l'incastro esatto
+ * rende il riconoscimento dell'offset molto più selettivo.
+ */
+inline constexpr std::size_t kChainTailSlack = 0;
 
 /** Oltre questo prefisso non si cerca: ogni formato plausibile è più compatto. */
 inline constexpr std::size_t kMaxPrefixSearch = 40;

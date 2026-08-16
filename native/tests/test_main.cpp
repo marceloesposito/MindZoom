@@ -645,12 +645,16 @@ void pack14(std::vector<std::uint8_t>& out, const std::vector<std::uint16_t>& va
 void testAthenaPackets() {
     group("16. Formato dei pacchetti Athena");
 
-    // Dimensioni dalla specifica: EEG 2 campioni x 8 canali x 14 bit.
+    // Dimensioni MISURATE sui pacchetti veri (registrazione del 2026-08-16),
+    // non dedotte dai bit che servirebbero. Le deduzioni erano sbagliate:
+    // OPT16 "3 x 16 x 20 bit" darebbe 120, il pacchetto vero ne porta 40, e un
+    // solo tipo di dimensione sbagliata spezza la catena anche per l'EEG.
     check(dsp::payloadBytes(dsp::PacketType::Eeg8) == 28, "EEG 8 canali -> 28 byte di payload");
     check(dsp::payloadBytes(dsp::PacketType::Eeg4) == 14, "EEG 4 canali -> 14 byte");
-    check(dsp::payloadBytes(dsp::PacketType::Imu) == 27, "IMU -> 27 byte");
-    check(dsp::payloadBytes(dsp::PacketType::Optics16) == 120, "ottica 16 canali -> 120 byte");
-    check(dsp::payloadBytes(dsp::PacketType::DrlRef) < 0, "DRL/REF: dimensione ignota, si ferma");
+    check(dsp::payloadBytes(dsp::PacketType::Imu) == 36, "IMU -> 36 byte (misurato)");
+    check(dsp::payloadBytes(dsp::PacketType::Optics16) == 40, "ottica 16 canali -> 40 byte (misurato)");
+    check(dsp::payloadBytes(dsp::PacketType::DrlRef) == 24, "DRL/REF -> 24 byte (misurato)");
+    check(dsp::payloadBytes(dsp::PacketType::Battery) == 20, "batteria -> 20 byte (misurato)");
 
     check(dsp::packetType(0x12) == dsp::PacketType::Eeg8,
           "etichetta 0x12 -> EEG 8 canali a 256 Hz");
@@ -676,7 +680,7 @@ void testAthenaPackets() {
 
         pkt.push_back(0x17);                            // IMU
         pkt.insert(pkt.end(), 4, 0x00);
-        pkt.insert(pkt.end(), 27, 0x33);
+        pkt.insert(pkt.end(), 36, 0x33);
 
         pkt.push_back(0x12);                            // altro EEG
         pkt.insert(pkt.end(), 4, 0x00);
@@ -809,6 +813,44 @@ void testPlausibility() {
         const auto q = gating.assess(stft);
         check(q.fault == dsp::SignalFault::None,
               "un frontale buono e uno rotto -> il segnale resta utilizzabile");
+    }
+
+    // 6. Solo ronzio di rete: e' il caso che passava indisturbato.
+    //    Una sinusoide a 50 Hz campionata a 256 Hz ha autocorrelazione
+    //    cos(2*pi*50/256) = 0.335, cioe' SOPRA kMinAutocorr1: il controllo
+    //    precedente la dichiarava buona. Misurato sul campo il 2026-08-16:
+    //    quattro canali su otto, dall'87% al 99% di potenza a 50 Hz, tutti con
+    //    autocorrelazione 0.332.
+    {
+        dsp::SlidingStft stft;
+        dsp::Gating gating;
+        feedSine(stft, config::kMainsHz, 300.0, config::kStftWindow * 2);
+        const auto q = gating.assess(stft);
+        check(q.mainsFraction > 0.9, "ronzio puro: quasi tutta la potenza a 50 Hz");
+        check(q.autocorr1 > config::kMinAutocorr1,
+              "l'autocorrelazione da sola NON lo boccia: e' il motivo del controllo");
+        check(q.fault == dsp::SignalFault::Mains,
+              "solo rete -> bocciato come 'RETE 50 Hz'");
+    }
+
+    // 7. Segnale in banda con un po' di rete sopra: deve passare. Il rilevatore
+    //    serve a trovare l'elettrodo che non tocca, non a pretendere una stanza
+    //    schermata.
+    {
+        dsp::SlidingStft stft;
+        dsp::Gating gating;
+        feedAdc(stft, config::kStftWindow * 2, [](int n, int) {
+            const double t    = static_cast<double>(n) / config::kSampleRate;
+            const double eeg  = std::sin(2.0 * std::numbers::pi * 10.0 * t) * 400.0;
+            const double rete = std::sin(2.0 * std::numbers::pi * config::kMainsHz * t) * 80.0;
+            return static_cast<std::uint16_t>(
+                std::clamp(config::kAdcCenter + eeg + rete, 0.0, 16383.0));
+        });
+        const auto q = gating.assess(stft);
+        check(q.mainsFraction < config::kMaxMainsFraction,
+              "segnale in banda + rete minore: quota di rete sotto la soglia");
+        check(q.fault == dsp::SignalFault::None,
+              "un po' di rete su segnale vero non fa scattare l'allarme");
     }
 }
 
