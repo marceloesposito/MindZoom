@@ -27,6 +27,32 @@ namespace {
 D2D1_COLOR_F toD2D(Color c) { return D2D1::ColorF(c.r, c.g, c.b, c.a); }
 D2D1_RECT_F  toD2D(Rect r) { return D2D1::RectF(r.left, r.top, r.right, r.bottom); }
 
+/**
+ * DPI del monitor su cui sta la finestra.
+ *
+ * Serve a far sì che le coordinate passate al renderer siano DIP e non pixel:
+ * un pannello largo 520 deve occupare la stessa porzione di schermo su un
+ * monitor a 96 DPI e su un 4K a 192, altrimenti su quest'ultimo l'interfaccia
+ * risulta grande la metà e il testo illeggibile.
+ *
+ * GetDpiForWindow esiste da Windows 10 1607: caricata dinamicamente, con il DPI
+ * di sistema come ripiego sulle versioni precedenti.
+ */
+float windowDpi(HWND hwnd) {
+    if (HMODULE user32 = GetModuleHandleW(L"user32.dll")) {
+        using GetDpi = UINT(WINAPI*)(HWND);
+        if (auto fn = reinterpret_cast<GetDpi>(
+                reinterpret_cast<void*>(GetProcAddress(user32, "GetDpiForWindow")))) {
+            const UINT dpi = fn(hwnd);
+            if (dpi > 0) return static_cast<float>(dpi);
+        }
+    }
+    HDC dc = GetDC(nullptr);
+    const int dpi = dc ? GetDeviceCaps(dc, LOGPIXELSX) : 96;
+    if (dc) ReleaseDC(nullptr, dc);
+    return (dpi > 0) ? static_cast<float>(dpi) : 96.0f;
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -195,6 +221,13 @@ bool Renderer::Impl::createTarget() {
     // nearest neighbour renderebbe visibili i pixel durante il crossfade.
     target->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
+    // Da qui in poi le coordinate passate al renderer sono DIP, non pixel: D2D
+    // scala da solo. E' cio' che rende l'interfaccia della stessa dimensione
+    // FISICA su schermi con densita' diverse - e size() torna anch'essa in DIP,
+    // quindi tutta la geometria proporzionale gia' scritta continua a valere.
+    const float dpi = windowDpi(hwnd);
+    target->SetDpi(dpi, dpi);
+
     if (FAILED(target->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), brush.put()))) {
         return false;
     }
@@ -220,10 +253,16 @@ bool Renderer::Impl::upload() {
 bool Renderer::uploadSprites() { return impl_->upload(); }
 
 void Renderer::resize(unsigned width, unsigned height) {
-    if (impl_->target) {
-        impl_->target->Resize(D2D1::SizeU(std::max<unsigned>(width, 1u),
-                                          std::max<unsigned>(height, 1u)));
-    }
+    if (!impl_->target) return;
+
+    impl_->target->Resize(D2D1::SizeU(std::max<unsigned>(width, 1u),
+                                      std::max<unsigned>(height, 1u)));
+
+    // Una finestra trascinata su uno schermo con scala diversa riceve un resize:
+    // se il DPI non si aggiorna qui, l'interfaccia resta tarata sul monitor di
+    // partenza e sull'altro esce di dimensione sbagliata.
+    const float dpi = windowDpi(impl_->hwnd);
+    impl_->target->SetDpi(dpi, dpi);
 }
 
 Size Renderer::size() const {

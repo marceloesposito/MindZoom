@@ -86,6 +86,32 @@ Con un solo schermo non cambia niente rispetto a prima: una finestra sola, con
 il pannello sovrapposto all'immagine.
 
 
+MONTARE LA POSTAZIONE SU UN ALTRO COMPUTER
+------------------------------------------
+Prima di tutto il resto, da riga di comando:
+
+  MindZoom.exe --schermi
+
+Elenca i monitor che il programma vede ed esce, senza aprire niente. Se non
+vede due schermi, il problema e' li' e non nel programma.
+
+DUPLICA contro ESTENDI. E' l'errore piu' facile da fare. In modalita' "Duplica"
+Windows presenta i due monitor come UNO SOLO, quindi il programma vede un solo
+schermo e si comporta di conseguenza - correttamente, perche' un solo schermo
+c'e'. Serve "Estendi questi schermi" in Impostazioni schermo. Il comando
+--schermi lo dice subito: se ne elenca uno solo con due monitor collegati, e'
+questo.
+
+Scala del testo diversa fra i due monitor (per esempio portatile 4K al 150% e
+proiettore al 100%): il programma la gestisce, ma vale la pena controllare che
+la scheda di calibrazione sia leggibile su entrambi prima della sessione.
+
+Monitor a sinistra o sopra il primario: funziona: le coordinate negative sono
+previste. Se pero' sposti i monitor in Impostazioni schermo dopo aver scelto lo
+schermo di proiezione, il programma se ne accorge e ti richiede la scelta -
+perche' "il secondo" potrebbe non essere piu' lo stesso.
+
+
 I GRAFICI (schermo operatore)
 -----------------------------
 Quattro tracce, gli ultimi 60 secondi, griglia ogni 10.

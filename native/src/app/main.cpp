@@ -1161,8 +1161,56 @@ bool handlePickerKey(WPARAM wp) {
     }
 }
 
+/**
+ * Dichiara il processo consapevole del DPI, per monitor.
+ *
+ * Caricata dinamicamente invece che linkata: SetProcessDpiAwarenessContext
+ * esiste da Windows 10 1703 e il requisito dichiarato e' Windows 10
+ * aggiornato. Chiedendola dinamicamente il programma parte anche su una
+ * versione piu' vecchia, con il comportamento di prima invece che con un
+ * errore di caricamento all'avvio - e su quelle macchine il difetto che questa
+ * chiamata risolve e' comunque meno probabile, perche' il DPI misto e'
+ * arrivato dopo.
+ */
+void enableDpiAwareness() {
+    if (HMODULE user32 = GetModuleHandleW(L"user32.dll")) {
+        using SetCtx = BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT);
+        if (auto fn = reinterpret_cast<SetCtx>(
+                reinterpret_cast<void*>(
+                    GetProcAddress(user32, "SetProcessDpiAwarenessContext")))) {
+            if (fn(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) return;
+        }
+    }
+    // Ripiego per Windows 8.1 e per i 10 anteriori al 1703.
+    if (HMODULE shcore = LoadLibraryW(L"shcore.dll")) {
+        using SetAw = HRESULT(WINAPI*)(int);
+        if (auto fn = reinterpret_cast<SetAw>(
+                reinterpret_cast<void*>(GetProcAddress(shcore, "SetProcessDpiAwareness")))) {
+            fn(2);   // PROCESS_PER_MONITOR_DPI_AWARE
+            FreeLibrary(shcore);
+            return;
+        }
+        FreeLibrary(shcore);
+    }
+    SetProcessDPIAware();
+}
+
 LRESULT CALLBACK windowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
+        case WM_DPICHANGED:
+            // Finestra trascinata su uno schermo con scala diversa. Windows
+            // propone il rettangolo giusto in lp: seguirlo e' l'unico modo di
+            // non finire di dimensione sbagliata. Riguarda la finestra
+            // dell'operatore; quella di proiezione e' incollata al suo monitor.
+            if (hwnd == g.opHwnd) {
+                const RECT* suggerito = reinterpret_cast<const RECT*>(lp);
+                SetWindowPos(hwnd, nullptr, suggerito->left, suggerito->top,
+                             suggerito->right - suggerito->left,
+                             suggerito->bottom - suggerito->top,
+                             SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+            return 0;
+
         case WM_DESTROY:
             // Solo la finestra dell'operatore chiude l'applicazione: la
             // proiezione viene distrutta insieme, non è lei a comandare.
@@ -1544,6 +1592,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
 
     if (opt.listScreens) return reportScreens();
     if (!opt.inspectPath.empty()) return reportRecording(opt.inspectPath);
+
+    // PRIMA di qualunque finestra: senza questa dichiarazione Windows tratta il
+    // processo come scritto per il 1996 e gli mente sulle coordinate.
+    //
+    // Perché conta, e perché sulla macchina di sviluppo non si vedeva: a
+    // scala 100% le coordinate virtualizzate coincidono con quelle fisiche, e
+    // tutto sembra funzionare. Su un portatile 4K al 150% - cioè la
+    // configurazione normale di un portatile moderno - succedono due cose:
+    // l'immagine viene disegnata a risoluzione ridotta e poi ingrandita dal
+    // sistema, e con due schermi a scala diversa i rettangoli restituiti da
+    // GetMonitorInfo non corrispondono più a dove stanno davvero i monitor,
+    // quindi la finestra di proiezione può finire su quello sbagliato.
+    enableDpiAwareness();
 
     if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return 1;
 

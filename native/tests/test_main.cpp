@@ -1059,6 +1059,72 @@ void testDisplays() {
     auto fewer = displays;
     fewer.pop_back();
     check(app::layoutSignature(fewer) != sig, "la firma cambia se cambia il numero di schermi");
+
+    // --- layout che questa macchina NON ha ---
+    // Il test qui sopra esercita solo la configurazione di chi sta compilando,
+    // ed e' esattamente il modo in cui un difetto sopravvive fino a
+    // un'installazione altrove. Questi layout sono costruiti a mano.
+    {
+        auto fai = [](const wchar_t* nome, int l, int t, int r, int b, bool primario) {
+            app::Display d;
+            d.deviceName = nome;
+            d.bounds     = app::ScreenRect{l, t, r, b};
+            d.primary    = primario;
+            return d;
+        };
+
+        // Secondo schermo A SINISTRA del primario: coordinate NEGATIVE. E' il
+        // caso piu' comune di tutti quelli non testati, perche' basta collegare
+        // il monitor dall'altra parte in Impostazioni schermo.
+        const std::vector<app::Display> sinistra = {
+            fai(L"\\\\.\\DISPLAY1", 0, 0, 1920, 1080, true),
+            fai(L"\\\\.\\DISPLAY2", -1920, 0, 0, 1080, false),
+        };
+        check(sinistra[1].width() == 1920, "schermo a coordinate negative: larghezza corretta");
+        check(sinistra[1].height() == 1080, "schermo a coordinate negative: altezza corretta");
+
+        // Schermo SOPRA il primario: negativo in verticale.
+        const std::vector<app::Display> sopra = {
+            fai(L"\\\\.\\DISPLAY1", 0, 0, 1920, 1080, true),
+            fai(L"\\\\.\\DISPLAY2", 0, -1200, 1920, 0, false),
+        };
+        check(sopra[1].height() == 1200, "schermo sopra il primario: altezza corretta");
+        check(app::layoutSignature(sinistra) != app::layoutSignature(sopra),
+              "sinistra e sopra sono layout diversi e la firma li distingue");
+
+        // Due schermi IDENTICI in risoluzione, scambiati di posto. Se la firma
+        // guardasse solo le risoluzioni non se ne accorgerebbe, e si
+        // proietterebbe sullo schermo sbagliato davanti a qualcuno.
+        const std::vector<app::Display> primaA = {
+            fai(L"\\\\.\\DISPLAY1", 0, 0, 1920, 1080, true),
+            fai(L"\\\\.\\DISPLAY2", 1920, 0, 3840, 1080, false),
+        };
+        const std::vector<app::Display> primaB = {
+            fai(L"\\\\.\\DISPLAY1", 1920, 0, 3840, 1080, true),
+            fai(L"\\\\.\\DISPLAY2", 0, 0, 1920, 1080, false),
+        };
+        check(app::layoutSignature(primaA) != app::layoutSignature(primaB),
+              "due schermi uguali scambiati di posto: la firma li distingue");
+
+        // Risoluzioni miste, il caso del portatile piu' proiettore.
+        const std::vector<app::Display> misto = {
+            fai(L"\\\\.\\DISPLAY1", 0, 0, 3840, 2160, true),
+            fai(L"\\\\.\\DISPLAY2", 3840, 0, 5760, 1080, false),
+        };
+        check(app::layoutSignature(misto) != app::layoutSignature(primaA),
+              "risoluzioni miste: firma distinta");
+        check(misto[0].describe().find(L"3840x2160") != std::wstring::npos,
+              "la descrizione riporta la risoluzione vera");
+
+        // Un solo schermo: e' il percorso che non deve mai rompersi, perche' e'
+        // quello dello sviluppo e dell'altro PC.
+        const std::vector<app::Display> singolo = {
+            fai(L"\\\\.\\DISPLAY1", 0, 0, 1366, 768, true),
+        };
+        check(!app::layoutSignature(singolo).empty(), "un solo schermo: firma valida");
+        check(app::layoutSignature(singolo) != app::layoutSignature(primaA),
+              "uno schermo e due schermi hanno firme diverse");
+    }
 }
 
 void testNotch() {
