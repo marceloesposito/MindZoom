@@ -31,8 +31,11 @@ UNA SESSIONE, DALL'INIZIO ALLA FINE
    frecce per scegliere, INVIO per confermare.
 
 4. Premi H e guarda la riga "Segnale". Non premere INVIO finche' non dice OK.
-   Se dice altro, la sezione "SE IL PROGRAMMA DICE CHE IL SEGNALE NON E'
-   UTILIZZABILE" piu' avanti spiega cosa fare.
+   Se dice RETE 50 Hz, gli elettrodi non toccano la pelle: sistema la fascia
+   sulla fronte e inumidisci i contatti dietro le orecchie, e guarda la
+   percentuale scendere. E' il caso di gran lunga piu' frequente.
+   Per le altre diciture, la sezione "SE IL PROGRAMMA DICE CHE IL SEGNALE NON
+   E' UTILIZZABILE" piu' avanti spiega cosa fare.
 
 5. Con "Segnale: OK", INVIO avvia la calibrazione: 15 secondi di concentrazione,
    15 di rilassamento. Il conteggio si mette in pausa da solo se il contatto si
@@ -236,9 +239,35 @@ sessione, quante volte vuoi, finche' non trovi i valori giusti.
 
 Altre opzioni:
 
+  MindZoom.exe --controlla registrazioni\sessione-....mzr
   MindZoom.exe --senza-log          non registrare questa sessione
   MindZoom.exe --schermi            elenca i monitor rilevati ed esce
   MindZoom.exe --schermo-singolo    ignora il secondo schermo
+
+
+CONTROLLARE UNA SESSIONE DOPO AVERLA FATTA
+------------------------------------------
+  MindZoom.exe --controlla registrazioni\sessione-20260816-151229.mzr
+
+Fa ripassare la sessione per la stessa identica catena dell'esperienza e
+stampa un verdetto in dieci secondi, senza aprire niente a schermo:
+
+  Formato v2   notifiche grezze: 797   campioni: 5620   durata: 22.0 s
+  Finestre analizzate: 112
+    RETE 50 Hz: 100.0%
+  Correlazione fra campioni: 0.323   (serve > 0.25)
+  Potenza a 50 Hz:           86.9%   (serve < 50%)
+  VERDETTO: la fascia leggeva la rete elettrica, non te.
+
+Serve a rispondere alla domanda che conta dopo ogni sessione - quello che ho
+registrato e' segnale vero? - senza doverla rifare per guardare il pannello.
+
+Nota importante: i campioni vengono RICOSTRUITI dai pacchetti grezzi con il
+decodificatore attuale, non riletti da quelli salvati allora. Percio' una
+sessione registrata quando il programma sbagliava a interpretare la fascia
+torna utilizzabile appena il programma viene corretto. E' successo davvero:
+la sessione del 16 agosto 2026 conteneva zero campioni e 797 notifiche, e
+adesso ne produce 5620.
 
 
 SE IL PROGRAMMA DICE CHE IL SEGNALE NON E' UTILIZZABILE
@@ -248,7 +277,15 @@ arriva dalla fascia sia davvero un segnale biologico. Se non lo e', lo dice e
 si ferma: calibrare su dati senza senso produce numeri che sembrano normali e
 non lo sono.
 
-Nel pannello H compaiono tre diciture possibili:
+Nel pannello H compaiono quattro diciture possibili:
+
+  RETE 50 Hz         Quasi tutta la potenza sta sulla frequenza della rete
+                     elettrica. Gli elettrodi non toccano la pelle: la fascia
+                     sta captando l'impianto della stanza invece di te.
+                     E' il caso piu' frequente in assoluto, ed e' anche il piu'
+                     facile da risolvere. Sposta la fascia sulla fronte
+                     scostando i capelli e inumidisci i due contatti dietro le
+                     orecchie. La quota scende subito sotto il 5%.
 
   PIATTO             Il canale non si muove: elettrodo staccato.
                      Sistema la fascia sulla fronte.
@@ -262,6 +299,11 @@ Nel pannello H compaiono tre diciture possibili:
                      Spegni e riaccendi la fascia; se persiste, e' un difetto
                      del programma e le registrazioni servono a correggerlo.
 
-Sotto la dicitura c'e' il numero su cui si basa il giudizio: la correlazione
-fra campioni consecutivi. Un segnale cerebrale sta sopra 0,9; sotto 0,5 quello
-che arriva non e' una forma d'onda.
+Sotto la dicitura c'e' il numero su cui si basa il giudizio.
+
+Perche' servono DUE controlli e non uno: una sinusoide a 50 Hz campionata a
+256 Hz ha correlazione fra campioni pari a 0,33, cioe' sopra la soglia di 0,25.
+Il solo controllo di correlazione dichiarava quindi "OK" una fascia appoggiata
+sul tavolo. Misurato il 16 agosto 2026 su una sessione vera: correlazione 0,32
+e l'87% della potenza a 50 Hz. Sono due domande diverse - "e' una forma d'onda?"
+e "e' la TUA forma d'onda?" - e servono entrambe.

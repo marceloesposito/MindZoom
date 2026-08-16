@@ -497,48 +497,25 @@ void MuseClient::Impl::handlePacket(const std::vector<std::uint8_t>& data) {
 
     self.packetLen_.store(static_cast<int>(len), std::memory_order_relaxed);
 
-    int  emitted = 0;
-    bool sawEeg  = false;
-
-    std::size_t i = start;
-    while (i < len) {
-        const auto type = dsp::packetType(data[i]);
-        const int  size = dsp::payloadBytes(type);
-        if (size < 0) break;
-
-        const std::size_t payloadAt = i + dsp::kPacketHeaderBytes;
-        const std::size_t next = payloadAt + static_cast<std::size_t>(size);
-        if (next > len) break;
-
-        if (dsp::isEeg(type)) {
-            sawEeg = true;
-            const int numChannels = dsp::eegChannels(type);
-            const std::uint8_t* payload = data.data() + payloadAt;
-            const auto payloadLen = static_cast<std::size_t>(size);
-            const std::size_t numSamples = dsp::samplesInPayload(payloadLen, numChannels);
-
-            std::size_t bitOffset = 0;
-            for (std::size_t s = 0; s < numSamples; ++s) {
-                Sample sample;
-                for (int ch = 0; ch < numChannels; ++ch) {
-                    const std::uint16_t raw = dsp::unpack14(payload, payloadLen, bitOffset);
-                    bitOffset += 14;
-                    // Degli 8 canali dell'Athena si usano i primi 4, che sono
-                    // quelli montati sulla fascia.
-                    if (ch < config::kChannels) {
-                        const auto c = static_cast<std::size_t>(ch);
-                        sample.adc[c] = raw;
-                        sample.uv[c]  = dsp::toMicrovolts(dsp::centerSample(raw));
-                    }
-                }
-                if (self.onSample_) self.onSample_(sample);
-                ++emitted;
+    MuseClient& owner = self;
+    const auto res = dsp::forEachEegSample(
+        data.data(), len, start,
+        [&owner](const std::uint16_t* adc, int numChannels) {
+            // Degli 8 canali dell'Athena si usano i primi 4, che sono quelli
+            // montati sulla fascia.
+            Sample sample;
+            const int n = (numChannels < config::kChannels) ? numChannels
+                                                            : config::kChannels;
+            for (int ch = 0; ch < n; ++ch) {
+                const auto c = static_cast<std::size_t>(ch);
+                sample.adc[c] = adc[ch];
+                sample.uv[c]  = dsp::toMicrovolts(dsp::centerSample(adc[ch]));
             }
-        }
-        i = next;
-    }
+            if (owner.onSample_) owner.onSample_(sample);
+        });
 
-    if (!sawEeg) return;   // notifica valida ma senza EEG: ottica, IMU, batteria
+    const int emitted = res.eegSamples;
+    if (!res.sawEeg) return;   // notifica valida ma senza EEG: ottica, IMU, batteria
 
     self.validPackets_.fetch_add(1, std::memory_order_relaxed);
     self.lastPacketAt_.store(nowMillis(), std::memory_order_release);

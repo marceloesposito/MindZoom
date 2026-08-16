@@ -17,6 +17,7 @@
 // fabbricava una velocita' che non era mai passata per il DSP.
 
 #include "ble/muse.hpp"
+#include "dsp/decode.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -200,12 +201,55 @@ struct LoadResult {
     std::vector<std::vector<std::uint8_t>> packets;   // vuoto per i file v1
     std::uint32_t                         version = 0;
     bool                                  ok = false;
+    bool                                  redecoded = false;  // campioni rifatti dai grezzi
     std::string                           error;
 
     double seconds() const {
         return static_cast<double>(samples.size()) / config::kSampleRate;
     }
 };
+
+/**
+ * Ricostruisce i campioni dai pacchetti grezzi col decodificatore ATTUALE.
+ *
+ * È la ragione per cui il formato v2 conserva i byte del Bluetooth. Il primo
+ * difetto serio trovato sul campo era nel decodificatore: le sessioni registrate
+ * allora contengono zero campioni e settecento notifiche perfettamente valide, e
+ * senza questo passaggio resterebbero inutilizzabili pur avendo tutto il
+ * necessario dentro.
+ *
+ * L'offset di partenza si misura sui pacchetti registrati esattamente come dal
+ * vivo, con ChainLocator: è lo stesso codice, quindi rigiocare una registrazione
+ * mette alla prova anche quello.
+ */
+inline std::vector<Sample> decodeSamples(
+        const std::vector<std::vector<std::uint8_t>>& packets) {
+    std::vector<Sample> out;
+    if (packets.empty()) return out;
+
+    dsp::ChainLocator locator;
+    for (const auto& p : packets) {
+        if (locator.offer(p.data(), p.size())) break;
+    }
+    if (!locator.locked()) return out;
+
+    for (const auto& p : packets) {
+        dsp::forEachEegSample(
+            p.data(), p.size(), locator.offset(),
+            [&out](const std::uint16_t* adc, int numChannels) {
+                Sample s;
+                const int n = (numChannels < config::kChannels) ? numChannels
+                                                                : config::kChannels;
+                for (int ch = 0; ch < n; ++ch) {
+                    const auto c = static_cast<std::size_t>(ch);
+                    s.adc[c] = adc[ch];
+                    s.uv[c]  = dsp::toMicrovolts(dsp::centerSample(adc[ch]));
+                }
+                out.push_back(s);
+            });
+    }
+    return out;
+}
 
 inline LoadResult loadRecording(const std::wstring& path) {
     LoadResult r;
@@ -250,7 +294,29 @@ inline LoadResult loadRecording(const std::wstring& path) {
     }
     std::fclose(f);
 
+    // I pacchetti grezzi hanno la precedenza sui campioni salvati: questi ultimi
+    // sono l'uscita del decodificatore di ALLORA, quelli sono ciò che la fascia
+    // ha davvero mandato. Se il decodificatore è cambiato - ed è cambiato - la
+    // ri-decodifica è più fedele della registrazione.
+    if (!r.packets.empty()) {
+        auto rifatti = decodeSamples(r.packets);
+        if (!rifatti.empty()) {
+            r.samples   = std::move(rifatti);
+            r.redecoded = true;
+        }
+    }
+
     if (r.samples.empty()) {
+        if (!r.packets.empty()) {
+            // Byte presenti ma nessun campione: la fascia trasmetteva e il
+            // decodificatore non riesce a leggerla. E' un difetto del programma,
+            // non della sessione, e va detto cosi' - il file resta buono e
+            // tornera' utilizzabile appena il decodificatore sara' corretto.
+            r.error = "la registrazione contiene " + std::to_string(r.packets.size()) +
+                      " notifiche dalla fascia, ma il programma non riesce a "
+                      "interpretarle: e' un difetto di decodifica, non un file rovinato";
+            return r;
+        }
         // Capita per le sessioni aperte senza fascia collegata: il file e' bene
         // formato, semplicemente non contiene niente da rigiocare. Dirlo cosi'
         // evita di far cercare un guasto dove non c'e'.
