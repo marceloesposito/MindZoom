@@ -433,7 +433,12 @@ void dspThread() {
                 st.smoothedIndex = c;
 
                 if (phase == control::Phase::Onboarding) {
-                    calib.sample(c);
+                    // Il campione conta solo se il segnale vale: la calibrazione
+                    // ora si misura in campioni raccolti, non in secondi passati,
+                    // quindi ammettere un campione cattivo significherebbe
+                    // avvicinare la fine con dell'informazione falsa.
+                    calib.sample(c, quality.contactOk &&
+                                    quality.fault == dsp::SignalFault::None);
                 } else {
                     velocityRaw = calib.velocity(c, dt, tune);
                 }
@@ -521,8 +526,10 @@ void dspThread() {
         st.phaseElapsed = phaseElapsed;
         st.calibStage   = static_cast<int>(calib.stage());
         st.calibDisplayTarget = calib.displayTarget();
-        st.calibRemaining = (calib.stageDuration() > 0.0)
-            ? (calib.stageDuration() - calib.stageElapsed()) : 0.0;
+        st.calibShowTarget    = calib.showTarget();
+        st.calibProgress      = calib.progress();
+        st.calibEffN          = calib.effectiveSamples();
+        st.calibSeparation    = calib.separation();
         st.calibValid = calib.valid();
         st.absMin   = calib.absMin();
         st.absMax   = calib.absMax();
@@ -597,10 +604,12 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
     if (stage == control::CalibStage::Intro) {
         r.drawText(L"Calibrazione", D2D1::RectF(panel.left, top, panel.right, top + 50), 32.0f,
                    kInk, render::TextAlign::Center, true);
-        r.drawText(L"Due fasi da 15 secondi. Prima ti concentri per spingere il quadratino\n"
-                   L"verso l'obiettivo in alto, poi ti rilassi e lo lasci scendere.\n\n"
-                   L"Servono a misurare i tuoi due estremi personali: da lì si ricava\n"
-                   L"la soglia con cui guiderai lo zoom.",
+        r.drawText(L"Due fasi: prima ti concentri per spingere il quadratino verso\n"
+                   L"l'obiettivo in alto, poi lasci andare e ti rilassi.\n\n"
+                   L"Non hanno una durata fissa: finiscono quando il programma ha\n"
+                   L"raccolto abbastanza misure per distinguere i tuoi due stati.\n"
+                   L"La barra dice quanto manca. Se il segnale peggiora si ferma,\n"
+                   L"perche' quei momenti non contano.",
                    D2D1::RectF(panel.left + 40, top + 70, panel.right - 40, panel.bottom - 120),
                    17.0f, kMuted);
         r.drawText(L"INVIO per iniziare",
@@ -660,65 +669,212 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
         return;
     }
 
-    // --- fasi attive: binario verticale col quadratino ---
+    // --- fasi attive ---
     const bool concentrate = (stage == control::CalibStage::Concentrate);
 
     r.drawText(concentrate ? L"Concentrazione" : L"Rilassamento",
                D2D1::RectF(panel.left, top, panel.right, top + 44), 30.0f, kInk,
                render::TextAlign::Center, true);
     r.drawText(concentrate
-                   ? L"Concentrati per spingere il quadratino verso l'obiettivo in alto."
-                   : L"Ora rilassati e lascia scendere il quadratino verso il basso.",
-               D2D1::RectF(panel.left + 32, top + 52, panel.right - 32, top + 110), 17.0f, kMuted);
+                   ? L"Concentrati per spingere il quadratino verso l'obiettivo in alto.\n"
+                     L"Funziona meglio con un compito mentale vero: contare all'indietro\n"
+                     L"da 300 saltando di 7."
+                   : L"Ora lascia andare. Respira lentamente, sguardo morbido,\n"
+                     L"mascella rilassata. Non c'e' niente da guardare e niente da\n"
+                     L"raggiungere: la barra si riempie da sola.",
+               D2D1::RectF(panel.left + 32, top + 52, panel.right - 32, top + 140), 17.0f, kMuted);
 
-    const float railTop  = panel.top + 150.0f;
-    const D2D1_RECT_F rail = D2D1::RectF(cx - kRailW / 2, railTop, cx + kRailW / 2,
-                                         railTop + kRailH);
-    r.fillRect(rail, kRailBg, 12.0f);
+    const float railTop = panel.top + 175.0f;
 
-    // Zona obiettivo: in alto se ci si concentra, in basso se ci si rilassa.
-    const D2D1_RECT_F target = concentrate
-        ? D2D1::RectF(rail.left, rail.top, rail.right, rail.top + kTargetH)
-        : D2D1::RectF(rail.left, rail.bottom - kTargetH, rail.right, rail.bottom);
-    r.fillRect(target, kTargetZone, 10.0f);
-    r.drawRectOutline(target, {kOk.r, kOk.g, kOk.b, 0.55f}, 1.5f, 10.0f);
+    // Il quadratino esiste solo in concentrazione. Nel rilassamento un
+    // indicatore che si muove darebbe un compito, e sorvegliare il proprio
+    // rilassamento e' esso stesso attivita' attenzionale: si misurerebbe peggio
+    // proprio cio' che si vuole misurare.
+    if (st.calibShowTarget) {
+        const D2D1_RECT_F rail = D2D1::RectF(cx - kRailW / 2, railTop, cx + kRailW / 2,
+                                             railTop + kRailH);
+        r.fillRect(rail, kRailBg, 12.0f);
 
-    // Il quadratino: posizione 0 = fondo del binario, 1 = cima.
-    const float travel = kRailH - kSquareH;
-    const float sy = rail.bottom - kSquareH - static_cast<float>(squarePos) * travel;
-    const D2D1_RECT_F square = D2D1::RectF(cx - kSquareH / 2, sy, cx + kSquareH / 2, sy + kSquareH);
+        const D2D1_RECT_F target =
+            D2D1::RectF(rail.left, rail.top, rail.right, rail.top + kTargetH);
+        r.fillRect(target, kTargetZone, 10.0f);
+        r.drawRectOutline(target, {kOk.r, kOk.g, kOk.b, 0.55f}, 1.5f, 10.0f);
 
-    const bool reached = concentrate ? (squarePos > 0.8) : (squarePos < 0.2);
-    render::Color squareColor = kAccent;
-    if (!st.contactOk)   squareColor = kMuted;
-    else if (reached)    squareColor = kOk;
-    r.fillRect(square, squareColor, 8.0f);
+        const float travel = kRailH - kSquareH;
+        const float sy = rail.bottom - kSquareH - static_cast<float>(squarePos) * travel;
+        const D2D1_RECT_F square =
+            D2D1::RectF(cx - kSquareH / 2, sy, cx + kSquareH / 2, sy + kSquareH);
 
-    // Countdown.
-    const int remaining = static_cast<int>(std::ceil(std::max(0.0, st.calibRemaining)));
-    r.drawText(std::to_wstring(remaining),
-               D2D1::RectF(panel.left, rail.bottom + 24, panel.right, rail.bottom + 80), 40.0f,
-               kInk, render::TextAlign::Center, true);
+        render::Color squareColor = kAccent;
+        if (!st.contactOk)        squareColor = kMuted;
+        else if (squarePos > 0.8) squareColor = kOk;
+        r.fillRect(square, squareColor, 8.0f);
+    }
+
+    // --- barra di avanzamento ---
+    // Sostituisce il countdown, che mentiva: i secondi scorrevano anche quando
+    // non stava entrando nessuna informazione utile. Questa si riempie con i
+    // campioni indipendenti raccolti, quindi si ferma davvero quando il segnale
+    // non vale ed e' onesta su quanto manca.
+    const float barY = st.calibShowTarget ? (railTop + kRailH + 34.0f)
+                                          : (panel.top + 210.0f);
+    const float barW = panelW - 96.0f;
+    const D2D1_RECT_F barBg =
+        D2D1::RectF(cx - barW / 2, barY, cx + barW / 2, barY + 22.0f);
+    r.fillRect(barBg, kRailBg, 11.0f);
+
+    const auto p = static_cast<float>(std::clamp(st.calibProgress, 0.0, 1.0));
+    if (p > 0.001f) {
+        r.fillRect(D2D1::RectF(barBg.left, barBg.top, barBg.left + barW * p, barBg.bottom),
+                   p >= 0.999f ? kOk : kAccent, 11.0f);
+    }
+    r.drawRectOutline(barBg, {1, 1, 1, 0.12f}, 1.0f, 11.0f);
+
+    r.drawText(std::to_wstring(static_cast<int>(p * 100.0f + 0.5f)) + L"%",
+               D2D1::RectF(panel.left, barBg.bottom + 10, panel.right, barBg.bottom + 44),
+               22.0f, kInk, render::TextAlign::Center, true);
 
     // Il conteggio si ferma sia senza fascia sia con contatto scarso: sono due
     // situazioni diverse e vanno dette in modo diverso, altrimenti sembra che il
     // programma sia bloccato.
     if (!st.signalFresh) {
-        r.drawText(L"In attesa del segnale dalla fascia. Il conteggio e' in pausa.",
+        r.drawText(L"In attesa del segnale dalla fascia. La barra non avanza.",
                    D2D1::RectF(panel.left + 24, panel.bottom - 60, panel.right - 24,
                                panel.bottom - 20),
                    15.0f, kWarn);
     } else if (st.signalFault != 0) {
-        r.drawText(L"Il segnale non e' utilizzabile. Il conteggio e' in pausa.",
+        r.drawText(L"Il segnale non e' utilizzabile: questi campioni non contano.",
                    D2D1::RectF(panel.left + 24, panel.bottom - 60, panel.right - 24,
                                panel.bottom - 20),
                    15.0f, kBad);
     } else if (!st.contactOk) {
-        r.drawText(L"Contatto assente: sistema la fascia. Il conteggio e' in pausa.",
+        r.drawText(L"Contatto assente: sistema la fascia. Questi campioni non contano.",
                    D2D1::RectF(panel.left + 24, panel.bottom - 60, panel.right - 24,
                                panel.bottom - 20),
                    15.0f, kWarn);
+    } else {
+        // Con segnale buono si dice cosa si sta accumulando: senza, una barra
+        // che avanza a scatti sembra rotta invece che onesta.
+        std::wstring nota = L"campioni indipendenti: " +
+                            std::to_wstring(static_cast<int>(st.calibEffN)) + L" / " +
+                            std::to_wstring(static_cast<int>(config::kCalibTargetEffSamples));
+        if (!concentrate) {
+            nota += L"     separazione: " + fixed(st.calibSeparation, 1) + L" / " +
+                    fixed(config::kCalibMinSeparationT, 1);
+        }
+        r.drawText(nota,
+                   D2D1::RectF(panel.left + 24, panel.bottom - 56, panel.right - 24,
+                               panel.bottom - 24),
+                   14.0f, kMuted, render::TextAlign::Center);
     }
+}
+
+/**
+ * Larghezza del campo inquadrato, in metri, all'ingrandimento dato.
+ *
+ * L'ingrandimento e' un rapporto, non una lunghezza: diventa una misura solo
+ * fissando la larghezza di riferimento (vedi config::kReferenceWidthMm).
+ */
+double fieldWidthMeters(double magnification) {
+    if (magnification <= 0.0) return 0.0;
+    return (config::kReferenceWidthMm / 1000.0) / magnification;
+}
+
+/** Numero "tondo" (1, 2, 5 x 10^n) non superiore a v. */
+double niceLength(double v) {
+    if (v <= 0.0) return 0.0;
+    const double exp10 = std::pow(10.0, std::floor(std::log10(v)));
+    const double m = v / exp10;
+    const double mant = (m >= 5.0) ? 5.0 : (m >= 2.0 ? 2.0 : 1.0);
+    return mant * exp10;
+}
+
+/** Formatta una lunghezza in metri con l'unita' piu' leggibile. */
+std::wstring formatLength(double meters) {
+    struct Unita { double fattore; const wchar_t* nome; };
+    static const Unita scale[] = {
+        {1e-9, L"nm"}, {1e-6, L"µm"}, {1e-3, L"mm"}, {1e-2, L"cm"}, {1.0, L"m"},
+    };
+    for (const auto& u : scale) {
+        const double v = meters / u.fattore;
+        if (v < 1000.0) {
+            const int dec = (v < 10.0) ? 1 : 0;
+            std::wstring s = fixed(v, dec);
+            // "1.0 um" e' rumore: se e' intero si scrive intero.
+            if (dec == 1 && s.size() > 2 && s.substr(s.size() - 2) == L".0") {
+                s = s.substr(0, s.size() - 2);
+            }
+            return s + L" " + u.nome;
+        }
+    }
+    return fixed(meters, 1) + L" m";
+}
+
+/**
+ * Sovrimpressione dello schermo di proiezione: ingrandimento in alto al centro,
+ * barra di scala in basso al centro.
+ *
+ * E' l'unica interfaccia ammessa sul proiettore, e ci sta perche' non e' un
+ * comando ne' una diagnostica: e' parte di cio' che si sta guardando. Senza un
+ * riferimento di scala un'immagine al microscopio elettronico e' una texture
+ * astratta - e' la scala che la rende una cosa.
+ */
+void drawProjectionScale(render::Renderer& r, const control::CrossfadeState& cf) {
+    const auto  win = r.size();
+    const float cx  = win.width * 0.5f;
+
+    // --- ingrandimento, in alto al centro ---
+    // Richiesto almeno il 5% dell'altezza dello schermo: qui e' il corpo del
+    // testo, non il riquadro, cosi' il vincolo vale sulla cosa che si legge.
+    const float testo = std::max(24.0f, win.height * 0.055f);
+    const float padX  = testo * 0.9f;
+    const float padY  = testo * 0.34f;
+
+    const std::wstring etichetta = std::to_wstring(cf.magnification) + L"×";
+    const float boxW = testo * (0.62f * etichetta.size()) + padX * 2.0f;
+    const float boxH = testo + padY * 2.0f;
+    const float boxY = win.height * 0.035f;
+
+    const D2D1_RECT_F box =
+        D2D1::RectF(cx - boxW / 2, boxY, cx + boxW / 2, boxY + boxH);
+    r.fillRect(box, {0.0f, 0.0f, 0.0f, 0.55f}, boxH * 0.22f);
+    r.drawRectOutline(box, {1.0f, 1.0f, 1.0f, 0.28f}, 1.5f, boxH * 0.22f);
+    r.drawText(etichetta, D2D1::RectF(box.left, box.top + padY * 0.6f, box.right, box.bottom),
+               testo, kInk, render::TextAlign::Center, true);
+
+    // --- barra di scala, in basso al centro ---
+    // Si sceglie una lunghezza tonda che occupi circa un quinto della larghezza:
+    // una barra di "3,7 um" sarebbe esatta e illeggibile, il senso e' dare un
+    // metro di paragone a colpo d'occhio.
+    const double campo = fieldWidthMeters(cf.magnification);
+    if (campo <= 0.0) return;
+
+    const double perPixel = campo / win.width;          // metri per pixel a schermo
+    const double target   = perPixel * (win.width * 0.20);
+    const double lunghezza = niceLength(target);
+    if (lunghezza <= 0.0) return;
+
+    const auto  barW = static_cast<float>(lunghezza / perPixel);
+    const float barY = win.height * 0.93f;
+    const float tick = std::max(8.0f, win.height * 0.014f);
+    const float spess = std::max(2.0f, win.height * 0.004f);
+
+    const float x0 = cx - barW / 2.0f;
+    const float x1 = cx + barW / 2.0f;
+
+    const float etichettaH = std::max(15.0f, win.height * 0.026f);
+    const D2D1_RECT_F sfondo =
+        D2D1::RectF(x0 - 28.0f, barY - etichettaH - 18.0f, x1 + 28.0f, barY + tick + 12.0f);
+    r.fillRect(sfondo, {0.0f, 0.0f, 0.0f, 0.45f}, 10.0f);
+
+    const render::Color bianco{1.0f, 1.0f, 1.0f, 0.92f};
+    r.fillRect(D2D1::RectF(x0, barY, x1, barY + spess), bianco);
+    r.fillRect(D2D1::RectF(x0, barY - tick / 2, x0 + spess, barY + tick), bianco);
+    r.fillRect(D2D1::RectF(x1 - spess, barY - tick / 2, x1, barY + tick), bianco);
+
+    r.drawText(formatLength(lunghezza),
+               D2D1::RectF(x0 - 28.0f, barY - etichettaH - 14.0f, x1 + 28.0f, barY - 6.0f),
+               etichettaH, bianco, render::TextAlign::Center, true);
 }
 
 /**
@@ -1480,7 +1636,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
         control::ZoomController probe;
         app::ControlState st;
         st.calibStage = static_cast<int>(control::CalibStage::Concentrate);
-        st.calibRemaining = 12.0;
+        st.calibProgress   = 0.45;
+        st.calibShowTarget = true;
+        st.calibEffN       = 9.0;
         st.calibValid = true;
         st.absMin = 0.5; st.absMax = 1.5; st.neutral = 1.0;
         st.localMin = 0.9; st.localMax = 1.2;
@@ -1505,6 +1663,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
                             static_cast<float>(cf.nextAlpha));
         app::drawTelemetry(renderer, D2D1::RectF(20, 20, 600, 700), history, st,
                       control::Tunables{}, kPlotTheme);
+        drawProjectionScale(renderer, cf);
         drawCalibrationCard(renderer, st, 0.6);
         drawHud(renderer, st, probe, &cf, control::Tunables{});
         drawScreenPickerPanel(renderer, 0);
@@ -1648,8 +1807,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
                                     static_cast<float>(cf.nextAlpha));
             if (choosing) {
                 drawScreenPicker(projRenderer, g.candidate.load(std::memory_order_relaxed));
-            } else if (showCard) {
-                drawCalibrationCard(projRenderer, st, squarePos);
+            } else {
+                // La scala sta SOTTO la scheda di calibrazione: durante
+                // l'onboarding l'immagine non e' ancora il soggetto.
+                drawProjectionScale(projRenderer, cf);
+                if (showCard) drawCalibrationCard(projRenderer, st, squarePos);
             }
             projRenderer.end();
         }

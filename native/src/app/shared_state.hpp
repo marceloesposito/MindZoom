@@ -36,7 +36,10 @@ struct ControlState {
     // --- calibrazione ---
     int    calibStage         = 0;    // control::CalibStage
     double calibDisplayTarget = 0.5;  // altezza normalizzata del quadratino
-    double calibRemaining     = 0.0;  // secondi al termine della fase
+    bool   calibShowTarget    = false; // il quadratino si mostra solo in concentrazione
+    double calibProgress      = 0.0;  // [0,1] verso la fine della fase
+    double calibEffN          = 0.0;  // campioni INDIPENDENTI raccolti
+    double calibSeparation    = 0.0;  // distanza fra le fasi, in errori standard
     bool   calibValid         = false;
     int    failReason         = 0;
 

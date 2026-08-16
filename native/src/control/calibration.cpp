@@ -32,11 +32,75 @@ double IndexSmoother::push(double index, double dt) noexcept {
     return ema_.push(median_.push(index), dt, config::kIndexTauS);
 }
 
+// ---------------------------------------------------------------------------
+// Statistiche di fase
+// ---------------------------------------------------------------------------
+
+void PhaseStats::push(double x) noexcept {
+    if (hasLast) sumProd += last * x;
+    last = x;
+    hasLast = true;
+    ++n;
+    sum   += x;
+    sumSq += x * x;
+}
+
+double PhaseStats::mean() const noexcept {
+    return (n > 0) ? (sum / n) : 0.0;
+}
+
+double PhaseStats::variance() const noexcept {
+    if (n < 2) return 0.0;
+    const double m = mean();
+    const double v = (sumSq / n) - (m * m);
+    return (v > 0.0) ? v : 0.0;
+}
+
+double PhaseStats::autocorr1() const noexcept {
+    if (n < 3) return 0.0;
+    const double m = mean();
+    const double var = variance();
+    if (var <= 1e-12) return 0.0;
+    // Stimatore per grandi n: i termini di bordo (primo e ultimo campione)
+    // pesano O(1/n) e si trascurano. Con le decine di campioni in gioco lo
+    // scarto è irrilevante rispetto alla decisione che questo numero guida.
+    const double cov = (sumProd / (n - 1)) - (m * m);
+    const double r   = cov / var;
+    return std::clamp(r, 0.0, 0.99);
+}
+
+double PhaseStats::effectiveN() const noexcept {
+    if (n <= 0) return 0.0;
+    const double rho = autocorr1();
+    const double eff = n * (1.0 - rho) / (1.0 + rho);
+    return std::clamp(eff, 1.0, static_cast<double>(n));
+}
+
+double separationT(const PhaseStats& a, const PhaseStats& b) noexcept {
+    const double na = a.effectiveN();
+    const double nb = b.effectiveN();
+    if (na < 2.0 || nb < 2.0) return 0.0;
+    const double delta = std::fabs(a.mean() - b.mean());
+    const double se = std::sqrt(a.variance() / na + b.variance() / nb);
+    if (se <= 1e-12) {
+        // Due fasi perfettamente costanti con medie diverse sono separate in
+        // modo perfetto, non indeterminato. Restituire zero qui manderebbe la
+        // calibrazione a sbattere contro la rete di sicurezza proprio nel caso
+        // piu' pulito possibile.
+        return (delta > 1e-12) ? 1e6 : 0.0;
+    }
+    return delta / se;
+}
+
+// ---------------------------------------------------------------------------
+
 void Calibration::start() {
     peak_   = kNegInf;
     trough_ = kPosInf;
     valid_  = false;
     message_.clear();
+    concStats_.reset();
+    relaxStats_.reset();
     enterStage(CalibStage::Concentrate);
 }
 
@@ -47,18 +111,38 @@ void Calibration::enterStage(CalibStage stage) {
     runMin_       = kPosInf;
     runMax_       = kNegInf;
     displayTarget_ = 0.5;
+    phaseSamples_  = 0;
 }
 
-double Calibration::stageDuration() const noexcept {
-    switch (stage_) {
-        case CalibStage::Concentrate: return config::kCalibConcentrateS;
-        case CalibStage::Relax:       return config::kCalibRelaxS;
-        default:                      return 0.0;
+double Calibration::effectiveSamples() const noexcept {
+    if (stage_ == CalibStage::Concentrate) return concStats_.effectiveN();
+    if (stage_ == CalibStage::Relax)       return relaxStats_.effectiveN();
+    return 0.0;
+}
+
+double Calibration::separation() const noexcept {
+    if (stage_ != CalibStage::Relax) return 0.0;
+    return separationT(concStats_, relaxStats_);
+}
+
+double Calibration::progress() const noexcept {
+    if (stage_ == CalibStage::Concentrate) {
+        return clamp01(concStats_.effectiveN() / config::kCalibTargetEffSamples);
     }
+    if (stage_ == CalibStage::Relax) {
+        const double perCampioni = relaxStats_.effectiveN() / config::kCalibTargetEffSamples;
+        const double perSepar    = separationT(concStats_, relaxStats_) /
+                                   config::kCalibMinSeparationT;
+        return clamp01(std::min(perCampioni, perSepar));
+    }
+    return (stage_ == CalibStage::Done) ? 1.0 : 0.0;
 }
 
-void Calibration::sample(double c) {
+void Calibration::sample(double c, bool usable) {
     if (stage_ != CalibStage::Concentrate && stage_ != CalibStage::Relax) return;
+    if (!usable) return;   // non si conta ciò che non vale
+
+    ++phaseSamples_;
 
     // Il display si auto-scala sul range visto nella fase, così il binario resta
     // leggibile anche prima di conoscere gli estremi assoluti.
@@ -66,36 +150,59 @@ void Calibration::sample(double c) {
     runMax_ = std::max(runMax_, c);
     displayTarget_ = (runMax_ > runMin_) ? clamp01((c - runMin_) / (runMax_ - runMin_)) : 0.5;
 
-    // Gli estremi ASSOLUTI si registrano solo dopo il lead-in, per non catturare
-    // il transitorio di reazione al prompt.
-    if (stageElapsed_ < config::kCalibLeadInS) return;
+    // I primi campioni sono il transitorio di reazione al prompt, non lo stato
+    // da misurare: si scartano, come faceva il lead-in a tempo.
+    if (phaseSamples_ <= config::kCalibLeadInSamples) return;
 
     if (stage_ == CalibStage::Concentrate) {
+        concStats_.push(c);
         peak_ = std::max(peak_, c);
     } else {
+        relaxStats_.push(c);
         trough_ = std::min(trough_, c);
     }
 }
 
-bool Calibration::tick(double dt, bool contactOk) {
+bool Calibration::tick(double dt, bool usable) {
     if (stage_ == CalibStage::Done) {
         doneTimer_ += dt;
         return false;
     }
     if (stage_ != CalibStage::Concentrate && stage_ != CalibStage::Relax) return false;
 
-    // Contatto scarso: si mette in pausa il conteggio invece di consumarlo.
-    if (!contactOk) return false;
-
-    stageElapsed_ += dt;
-    if (stageElapsed_ < stageDuration()) return false;
+    // Il tempo si accumula solo mentre il segnale vale: serve alla rete di
+    // sicurezza, che deve misurare quanto si è provato davvero, non quanto si è
+    // aspettato con la fascia storta.
+    if (usable) stageElapsed_ += dt;
 
     if (stage_ == CalibStage::Concentrate) {
-        enterStage(CalibStage::Relax);
+        if (concStats_.effectiveN() >= config::kCalibTargetEffSamples) {
+            enterStage(CalibStage::Relax);
+            return true;
+        }
     } else {
-        finalize();
+        const bool abbastanza = relaxStats_.effectiveN() >= config::kCalibTargetEffSamples;
+        const bool separate   = separationT(concStats_, relaxStats_) >=
+                                config::kCalibMinSeparationT;
+        if (abbastanza && separate) {
+            finalize();
+            return true;
+        }
     }
-    return true;
+
+    // Rete di sicurezza. Nella prima fase non si può ancora parlare di
+    // separazione, quindi il motivo è diverso e va detto diversamente.
+    if (stageElapsed_ > config::kCalibMaxPhaseS) {
+        if (stage_ == CalibStage::Concentrate) {
+            fail("Il segnale non si stabilizza abbastanza da poterci misurare "
+                 "qualcosa. Controlla il contatto della fascia e riprova.");
+        } else {
+            fail("Modulazione troppo debole: le due fasi non si distinguono. "
+                 "Marca di piu' la differenza fra concentrazione e rilassamento.");
+        }
+        return true;
+    }
+    return false;
 }
 
 void Calibration::finalize() {

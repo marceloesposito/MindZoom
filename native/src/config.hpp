@@ -81,14 +81,55 @@ inline constexpr double kLpA1 = -0.3695, kLpA2 = 0.1958;
 inline constexpr double kNotchQ = 10.0;
 
 // --- Calibrazione attiva ---
+//
+// La calibrazione NON e' a tempo. Finisce quando ha raccolto abbastanza
+// informazione, che e' una cosa diversa dall'aver aspettato abbastanza: con la
+// fascia che perde contatto, quindici secondi di orologio possono contenere due
+// campioni utili o ottanta.
+//
+// Il conteggio che conta e' quello dei campioni INDIPENDENTI. L'indice e'
+// filtrato con tau = kIndexTauS, quindi campioni consecutivi sono fortemente
+// correlati e contano per meno di uno. Per un processo AR(1) con correlazione
+// rho a ritardo 1 la dimensione campionaria efficace e'
+//
+//     n_eff = n * (1 - rho) / (1 + rho)
+//
+// che e' il numero di campioni indipendenti equivalenti. A 5,33 Hz con
+// tau = 0,9 s la correlazione e' alta e n_eff risulta molto minore di n: i
+// quindici secondi di prima valevano circa una decina di campioni indipendenti,
+// non ottanta. Questo spiega perche' certe calibrazioni riuscivano e altre no
+// pur durando lo stesso tempo.
 inline constexpr double kCalibIntroMinS    = 1.0;
-inline constexpr double kCalibConcentrateS = 15.0;
-inline constexpr double kCalibRelaxS       = 15.0;
-inline constexpr double kCalibLeadInS      = 1.5;   // scarto del transitorio di reazione
 inline constexpr double kCalibDisplayEma   = 0.20;  // TUNE - posizione quadratino a 60 Hz
 inline constexpr double kCalibConcFraction = 0.50;  // LIVE - saturazione al 50% di M->estremo
 inline constexpr double kCalibDoneHoldS    = 1.6;
 inline constexpr double kCalibMinSpanRel   = 0.08;  // TUNE - soglia di fallimento
+
+// Campioni indipendenti richiesti per fase.
+//
+// 20 viene dal confronto che la calibrazione deve reggere: separare due stati
+// con la statistica t di Welch a un valore t >= kCalibMinSeparationT. Con due
+// fasi da n_eff campioni ciascuna e una separazione di d deviazioni standard,
+//     t = d / sqrt(2 / n_eff)   ->   n_eff = 2 * (t / d)^2
+// Per una differenza netta fra concentrazione e rilassamento (d = 1,5) e t = 4
+// servono 14 campioni; 20 lascia margine senza allungare troppo l'attesa.
+inline constexpr double kCalibTargetEffSamples = 20.0;
+
+// Separazione minima fra le due fasi, in unita' di errore standard. Sotto
+// questa soglia le due fasi non sono distinguibili e la calibrazione fallisce:
+// e' lo stesso giudizio di kCalibMinSpanRel, ma espresso sul rumore misurato
+// invece che su una frazione fissa.
+inline constexpr double kCalibMinSeparationT = 4.0;
+
+// Primi campioni di ogni fase, scartati: e' il transitorio di reazione al
+// prompt, non lo stato che si vuole misurare. Sostituisce il vecchio lead-in a
+// tempo con lo stesso scopo.
+inline constexpr int    kCalibLeadInSamples = 8;
+
+// Rete di sicurezza: oltre questo tempo di segnale UTILE in una fase si smette
+// e si dichiara fallita. Senza, con una modulazione troppo debole la barra
+// resterebbe ferma per sempre - in un'installazione pubblica e' inaccettabile.
+inline constexpr double kCalibMaxPhaseS = 90.0;
 
 // --- Condizionamento dell'indice di Pope ---
 // L'indice è un rapporto fra potenze di banda: ha code pesanti, un singolo
@@ -221,5 +262,19 @@ inline constexpr int kTotalImages = 12;            // /images/1..12.webp
 inline constexpr std::array<int, kTotalImages> kScaleLabels = {
     32, 32, 100, 220, 700, 1500, 3000, 6000, 10000, 17000, 25000, 41000
 };
+
+// Larghezza di riferimento a cui si riferiscono gli ingrandimenti qui sopra.
+//
+// "1000x" non e' una lunghezza: e' un rapporto, e diventa una misura solo
+// fissando rispetto a cosa. La convenzione classica del microscopio elettronico
+// e' la larghezza della stampa fotografica, circa 100 mm. Da qui:
+//
+//     larghezza inquadrata = kReferenceWidthMm / ingrandimento
+//
+// che a 32x da' 3,1 mm e a 41000x da' 2,4 um - valori coerenti con immagini SEM
+// reali. E' l'unica assunzione dietro la barra di scala: se le immagini
+// originali portano il proprio campo inquadrato, si cambia questa costante (o si
+// sostituisce la tabella con i valori veri) e la barra diventa esatta.
+inline constexpr double kReferenceWidthMm = 100.0;
 
 } // namespace mz::config

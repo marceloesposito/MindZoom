@@ -57,15 +57,29 @@ constexpr double kDt = config::kControlDt;   // 48/256 = 0.1875 s
 /** Manopole ai valori di default: è quello che il programma usa all'avvio. */
 const control::Tunables kTune{};
 
+/**
+ * Alimenta la fase corrente finche' non cambia da sola.
+ *
+ * La calibrazione non e' piu' a tempo: non si puo' farla avanzare con un tick
+ * abbastanza lungo, bisogna darle campioni. Il tetto a 2000 iterazioni evita che
+ * un difetto trasformi un test in un ciclo infinito.
+ */
+void feedPhase(control::Calibration& cal, double centro, double rumore = 0.0) {
+    const auto partenza = cal.stage();
+    std::uint32_t seed = 20260816u;
+    for (int i = 0; i < 2000 && cal.stage() == partenza; ++i) {
+        seed = seed * 1664525u + 1013904223u;
+        const double j = rumore * ((((seed >> 8) & 0xFFFF) / 65535.0) - 0.5);
+        cal.sample(centro + j);
+        cal.tick(kDt, true);
+    }
+}
+
 /** Porta una calibrazione a termine con estremi noti, senza passare dal segnale. */
 void calibrateTo(control::Calibration& cal, double lo, double hi) {
-    cal.start();                       // -> CONCENTRATE
-    cal.tick(config::kCalibLeadInS + 0.1, true);
-    cal.sample(hi);
-    cal.tick(config::kCalibConcentrateS, true);   // -> RELAX
-    cal.tick(config::kCalibLeadInS + 0.1, true);
-    cal.sample(lo);
-    cal.tick(config::kCalibRelaxS, true);         // -> finalize
+    cal.start();          // -> CONCENTRATE
+    feedPhase(cal, hi);   // -> RELAX
+    feedPhase(cal, lo);   // -> Done oppure Failed
 }
 
 /**
@@ -190,30 +204,131 @@ void testCalibration() {
     cal.start();
     check(cal.stage() == control::CalibStage::Concentrate, "start -> fase di concentrazione");
 
-    // Prima del lead-in i campioni non contano per gli estremi assoluti.
-    cal.sample(99.0);
-    cal.tick(config::kCalibLeadInS + 0.1, true);
-    cal.sample(2.0);
-    cal.tick(config::kCalibConcentrateS, true);
-    check(cal.stage() == control::CalibStage::Relax, "a fine tempo si passa al rilassamento");
+    // I primi campioni sono il transitorio di reazione al prompt: non contano.
+    for (int i = 0; i < 4; ++i) { cal.sample(99.0); cal.tick(kDt, true); }
+    check(cal.stage() == control::CalibStage::Concentrate,
+          "quattro campioni non bastano a chiudere la fase");
 
-    cal.tick(config::kCalibLeadInS + 0.1, true);
-    cal.sample(1.0);
-    cal.tick(config::kCalibRelaxS, true);
+    feedPhase(cal, 2.0);
+    check(cal.stage() == control::CalibStage::Relax,
+          "raccolti i campioni richiesti si passa al rilassamento");
 
+    feedPhase(cal, 1.0);
     check(cal.stage() == control::CalibStage::Done, "la calibrazione si chiude da sola");
     check(cal.valid(), "calibrazione valida");
-    nearly(cal.absMax(), 2.0, 1e-9, "absMax dal picco registrato (scarta il pre-lead-in)");
+    nearly(cal.absMax(), 2.0, 1e-9, "absMax dal picco registrato (scarta il transitorio)");
     nearly(cal.absMin(), 1.0, 1e-9, "absMin dal minimo registrato");
     nearly(cal.neutral(), 1.5, 1e-9, "neutro M = media dei due estremi");
     nearly(cal.localMax(), 1.5, 1e-9, "la banda locale parte dal neutro");
     nearly(cal.localMin(), 1.5, 1e-9, "banda locale inizializzata su M");
 
-    // Il contatto scarso mette in pausa il conteggio invece di consumarlo.
+    // Il tempo di orologio da solo non porta da nessuna parte: e' il punto della
+    // riformulazione. Prima bastava un tick lungo per chiudere una fase.
+    {
+        control::Calibration muta;
+        muta.start();
+        muta.tick(10.0, true);
+        check(muta.stage() == control::CalibStage::Concentrate,
+              "dieci secondi senza campioni non fanno avanzare la fase");
+        nearly(muta.progress(), 0.0, 1e-9, "senza campioni la barra resta a zero");
+    }
+
+    // I campioni non utilizzabili non avvicinano la fine.
+    {
+        control::Calibration sporca;
+        sporca.start();
+        for (int i = 0; i < 200; ++i) { sporca.sample(2.0, false); sporca.tick(kDt, true); }
+        nearly(sporca.effectiveSamples(), 0.0, 1e-9,
+               "campioni non utilizzabili: non contano");
+        check(sporca.stage() == control::CalibStage::Concentrate,
+              "duecento campioni cattivi non chiudono la fase");
+    }
+
+    // Il contatto scarso non consuma la rete di sicurezza.
     control::Calibration paused;
     paused.start();
     paused.tick(5.0, false);
-    nearly(paused.stageElapsed(), 0.0, 1e-9, "contatto assente -> tempo di fase in pausa");
+    nearly(paused.stageElapsed(), 0.0, 1e-9, "segnale inutilizzabile -> tempo non consumato");
+}
+
+void testCalibrationStatistics() {
+    group("18. Statistica della calibrazione");
+
+    // Campioni indipendenti: n_eff deve valere circa n.
+    {
+        control::PhaseStats s;
+        std::uint32_t seed = 4242;
+        for (int i = 0; i < 200; ++i) {
+            seed = seed * 1664525u + 1013904223u;
+            s.push(((seed >> 8) & 0xFFFF) / 65535.0);
+        }
+        check(s.autocorr1() < 0.2, "rumore bianco: correlazione a ritardo 1 bassa");
+        check(s.effectiveN() > 120.0, "rumore bianco: quasi tutti i campioni contano");
+    }
+
+    // Campioni fortemente correlati - com'e' l'indice dopo il filtro - devono
+    // contare per MOLTO meno di uno ciascuno. E' il motivo per cui contare i
+    // secondi sopravvalutava di parecchio quanto era stato misurato.
+    {
+        control::PhaseStats s;
+        std::uint32_t seed = 99;
+        double x = 0.5;
+        for (int i = 0; i < 200; ++i) {
+            seed = seed * 1664525u + 1013904223u;
+            const double e = ((seed >> 8) & 0xFFFF) / 65535.0 - 0.5;
+            x = 0.9 * x + 0.1 * e;           // AR(1) con rho = 0.9
+            s.push(x);
+        }
+        check(s.autocorr1() > 0.7, "segnale filtrato: correlazione alta");
+        check(s.effectiveN() < 60.0,
+              "segnale filtrato: i campioni indipendenti sono molti meno di 200");
+        check(s.effectiveN() >= 1.0, "n_eff non scende mai sotto uno");
+    }
+
+    // Due fasi ben separate producono una t alta; due fasi sovrapposte no.
+    {
+        control::PhaseStats a, b;
+        std::uint32_t seed = 7;
+        for (int i = 0; i < 100; ++i) {
+            seed = seed * 1664525u + 1013904223u;
+            const double e1 = ((seed >> 8) & 0xFFFF) / 65535.0 - 0.5;
+            seed = seed * 1664525u + 1013904223u;
+            const double e2 = ((seed >> 8) & 0xFFFF) / 65535.0 - 0.5;
+            a.push(2.0 + e1 * 0.2);
+            b.push(1.0 + e2 * 0.2);
+        }
+        check(control::separationT(a, b) > config::kCalibMinSeparationT,
+              "fasi nettamente diverse -> separazione sopra la soglia");
+
+        control::PhaseStats c, d;
+        seed = 13;
+        for (int i = 0; i < 100; ++i) {
+            seed = seed * 1664525u + 1013904223u;
+            const double e1 = ((seed >> 8) & 0xFFFF) / 65535.0 - 0.5;
+            seed = seed * 1664525u + 1013904223u;
+            const double e2 = ((seed >> 8) & 0xFFFF) / 65535.0 - 0.5;
+            c.push(1.50 + e1);
+            d.push(1.52 + e2);
+        }
+        check(control::separationT(c, d) < config::kCalibMinSeparationT,
+              "fasi sovrapposte -> separazione sotto la soglia");
+    }
+
+    // La barra deve arrivare a 1 solo quando la fase si chiude davvero.
+    {
+        control::Calibration cal;
+        cal.start();
+        double maxPrima = 0.0;
+        const auto partenza = cal.stage();
+        for (int i = 0; i < 2000 && cal.stage() == partenza; ++i) {
+            cal.sample(2.0);
+            maxPrima = std::max(maxPrima, cal.progress());
+            cal.tick(kDt, true);
+        }
+        check(cal.stage() == control::CalibStage::Relax, "la fase si e' chiusa");
+        check(maxPrima < 1.0 + 1e-9, "la barra non supera mai il 100%");
+        check(maxPrima > 0.9, "la barra arriva quasi a fondo prima di chiudere");
+    }
 }
 
 void testCalibrationFailures() {
@@ -226,11 +341,26 @@ void testCalibrationFailures() {
     nearly(narrow.velocity(5.0, kDt, kTune), 0.0, 1e-12,
            "calibrazione fallita -> velocita' nulla");
 
+    // Nessun campione: la rete di sicurezza deve chiudere, altrimenti in
+    // un'installazione pubblica la barra resterebbe ferma per sempre.
     control::Calibration silent;
     silent.start();
-    silent.tick(config::kCalibConcentrateS, true);
-    silent.tick(config::kCalibRelaxS, true);   // nessun campione mai registrato
-    check(silent.stage() == control::CalibStage::Failed, "segnale assente -> fallimento");
+    silent.tick(config::kCalibMaxPhaseS + 1.0, true);
+    check(silent.stage() == control::CalibStage::Failed,
+          "nessun campione utile entro il tempo massimo -> fallimento");
+
+    // Due fasi indistinguibili: la seconda non si chiude mai da sola e deve
+    // cadere nella rete di sicurezza con il messaggio giusto.
+    control::Calibration piatta;
+    piatta.start();
+    feedPhase(piatta, 1.0, 0.4);
+    check(piatta.stage() == control::CalibStage::Relax, "prima fase chiusa");
+    for (int i = 0; i < 6000 && piatta.stage() == control::CalibStage::Relax; ++i) {
+        piatta.sample(1.0 + 0.4 * ((i % 7) / 7.0 - 0.5));
+        piatta.tick(kDt, true);
+    }
+    check(piatta.stage() == control::CalibStage::Failed,
+          "fasi non distinguibili -> fallimento invece di attesa infinita");
 }
 
 void testExtremaVelocity() {
@@ -982,6 +1112,7 @@ int main() {
     testStft();
     testGating();
     testCalibration();
+    testCalibrationStatistics();
     testCalibrationFailures();
     testExtremaVelocity();
     testSmoother();
