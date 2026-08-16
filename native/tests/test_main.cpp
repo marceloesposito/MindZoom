@@ -888,6 +888,43 @@ void testDisplays() {
     check(app::layoutSignature(fewer) != sig, "la firma cambia se cambia il numero di schermi");
 }
 
+void testNotch() {
+    group("17. Notch sulla frequenza di rete");
+
+    // Il difetto che questo test avrebbe intercettato: i coefficienti portati
+    // dal JavaScript erano un notch a 55 Hz, e a 50 Hz toglievano 1 dB su 20
+    // possibili. Erano scritti come costanti, quindi nessuno li ha mai
+    // MISURATI - si e' guardato il nome della variabile, non la sua risposta.
+    // Qui si misura il comportamento, che e' l'unica cosa che conta.
+
+    auto guadagno = [](double freq) {
+        auto  filtro = dsp::makeNotch();
+        double picco = 0.0;
+        const int n = config::kSampleRate * 4;      // 4 s: il transitorio si esaurisce
+        for (int i = 0; i < n; ++i) {
+            const double t = static_cast<double>(i) / config::kSampleRate;
+            const double y = filtro.process(std::sin(2.0 * std::numbers::pi * freq * t));
+            if (i > config::kSampleRate) picco = std::max(picco, std::fabs(y));
+        }
+        return picco;
+    };
+
+    check(guadagno(config::kMainsHz) < 0.05,
+          "la frequenza di rete viene attenuata di almeno 26 dB");
+
+    // E, altrettanto importante, la banda che l'indice usa NON deve essere
+    // toccata: un notch troppo largo falserebbe l'indice invece di pulirlo.
+    for (const double f : {4.0, 10.0, 20.0, 30.0}) {
+        check(guadagno(f) > 0.95,
+              "a " + std::to_string(static_cast<int>(f)) +
+                  " Hz il segnale passa quasi intatto");
+    }
+
+    // Il vecchio filtro passava questo confronto solo perche' nessuno lo faceva.
+    check(guadagno(config::kMainsHz) < guadagno(30.0) * 0.1,
+          "la rete e' attenuata almeno dieci volte piu' del bordo della banda beta");
+}
+
 } // namespace
 
 int main() {
@@ -908,6 +945,7 @@ int main() {
     testRecording();
     testAthenaPackets();
     testPlausibility();
+    testNotch();
     testDisplays();
 
     std::printf("\n=== %d passed, %d failed ===\n", g_pass, g_fail);

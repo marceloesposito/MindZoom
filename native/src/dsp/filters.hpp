@@ -5,6 +5,9 @@
 
 #include "config.hpp"
 
+#include <cmath>
+#include <numbers>
+
 namespace mz::dsp {
 
 /**
@@ -55,9 +58,25 @@ private:
     double x1_ = 0.0, x2_ = 0.0, y1_ = 0.0, y2_ = 0.0;
 };
 
+/**
+ * Notch sulla frequenza di rete, calcolato da kMainsHz e kNotchQ.
+ *
+ * Prima erano coefficienti fissi che, misurati, davano -22 dB a 55 Hz e -1 dB a
+ * 50 Hz: un notch piazzato dove non c'e' rete. Calcolarlo significa anche che
+ * passare a 60 Hz e' cambiare una costante, non ridisegnare un filtro.
+ *
+ * Forma standard del notch biquad:
+ *   w0 = 2*pi*f0/fs,  alpha = sin(w0) / (2Q)
+ *   b = [1, -2cos(w0), 1],  a = [1+alpha, -2cos(w0), 1-alpha]
+ */
 inline Biquad makeNotch() noexcept {
-    return Biquad(config::kNotchB0, config::kNotchB1, config::kNotchB2,
-                  config::kNotchA1, config::kNotchA2);
+    const double w0    = 2.0 * std::numbers::pi * config::kMainsHz / config::kSampleRate;
+    const double alpha = std::sin(w0) / (2.0 * config::kNotchQ);
+    const double cosw  = std::cos(w0);
+    const double a0    = 1.0 + alpha;
+
+    return Biquad(1.0 / a0, (-2.0 * cosw) / a0, 1.0 / a0,
+                  (-2.0 * cosw) / a0, (1.0 - alpha) / a0);
 }
 
 inline Biquad makeLowpass() noexcept {

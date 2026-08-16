@@ -842,8 +842,15 @@ void drawHud(render::Renderer& r, const app::ControlState& st, const control::Zo
         // manda a sistemare la fascia, "NON E' UN SEGNALE" manda a guardare il
         // programma, e confonderli fa perdere una sessione intera.
         if (fi == static_cast<int>(dsp::SignalFault::Mains)) {
+            // Non dire "non tocca": manda a cercare un problema che non c'e'.
+            // Un elettrodo secco puo' appoggiare benissimo e avere comunque
+            // un'impedenza altissima - pelle asciutta, sebo, un velo di capelli -
+            // e in quel caso capta la rete per accoppiamento capacitivo PUR
+            // toccando. Il rimedio e' inumidire, non premere.
             line(L"  " + fixed(st.mainsFraction * 100.0, 0) +
-                     L"% della potenza a 50 Hz: l'elettrodo non tocca la pelle",
+                     L"% della potenza a 50 Hz: contatto elettrico scarso",
+                 kMuted, 12.0f);
+            line(L"  inumidisci gli elettrodi e scosta i capelli (toccare non basta)",
                  kMuted, 12.0f);
         } else {
             line(L"  correlazione " + fixed(st.autocorr1, 2) + L" (serve > " +
@@ -1255,6 +1262,13 @@ int reportRecording(const std::wstring& path) {
     std::array<int, 5> faults{};
     double sumAutocorr = 0.0, sumMains = 0.0, sumAmp = 0.0;
 
+    // Il verdetto va dato anche sulla CODA, non solo sulla media: una sessione
+    // in cui si sistema la fascia nei primi minuti ha una media pessima e una
+    // fine ottima, e mediarle nasconde proprio il fatto che il problema e'
+    // stato risolto.
+    std::vector<int> storia;
+    storia.reserve(rec.samples.size() / config::kStftHop + 1);
+
     for (const auto& s : rec.samples) {
         std::array<double, config::kChannels>        uv{};
         std::array<std::uint16_t, config::kChannels> adc{};
@@ -1267,6 +1281,7 @@ int reportRecording(const std::wstring& path) {
         const auto q = gating.assess(stft);
         const int  f = std::clamp(static_cast<int>(q.fault), 0, 4);
         ++faults[static_cast<std::size_t>(f)];
+        storia.push_back(f);
         sumAutocorr += q.autocorr1;
         sumMains    += q.mainsFraction;
         sumAmp      += q.maxAbsRaw;
@@ -1290,15 +1305,39 @@ int reportRecording(const std::wstring& path) {
                 L"%   (serve < " + num(100.0 * config::kMaxMainsFraction, 0) + L"%)\n";
         text += L"Ampiezza media:            " + num(sumAmp / frames, 1) + L" uV\n";
 
-        const double okPct = 100.0 * faults[0] / frames;
+        // Coda: gli ultimi 30 secondi di frame spettrali.
+        const int codaFrames =
+            std::min<int>(frames, 30 * config::kSampleRate / config::kStftHop);
+        int codaOk = 0;
+        for (std::size_t i = storia.size() - static_cast<std::size_t>(codaFrames);
+             i < storia.size(); ++i) {
+            if (storia[i] == 0) ++codaOk;
+        }
+        const double codaPct = 100.0 * codaOk / codaFrames;
+        const double okPct   = 100.0 * faults[0] / frames;
+
+        const int codaSecondi = codaFrames * config::kStftHop / config::kSampleRate;
+        if (codaFrames < frames) {
+            text += L"\nUltimi " + std::to_wstring(codaSecondi) + L" s: " +
+                    num(codaPct, 1) + L"% utilizzabile";
+            text += (codaPct > okPct + 10.0)
+                        ? L"   (in miglioramento: la fascia si e' assestata)\n"
+                        : L"\n";
+        }
+
         text += L"\n";
-        if (okPct > 70.0) {
+        if (codaPct > 70.0 && okPct <= 70.0) {
+            text += L"VERDETTO: partenza difficile, ma alla fine il segnale era buono.\n"
+                    L"Quello che conta e' la coda: da li' in poi la fascia leggeva te.\n";
+        } else if (okPct > 70.0) {
             text += L"VERDETTO: segnale utilizzabile.\n";
         } else if (faults[1] > frames / 2) {
             text += L"VERDETTO: la fascia leggeva la rete elettrica, non te.\n"
-                    L"Gli elettrodi non toccavano la pelle. Non e' un difetto del\n"
-                    L"programma: sposta la fascia sulla fronte scostando i capelli e\n"
-                    L"inumidisci i contatti dietro le orecchie.\n";
+                    L"Il contatto ELETTRICO era scarso, il che non vuol dire che la\n"
+                    L"fascia fosse indossata male: un elettrodo secco puo' appoggiare\n"
+                    L"perfettamente e avere comunque un'impedenza altissima, e allora\n"
+                    L"capta la rete per accoppiamento capacitivo pur toccando.\n"
+                    L"Il rimedio e' inumidire gli elettrodi e scostare i capelli.\n";
         } else if (faults[4] > frames / 2) {
             text += L"VERDETTO: i campioni non formano una forma d'onda.\n"
                     L"Questo si' che indica un difetto di decodifica nel programma.\n"

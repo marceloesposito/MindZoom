@@ -41,10 +41,20 @@ inline constexpr int    kBetaLo  = 13, kBetaHi  = 30;
 // --- Filtri (biquad, forma diretta I) ---
 // y = b0*x + b1*x1 + b2*x2 - a1*y1 - a2*y2
 inline constexpr double kDcLeak = 0.02;        // predittore DC
-inline constexpr double kNotchB0 = 0.9391, kNotchB1 = -0.4024, kNotchB2 = 0.9391;
-inline constexpr double kNotchA1 = -0.4024, kNotchA2 = 0.8782;
 inline constexpr double kLpB0 = 0.2066, kLpB1 = 0.4132, kLpB2 = 0.2066;
 inline constexpr double kLpA1 = -0.3695, kLpA2 = 0.1958;
+
+// Il notch di rete si CALCOLA da kMainsHz invece di essere una manciata di
+// coefficienti fissi. Quelli portati dal JavaScript originale erano
+//     b = 0.9391, -0.4024, 0.9391   a1 = -0.4024, a2 = 0.8782
+// che misurati danno -22 dB a 55 Hz e appena -1 dB a 50 Hz: il notch cadeva
+// esattamente in mezzo fra la rete europea e quella americana, dove non c'e'
+// niente da togliere. Attenuava il 20% della potenza di rete, non il 99%.
+//
+// Q = 10 -> larghezza circa 5 Hz, che copre anche le derive della frequenza di
+// rete. A 30 Hz, cioe' al bordo superiore della banda beta usata dall'indice,
+// il guadagno resta 0.997: l'indice non se ne accorge.
+inline constexpr double kNotchQ = 10.0;
 
 // --- Calibrazione attiva ---
 inline constexpr double kCalibIntroMinS    = 1.0;
@@ -147,7 +157,25 @@ inline constexpr double kMinSpreadCounts = 2.0;  // sotto = canale piatto
 // la rete: la quota crolla. Su quella stessa registrazione i canali con un
 // minimo di contatto stavano sotto il 5%. La soglia a metà è larghissima.
 inline constexpr double kMainsHz          = 50.0;  // Europa; 60 in Nord America
-inline constexpr double kMaxMainsFraction = 0.50;
+
+// Soglia scelta confrontando due popolazioni misurate il 2026-08-16: 21 finestre
+// con la fascia sul tavolo (elettrodi flottanti) e 225 con la fascia indossata.
+//
+//   soglia   passano a vuoto   passano in testa
+//     50%          4,8%              51,1%
+//     75%          4,8%              58,2%   <- stessi falsi positivi, +7%
+//     85%         19,0%              62,2%
+//     90%         90,5%              69,3%   <- il criterio collassa
+//
+// Oltre l'80% i falsi positivi esplodono perche' le due distribuzioni si
+// sovrappongono proprio li'. Il 75% e' il punto in cui si recupera il massimo
+// senza pagare nulla.
+//
+// NOTA: non tentare di sostituirla con la potenza ASSOLUTA in banda 4-30 Hz.
+// Provato e scartato: un elettrodo flottante ne raccoglie di piu' di uno
+// indossato (mediana 37808 contro 22975 uV^2), perche' capta deriva e
+// interferenza a banda larga. E' la QUOTA che separa, non la quantita'.
+inline constexpr double kMaxMainsFraction = 0.75;
 
 // --- Watchdog del flusso ---
 inline constexpr double kEegWatchdogS     = 3.0;
