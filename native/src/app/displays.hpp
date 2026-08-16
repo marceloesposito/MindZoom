@@ -7,17 +7,23 @@
 // ricade nel comportamento a finestra singola, che e' anche quello con cui si
 // sviluppa: e' il percorso che non deve mai rompersi.
 
-#include <windows.h>
-
 #include <string>
 #include <vector>
 
 namespace mz::app {
 
+/** Rettangolo in coordinate del desktop virtuale, in pixel interi. */
+struct ScreenRect {
+    int left = 0, top = 0, right = 0, bottom = 0;
+};
+
 struct Display {
-    HMONITOR     handle  = nullptr;
-    RECT         bounds{};          // coordinate virtuali del desktop
-    std::wstring deviceName;        // \\.\DISPLAY1
+    // Handle nativo opaco: HMONITOR su Windows, CGDirectDisplayID su macOS.
+    // Chi lo usa lo riconverte nel proprio backend; qui non deve nemmeno essere
+    // nominato, altrimenti windows.h rientra in tutto cio' che include displays.
+    void*        handle  = nullptr;
+    ScreenRect   bounds{};          // coordinate virtuali del desktop
+    std::wstring deviceName;        // \\.\DISPLAY1 oppure "Display 1"
     bool         primary = false;
 
     int width() const noexcept { return bounds.right - bounds.left; }

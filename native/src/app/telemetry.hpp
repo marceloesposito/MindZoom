@@ -72,7 +72,7 @@ struct PlotTheme {
  * Disegna il pannello di telemetria completo dentro `area`.
  * @param secondsShown ampiezza della finestra temporale sull'asse x
  */
-void drawTelemetry(render::Renderer& r, D2D1_RECT_F area, const TelemetryHistory& history,
+void drawTelemetry(render::Renderer& r, render::Rect area, const TelemetryHistory& history,
                    const ControlState& st, const control::Tunables& tune,
                    const PlotTheme& theme, double secondsShown = 60.0);
 

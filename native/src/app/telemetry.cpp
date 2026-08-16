@@ -22,7 +22,7 @@ std::wstring fixed(double v, int decimals) {
 
 /** Riquadro di un grafico, con la conversione valore -> pixel già risolta. */
 struct Frame {
-    D2D1_RECT_F box{};
+    render::Rect box{};
     double      lo = 0.0, hi = 1.0;   // dominio verticale
     std::size_t first = 0;            // primo campione visibile
     std::size_t count = 0;
@@ -53,7 +53,7 @@ void drawFrame(render::Renderer& r, const Frame& f, const PlotTheme& th,
         r.drawLine({gx, f.box.top}, {gx, f.box.bottom}, fade(th.grid, 0.5f), 1.0f);
     }
 
-    r.drawText(title, D2D1::RectF(f.box.left + 8, f.box.top + 4, f.box.right - 8, f.box.top + 22),
+    r.drawText(title, render::rect(f.box.left + 8, f.box.top + 4, f.box.right - 8, f.box.top + 22),
                12.0f, th.muted, render::TextAlign::Left);
 }
 
@@ -85,7 +85,7 @@ void plotBand(render::Renderer& r, const Frame& f, const TelemetryHistory& h,
         const float y0 = f.y(getHi(s));
         const float y1 = f.y(getLo(s));
         if (y1 <= y0) continue;
-        r.fillRect(D2D1::RectF(x, y0, x + 2.0f, y1), color);
+        r.fillRect(render::rect(x, y0, x + 2.0f, y1), color);
     }
 }
 
@@ -96,7 +96,7 @@ void plotFlag(render::Renderer& r, const Frame& f, const TelemetryHistory& h, Pr
     for (std::size_t i = 0; i < f.count; ++i) {
         if (!pred(h.at(f.first + i))) continue;
         const float x = f.x(i);
-        r.fillRect(D2D1::RectF(x, f.box.top, x + 2.0f, f.box.bottom), color);
+        r.fillRect(render::rect(x, f.box.top, x + 2.0f, f.box.bottom), color);
     }
 }
 
@@ -139,7 +139,7 @@ const TelemetrySample& TelemetryHistory::at(std::size_t i) const {
     return buf_[(base + i) % kCapacity];
 }
 
-void drawTelemetry(render::Renderer& r, D2D1_RECT_F area, const TelemetryHistory& history,
+void drawTelemetry(render::Renderer& r, render::Rect area, const TelemetryHistory& history,
                    const ControlState& st, const control::Tunables& tune,
                    const PlotTheme& theme, double secondsShown) {
     const auto visible = static_cast<std::size_t>(secondsShown * config::kControlHz);
@@ -150,7 +150,7 @@ void drawTelemetry(render::Renderer& r, D2D1_RECT_F area, const TelemetryHistory
     const float h   = (area.bottom - area.top - gap * 3.0f) / 4.0f;
     const auto  row = [&](int i) {
         const float top = area.top + static_cast<float>(i) * (h + gap);
-        return D2D1::RectF(area.left, top, area.right, top + h);
+        return render::rect(area.left, top, area.right, top + h);
     };
 
     // --- 1. Indice e banda di controllo -------------------------------------
@@ -204,7 +204,7 @@ void drawTelemetry(render::Renderer& r, D2D1_RECT_F area, const TelemetryHistory
 
         r.popClip();
         r.drawText(L"c " + fixed(st.smoothedIndex, 2),
-                   D2D1::RectF(f.box.left, f.box.bottom - 20, f.box.right - 8, f.box.bottom - 4),
+                   render::rect(f.box.left, f.box.bottom - 20, f.box.right - 8, f.box.bottom - 4),
                    12.0f, theme.accent, render::TextAlign::Left);
     }
 
@@ -241,7 +241,7 @@ void drawTelemetry(render::Renderer& r, D2D1_RECT_F area, const TelemetryHistory
 
         r.popClip();
         r.drawText(L"v " + fixed(st.velocity, 3) + L"   soglie: aggancio / sgancio",
-                   D2D1::RectF(f.box.left, f.box.bottom - 20, f.box.right - 8, f.box.bottom - 4),
+                   render::rect(f.box.left, f.box.bottom - 20, f.box.right - 8, f.box.bottom - 4),
                    12.0f, theme.muted, render::TextAlign::Left);
     }
 
@@ -300,7 +300,7 @@ void drawTelemetry(render::Renderer& r, D2D1_RECT_F area, const TelemetryHistory
 
         r.popClip();
         r.drawText(L"rosso: contatto assente   giallo: artefatto",
-                   D2D1::RectF(f.box.left, f.box.bottom - 20, f.box.right - 8, f.box.bottom - 4),
+                   render::rect(f.box.left, f.box.bottom - 20, f.box.right - 8, f.box.bottom - 4),
                    12.0f, fade(theme.muted, 0.8f), render::TextAlign::Left);
     }
 }

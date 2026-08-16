@@ -183,7 +183,7 @@ std::wstring fileNameOf(const std::wstring& path) {
 void placeProjection(int index) {
     if (!g.projHwnd || index < 0 || index >= static_cast<int>(g.displays.size())) return;
 
-    const RECT& b = g.displays[static_cast<std::size_t>(index)].bounds;
+    const app::ScreenRect& b = g.displays[static_cast<std::size_t>(index)].bounds;
     SetWindowPos(g.projHwnd, HWND_TOPMOST, b.left, b.top,
                  b.right - b.left, b.bottom - b.top, SWP_SHOWWINDOW);
     g.candidate.store(index, std::memory_order_relaxed);
@@ -588,13 +588,13 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
     const float cx = win.width * 0.5f;
 
     // Velo scuro: la scheda deve staccare dallo sfondo.
-    r.fillRect(D2D1::RectF(0, 0, win.width, win.height), {0.0f, 0.0f, 0.0f, 0.72f});
+    r.fillRect(render::rect(0, 0, win.width, win.height), {0.0f, 0.0f, 0.0f, 0.72f});
 
     const auto stage = static_cast<control::CalibStage>(st.calibStage);
 
     const float panelW = 520.0f;
     const float panelH = 560.0f;
-    const D2D1_RECT_F panel = D2D1::RectF(cx - panelW / 2, win.height * 0.5f - panelH / 2,
+    const render::Rect panel = render::rect(cx - panelW / 2, win.height * 0.5f - panelH / 2,
                                           cx + panelW / 2, win.height * 0.5f + panelH / 2);
     r.fillRect(panel, kPanel, 18.0f);
     r.drawRectOutline(panel, {1, 1, 1, 0.10f}, 1.0f, 18.0f);
@@ -602,7 +602,7 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
     const float top = panel.top + 36.0f;
 
     if (stage == control::CalibStage::Intro) {
-        r.drawText(L"Calibrazione", D2D1::RectF(panel.left, top, panel.right, top + 50), 32.0f,
+        r.drawText(L"Calibrazione", render::rect(panel.left, top, panel.right, top + 50), 32.0f,
                    kInk, render::TextAlign::Center, true);
         r.drawText(L"Due fasi: prima ti concentri per spingere il quadratino verso\n"
                    L"l'obiettivo in alto, poi lasci andare e ti rilassi.\n\n"
@@ -610,19 +610,19 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
                    L"raccolto abbastanza misure per distinguere i tuoi due stati.\n"
                    L"La barra dice quanto manca. Se il segnale peggiora si ferma,\n"
                    L"perche' quei momenti non contano.",
-                   D2D1::RectF(panel.left + 40, top + 70, panel.right - 40, panel.bottom - 120),
+                   render::rect(panel.left + 40, top + 70, panel.right - 40, panel.bottom - 120),
                    17.0f, kMuted);
         r.drawText(L"INVIO per iniziare",
-                   D2D1::RectF(panel.left, panel.bottom - 100, panel.right, panel.bottom - 62),
+                   render::rect(panel.left, panel.bottom - 100, panel.right, panel.bottom - 62),
                    19.0f, kAccent, render::TextAlign::Center, true);
         r.drawText(st.replaying ? L"P per cambiare registrazione"
                                 : L"P per usare una sessione registrata, senza fascia",
-                   D2D1::RectF(panel.left, panel.bottom - 58, panel.right, panel.bottom - 34),
+                   render::rect(panel.left, panel.bottom - 58, panel.right, panel.bottom - 34),
                    14.0f, kMuted, render::TextAlign::Center);
         if (!st.signalFresh && !st.replaying) {
             r.drawText(L"Nessun dato dalla fascia: puoi iniziare lo stesso,\n"
                        L"il conteggio partira' quando arriva il segnale.",
-                       D2D1::RectF(panel.left + 24, panel.bottom - 150, panel.right - 24,
+                       render::rect(panel.left + 24, panel.bottom - 150, panel.right - 24,
                                    panel.bottom - 105),
                        14.0f, kWarn);
         }
@@ -631,12 +631,12 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
 
     if (stage == control::CalibStage::Done) {
         r.drawText(L"Calibrazione completata",
-                   D2D1::RectF(panel.left, win.height * 0.5f - 60, panel.right,
+                   render::rect(panel.left, win.height * 0.5f - 60, panel.right,
                                win.height * 0.5f - 10),
                    30.0f, kOk, render::TextAlign::Center, true);
         r.drawText(L"Concentrandoti aumenterai lo zoom, rilassandoti tornerai indietro.\n"
                    L"Buona esplorazione.",
-                   D2D1::RectF(panel.left + 40, win.height * 0.5f + 10, panel.right - 40,
+                   render::rect(panel.left + 40, win.height * 0.5f + 10, panel.right - 40,
                                win.height * 0.5f + 100),
                    17.0f, kMuted);
         return;
@@ -656,15 +656,15 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
                   L"fra concentrazione e rilassamento.";
 
         r.drawText(L"Calibrazione non riuscita",
-                   D2D1::RectF(panel.left, win.height * 0.5f - 80, panel.right,
+                   render::rect(panel.left, win.height * 0.5f - 80, panel.right,
                                win.height * 0.5f - 30),
                    28.0f, kBad, render::TextAlign::Center, true);
         r.drawText(detail,
-                   D2D1::RectF(panel.left + 40, win.height * 0.5f - 10, panel.right - 40,
+                   render::rect(panel.left + 40, win.height * 0.5f - 10, panel.right - 40,
                                win.height * 0.5f + 90),
                    17.0f, kMuted);
         r.drawText(L"INVIO per riprovare",
-                   D2D1::RectF(panel.left, panel.bottom - 80, panel.right, panel.bottom - 40),
+                   render::rect(panel.left, panel.bottom - 80, panel.right, panel.bottom - 40),
                    19.0f, kAccent, render::TextAlign::Center, true);
         return;
     }
@@ -673,7 +673,7 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
     const bool concentrate = (stage == control::CalibStage::Concentrate);
 
     r.drawText(concentrate ? L"Concentrazione" : L"Rilassamento",
-               D2D1::RectF(panel.left, top, panel.right, top + 44), 30.0f, kInk,
+               render::rect(panel.left, top, panel.right, top + 44), 30.0f, kInk,
                render::TextAlign::Center, true);
     r.drawText(concentrate
                    ? L"Concentrati per spingere il quadratino verso l'obiettivo in alto.\n"
@@ -682,7 +682,7 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
                    : L"Ora lascia andare. Respira lentamente, sguardo morbido,\n"
                      L"mascella rilassata. Non c'e' niente da guardare e niente da\n"
                      L"raggiungere: la barra si riempie da sola.",
-               D2D1::RectF(panel.left + 32, top + 52, panel.right - 32, top + 140), 17.0f, kMuted);
+               render::rect(panel.left + 32, top + 52, panel.right - 32, top + 140), 17.0f, kMuted);
 
     const float railTop = panel.top + 175.0f;
 
@@ -691,19 +691,19 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
     // rilassamento e' esso stesso attivita' attenzionale: si misurerebbe peggio
     // proprio cio' che si vuole misurare.
     if (st.calibShowTarget) {
-        const D2D1_RECT_F rail = D2D1::RectF(cx - kRailW / 2, railTop, cx + kRailW / 2,
+        const render::Rect rail = render::rect(cx - kRailW / 2, railTop, cx + kRailW / 2,
                                              railTop + kRailH);
         r.fillRect(rail, kRailBg, 12.0f);
 
-        const D2D1_RECT_F target =
-            D2D1::RectF(rail.left, rail.top, rail.right, rail.top + kTargetH);
+        const render::Rect target =
+            render::rect(rail.left, rail.top, rail.right, rail.top + kTargetH);
         r.fillRect(target, kTargetZone, 10.0f);
         r.drawRectOutline(target, {kOk.r, kOk.g, kOk.b, 0.55f}, 1.5f, 10.0f);
 
         const float travel = kRailH - kSquareH;
         const float sy = rail.bottom - kSquareH - static_cast<float>(squarePos) * travel;
-        const D2D1_RECT_F square =
-            D2D1::RectF(cx - kSquareH / 2, sy, cx + kSquareH / 2, sy + kSquareH);
+        const render::Rect square =
+            render::rect(cx - kSquareH / 2, sy, cx + kSquareH / 2, sy + kSquareH);
 
         render::Color squareColor = kAccent;
         if (!st.contactOk)        squareColor = kMuted;
@@ -719,19 +719,19 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
     const float barY = st.calibShowTarget ? (railTop + kRailH + 34.0f)
                                           : (panel.top + 210.0f);
     const float barW = panelW - 96.0f;
-    const D2D1_RECT_F barBg =
-        D2D1::RectF(cx - barW / 2, barY, cx + barW / 2, barY + 22.0f);
+    const render::Rect barBg =
+        render::rect(cx - barW / 2, barY, cx + barW / 2, barY + 22.0f);
     r.fillRect(barBg, kRailBg, 11.0f);
 
     const auto p = static_cast<float>(std::clamp(st.calibProgress, 0.0, 1.0));
     if (p > 0.001f) {
-        r.fillRect(D2D1::RectF(barBg.left, barBg.top, barBg.left + barW * p, barBg.bottom),
+        r.fillRect(render::rect(barBg.left, barBg.top, barBg.left + barW * p, barBg.bottom),
                    p >= 0.999f ? kOk : kAccent, 11.0f);
     }
     r.drawRectOutline(barBg, {1, 1, 1, 0.12f}, 1.0f, 11.0f);
 
     r.drawText(std::to_wstring(static_cast<int>(p * 100.0f + 0.5f)) + L"%",
-               D2D1::RectF(panel.left, barBg.bottom + 10, panel.right, barBg.bottom + 44),
+               render::rect(panel.left, barBg.bottom + 10, panel.right, barBg.bottom + 44),
                22.0f, kInk, render::TextAlign::Center, true);
 
     // Il conteggio si ferma sia senza fascia sia con contatto scarso: sono due
@@ -739,17 +739,17 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
     // programma sia bloccato.
     if (!st.signalFresh) {
         r.drawText(L"In attesa del segnale dalla fascia. La barra non avanza.",
-                   D2D1::RectF(panel.left + 24, panel.bottom - 60, panel.right - 24,
+                   render::rect(panel.left + 24, panel.bottom - 60, panel.right - 24,
                                panel.bottom - 20),
                    15.0f, kWarn);
     } else if (st.signalFault != 0) {
         r.drawText(L"Il segnale non e' utilizzabile: questi campioni non contano.",
-                   D2D1::RectF(panel.left + 24, panel.bottom - 60, panel.right - 24,
+                   render::rect(panel.left + 24, panel.bottom - 60, panel.right - 24,
                                panel.bottom - 20),
                    15.0f, kBad);
     } else if (!st.contactOk) {
         r.drawText(L"Contatto assente: sistema la fascia. Questi campioni non contano.",
-                   D2D1::RectF(panel.left + 24, panel.bottom - 60, panel.right - 24,
+                   render::rect(panel.left + 24, panel.bottom - 60, panel.right - 24,
                                panel.bottom - 20),
                    15.0f, kWarn);
     } else {
@@ -763,7 +763,7 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
                     fixed(config::kCalibMinSeparationT, 1);
         }
         r.drawText(nota,
-                   D2D1::RectF(panel.left + 24, panel.bottom - 56, panel.right - 24,
+                   render::rect(panel.left + 24, panel.bottom - 56, panel.right - 24,
                                panel.bottom - 24),
                    14.0f, kMuted, render::TextAlign::Center);
     }
@@ -835,11 +835,11 @@ void drawProjectionScale(render::Renderer& r, const control::CrossfadeState& cf)
     const float boxH = testo + padY * 2.0f;
     const float boxY = win.height * 0.035f;
 
-    const D2D1_RECT_F box =
-        D2D1::RectF(cx - boxW / 2, boxY, cx + boxW / 2, boxY + boxH);
+    const render::Rect box =
+        render::rect(cx - boxW / 2, boxY, cx + boxW / 2, boxY + boxH);
     r.fillRect(box, {0.0f, 0.0f, 0.0f, 0.55f}, boxH * 0.22f);
     r.drawRectOutline(box, {1.0f, 1.0f, 1.0f, 0.28f}, 1.5f, boxH * 0.22f);
-    r.drawText(etichetta, D2D1::RectF(box.left, box.top + padY * 0.6f, box.right, box.bottom),
+    r.drawText(etichetta, render::rect(box.left, box.top + padY * 0.6f, box.right, box.bottom),
                testo, kInk, render::TextAlign::Center, true);
 
     // --- barra di scala, in basso al centro ---
@@ -863,17 +863,17 @@ void drawProjectionScale(render::Renderer& r, const control::CrossfadeState& cf)
     const float x1 = cx + barW / 2.0f;
 
     const float etichettaH = std::max(15.0f, win.height * 0.026f);
-    const D2D1_RECT_F sfondo =
-        D2D1::RectF(x0 - 28.0f, barY - etichettaH - 18.0f, x1 + 28.0f, barY + tick + 12.0f);
+    const render::Rect sfondo =
+        render::rect(x0 - 28.0f, barY - etichettaH - 18.0f, x1 + 28.0f, barY + tick + 12.0f);
     r.fillRect(sfondo, {0.0f, 0.0f, 0.0f, 0.45f}, 10.0f);
 
     const render::Color bianco{1.0f, 1.0f, 1.0f, 0.92f};
-    r.fillRect(D2D1::RectF(x0, barY, x1, barY + spess), bianco);
-    r.fillRect(D2D1::RectF(x0, barY - tick / 2, x0 + spess, barY + tick), bianco);
-    r.fillRect(D2D1::RectF(x1 - spess, barY - tick / 2, x1, barY + tick), bianco);
+    r.fillRect(render::rect(x0, barY, x1, barY + spess), bianco);
+    r.fillRect(render::rect(x0, barY - tick / 2, x0 + spess, barY + tick), bianco);
+    r.fillRect(render::rect(x1 - spess, barY - tick / 2, x1, barY + tick), bianco);
 
     r.drawText(formatLength(lunghezza),
-               D2D1::RectF(x0 - 28.0f, barY - etichettaH - 14.0f, x1 + 28.0f, barY - 6.0f),
+               render::rect(x0 - 28.0f, barY - etichettaH - 14.0f, x1 + 28.0f, barY - 6.0f),
                etichettaH, bianco, render::TextAlign::Center, true);
 }
 
@@ -886,12 +886,12 @@ void drawProjectionScale(render::Renderer& r, const control::CrossfadeState& cf)
  */
 void drawScreenPicker(render::Renderer& r, int candidate) {
     const auto win = r.size();
-    r.fillRect(D2D1::RectF(0, 0, win.width, win.height), {0.03f, 0.05f, 0.08f, 1.0f});
+    r.fillRect(render::rect(0, 0, win.width, win.height), {0.03f, 0.05f, 0.08f, 1.0f});
 
     const std::wstring number =
         std::to_wstring(candidate + 1);
     r.drawText(number,
-               D2D1::RectF(0, win.height * 0.5f - 190.0f, win.width, win.height * 0.5f + 60.0f),
+               render::rect(0, win.height * 0.5f - 190.0f, win.width, win.height * 0.5f + 60.0f),
                260.0f, kAccent, render::TextAlign::Center, true);
 
     std::wstring caption = L"Questo schermo";
@@ -899,11 +899,11 @@ void drawScreenPicker(render::Renderer& r, int candidate) {
         caption += L"  -  " + g.displays[static_cast<std::size_t>(candidate)].describe();
     }
     r.drawText(caption,
-               D2D1::RectF(0, win.height * 0.5f + 70.0f, win.width, win.height * 0.5f + 110.0f),
+               render::rect(0, win.height * 0.5f + 70.0f, win.width, win.height * 0.5f + 110.0f),
                22.0f, kInk, render::TextAlign::Center);
 
     r.drawText(L"Frecce per cambiare schermo   -   INVIO per confermare",
-               D2D1::RectF(0, win.height * 0.5f + 130.0f, win.width, win.height * 0.5f + 170.0f),
+               render::rect(0, win.height * 0.5f + 130.0f, win.width, win.height * 0.5f + 170.0f),
                18.0f, kMuted, render::TextAlign::Center);
 }
 
@@ -912,47 +912,47 @@ void drawScreenPickerPanel(render::Renderer& r, int candidate) {
     const auto win = r.size();
     const float cx = win.width * 0.5f;
 
-    r.fillRect(D2D1::RectF(0, 0, win.width, win.height), {0.0f, 0.0f, 0.0f, 0.78f});
+    r.fillRect(render::rect(0, 0, win.width, win.height), {0.0f, 0.0f, 0.0f, 0.78f});
 
     const float panelW = 620.0f;
     const float rowH   = 52.0f;
     const float panelH = 250.0f + rowH * static_cast<float>(g.displays.size());
-    const D2D1_RECT_F panel = D2D1::RectF(cx - panelW / 2, win.height * 0.5f - panelH / 2,
+    const render::Rect panel = render::rect(cx - panelW / 2, win.height * 0.5f - panelH / 2,
                                           cx + panelW / 2, win.height * 0.5f + panelH / 2);
     r.fillRect(panel, kPanel, 18.0f);
     r.drawRectOutline(panel, {1, 1, 1, 0.10f}, 1.0f, 18.0f);
 
     float y = panel.top + 34.0f;
     r.drawText(L"Su quale schermo proiettare?",
-               D2D1::RectF(panel.left, y, panel.right, y + 40.0f), 28.0f, kInk,
+               render::rect(panel.left, y, panel.right, y + 40.0f), 28.0f, kInk,
                render::TextAlign::Center, true);
     y += 56.0f;
 
     r.drawText(L"Il partecipante vedra' solo l'immagine, a schermo intero.\n"
                L"Qui restano la telemetria e i comandi.",
-               D2D1::RectF(panel.left + 36, y, panel.right - 36, y + 60.0f), 16.0f, kMuted);
+               render::rect(panel.left + 36, y, panel.right - 36, y + 60.0f), 16.0f, kMuted);
     y += 76.0f;
 
     for (std::size_t i = 0; i < g.displays.size(); ++i) {
         const bool sel = (static_cast<int>(i) == candidate);
-        const D2D1_RECT_F row = D2D1::RectF(panel.left + 30, y, panel.right - 30, y + rowH - 8.0f);
+        const render::Rect row = render::rect(panel.left + 30, y, panel.right - 30, y + rowH - 8.0f);
         if (sel) {
             r.fillRect(row, {kAccent.r, kAccent.g, kAccent.b, 0.20f}, 8.0f);
             r.drawRectOutline(row, {kAccent.r, kAccent.g, kAccent.b, 0.65f}, 1.5f, 8.0f);
         }
         r.drawText(std::to_wstring(i + 1) + L".   " + g.displays[i].describe(),
-                   D2D1::RectF(row.left + 18, row.top + 10, row.right - 18, row.bottom),
+                   render::rect(row.left + 18, row.top + 10, row.right - 18, row.bottom),
                    18.0f, sel ? kInk : kMuted, render::TextAlign::Left, sel);
         y += rowH;
     }
 
     y += 14.0f;
     r.drawText(L"Frecce per cambiare   -   INVIO per confermare",
-               D2D1::RectF(panel.left, y, panel.right, y + 30.0f), 17.0f, kAccent,
+               render::rect(panel.left, y, panel.right, y + 30.0f), 17.0f, kAccent,
                render::TextAlign::Center, true);
     y += 34.0f;
     r.drawText(L"Il numero compare a schermo intero sullo schermo evidenziato.",
-               D2D1::RectF(panel.left + 30, y, panel.right - 30, y + 26.0f), 13.0f,
+               render::rect(panel.left + 30, y, panel.right - 30, y + 26.0f), 13.0f,
                {0.45f, 0.48f, 0.55f, 1.0f}, render::TextAlign::Center);
 }
 
@@ -961,7 +961,7 @@ void drawHud(render::Renderer& r, const app::ControlState& st, const control::Zo
     const float x = 24.0f;
     float y = 20.0f;
     const auto line = [&](const std::wstring& s, render::Color c, float size = 14.0f) {
-        r.drawText(s, D2D1::RectF(x, y, x + 460, y + size + 8), size, c, render::TextAlign::Left);
+        r.drawText(s, render::rect(x, y, x + 460, y + size + 8), size, c, render::TextAlign::Left);
         y += size + 7.0f;
     };
 
@@ -1048,25 +1048,25 @@ void drawHud(render::Renderer& r, const app::ControlState& st, const control::Zo
             return x + static_cast<float>(std::clamp(f, 0.0, 1.0)) * bw;
         };
 
-        r.fillRect(D2D1::RectF(x, by, x + bw, by + bh), {1, 1, 1, 0.06f}, 4.0f);
+        r.fillRect(render::rect(x, by, x + bw, by + bh), {1, 1, 1, 0.06f}, 4.0f);
 
         // Banda locale: dentro questa il controllo era fermo del tutto, prima.
-        r.fillRect(D2D1::RectF(toX(st.localMin), by, toX(st.localMax), by + bh),
+        r.fillRect(render::rect(toX(st.localMin), by, toX(st.localMax), by + bh),
                    {1, 1, 1, 0.07f}, 4.0f);
 
         // Rampe di tolleranza: il bordo morbido su cui si guadagna autorita'.
         const double tolUp = t.localTolerance * (st.absMax - st.neutral);
         const double tolDn = t.localTolerance * (st.neutral - st.absMin);
-        r.fillRect(D2D1::RectF(toX(st.localMax - tolUp), by, toX(st.localMax), by + bh),
+        r.fillRect(render::rect(toX(st.localMax - tolUp), by, toX(st.localMax), by + bh),
                    {kOk.r, kOk.g, kOk.b, 0.24f}, 4.0f);
-        r.fillRect(D2D1::RectF(toX(st.localMin), by, toX(st.localMin + tolDn), by + bh),
+        r.fillRect(render::rect(toX(st.localMin), by, toX(st.localMin + tolDn), by + bh),
                    {kWarn.r, kWarn.g, kWarn.b, 0.24f}, 4.0f);
 
         const float nx = toX(st.neutral);
-        r.fillRect(D2D1::RectF(nx - 1.0f, by, nx + 1.0f, by + bh), kMuted);
+        r.fillRect(render::rect(nx - 1.0f, by, nx + 1.0f, by + bh), kMuted);
 
         const float px = toX(st.smoothedIndex);
-        r.fillRect(D2D1::RectF(px - 2.0f, by - 3.0f, px + 2.0f, by + bh + 3.0f), kAccent, 2.0f);
+        r.fillRect(render::rect(px - 2.0f, by - 3.0f, px + 2.0f, by + bh + 3.0f), kAccent, 2.0f);
 
         y += bh + 7.0f;
         line(L"Gate: " + fixed(st.gate, 2) + L"   Ampiezza: " + fixed(st.magnitude, 2),
@@ -1661,7 +1661,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
                             static_cast<float>(cf.activeAlpha));
         renderer.drawSprite(cf.activeIndex + 1, static_cast<float>(cf.nextScale),
                             static_cast<float>(cf.nextAlpha));
-        app::drawTelemetry(renderer, D2D1::RectF(20, 20, 600, 700), history, st,
+        app::drawTelemetry(renderer, render::rect(20, 20, 600, 700), history, st,
                       control::Tunables{}, kPlotTheme);
         drawProjectionScale(renderer, cf);
         drawCalibrationCard(renderer, st, 0.6);
@@ -1825,11 +1825,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
             const auto win = renderer.size();
             const float thumbW = std::min(360.0f, win.width * 0.32f);
             const float thumbH = thumbW * 0.62f;
-            const D2D1_RECT_F thumb = D2D1::RectF(win.width - thumbW - 20.0f, 20.0f,
+            const render::Rect thumb = render::rect(win.width - thumbW - 20.0f, 20.0f,
                                                   win.width - 20.0f, 20.0f + thumbH);
 
             app::drawTelemetry(renderer,
-                          D2D1::RectF(20.0f, 20.0f, std::max(320.0f, win.width - thumbW - 44.0f),
+                          render::rect(20.0f, 20.0f, std::max(320.0f, win.width - thumbW - 44.0f),
                                       win.height - 20.0f),
                           history, st, g.tune, kPlotTheme);
 
@@ -1839,7 +1839,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
                                   static_cast<float>(cf.nextAlpha));
             renderer.drawRectOutline(thumb, {1, 1, 1, 0.18f}, 1.0f, 6.0f);
             renderer.drawText(L"proiezione   " + std::to_wstring(cf.magnification) + L"x",
-                              D2D1::RectF(thumb.left, thumb.bottom + 4.0f, thumb.right,
+                              render::rect(thumb.left, thumb.bottom + 4.0f, thumb.right,
                                           thumb.bottom + 22.0f),
                               12.0f, kMuted, render::TextAlign::Center);
         } else {

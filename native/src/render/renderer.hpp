@@ -1,34 +1,24 @@
 #pragma once
 
-// Rendering con Direct2D + DirectWrite + WIC: tutto dal Windows SDK, nessuna
-// dipendenza esterna. Il carico grafico è due quad texturati in crossfade, per
-// cui D2D è la scelta giusta: fa scala e alpha in hardware senza il peso di uno
-// stack GL/engine completo.
+// Superficie di disegno, in tipi che NON appartengono a nessuna piattaforma.
+//
+// Il carico grafico è due quad texturati in crossfade più qualche primitiva 2D:
+// abbastanza poco da poter essere espresso in un'interfaccia piccola, e questa è
+// quell'interfaccia. Dietro ci sta Direct2D su Windows e Core Graphics su macOS;
+// chi disegna non lo sa e non deve saperlo.
+//
+// Prima i tipi Direct2D (D2D1_RECT_F, HWND) stavano nelle firme pubbliche, e
+// quindi in ogni singolo punto di disegno dell'applicazione: sessanta chiamate
+// a D2D1::RectF sparse fra HUD, telemetria e schede. Non era una scelta, era
+// il risultato di non aver mai avuto una seconda piattaforma.
 //
 // Due livelli, perché le finestre sono due (operatore e proiezione):
 //   GraphicsCore  factory e immagini DECODIFICATE, una volta sola per processo
 //   Renderer      risorse legate al device: una per finestra
-// La divisione era già preparata: le sorgenti WIC stavano separate dalle bitmap
-// D2D perché al device lost le seconde vanno ricreate. Sono le stesse due
-// categorie, qui portate a due tipi distinti.
 
-// L'ordine conta. windows.h definisce DrawText come macro verso DrawTextW: se
-// d2d1.h viene letto dopo, il metodo ID2D1RenderTarget::DrawText finisce
-// dichiarato come DrawTextW e non è più chiamabile col suo nome. Quindi prima
-// windows.h, poi si toglie la macro, poi i header Direct2D.
-#include <windows.h>
-
-#ifdef DrawText
-#undef DrawText
-#endif
-
-#include <d2d1.h>
-#include <dwrite.h>
-#include <wincodec.h>
-#include <winrt/base.h>
-
+#include <cstddef>
+#include <memory>
 #include <string>
-#include <vector>
 
 namespace mz::render {
 
@@ -44,6 +34,24 @@ struct Point {
     float x, y;
 };
 
+/** Rettangolo in coordinate di finestra, y crescente verso il basso. */
+struct Rect {
+    float left, top, right, bottom;
+
+    float width() const noexcept { return right - left; }
+    float height() const noexcept { return bottom - top; }
+};
+
+/** Dimensioni in pixel logici. */
+struct Size {
+    float width, height;
+};
+
+/** Costruttore breve: si scrive quanto D2D1::RectF, e vale ovunque. */
+inline constexpr Rect rect(float left, float top, float right, float bottom) noexcept {
+    return Rect{left, top, right, bottom};
+}
+
 /**
  * Risorse indipendenti dal device: factory, immagini decodificate e formati di
  * testo. Ne esiste una sola, condivisa da tutte le finestre — decodificare due
@@ -51,53 +59,48 @@ struct Point {
  */
 class GraphicsCore {
 public:
+    GraphicsCore();
+    ~GraphicsCore();
+    GraphicsCore(const GraphicsCore&)            = delete;
+    GraphicsCore& operator=(const GraphicsCore&) = delete;
+
     bool init();
     void shutdown();
 
     /** Decodifica <dir>/1.jpg .. <dir>/N.jpg (o .webp/.png). Una volta sola. */
     bool loadSprites(const std::wstring& dir, int count);
 
-    ID2D1Factory*   d2d() const noexcept { return d2d_.get(); }
-    IWICImagingFactory* wic() const noexcept { return wic_.get(); }
-
-    std::size_t spriteCount() const noexcept { return sources_.size(); }
-    IWICFormatConverter* source(std::size_t i) const {
-        return (i < sources_.size()) ? sources_[i].get() : nullptr;
-    }
-
-    /** Formato di testo, creato una volta e riusato. Non dipende dal device. */
-    IDWriteTextFormat* formatFor(float size, bool bold, TextAlign align);
+    std::size_t spriteCount() const noexcept;
 
 private:
-    winrt::com_ptr<ID2D1Factory>       d2d_;
-    winrt::com_ptr<IDWriteFactory>     dwrite_;
-    winrt::com_ptr<IWICImagingFactory> wic_;
-
-    std::vector<winrt::com_ptr<IWICFormatConverter>> sources_;
-
-    struct CachedFormat {
-        float                             size;
-        bool                              bold;
-        TextAlign                         align;
-        winrt::com_ptr<IDWriteTextFormat> format;
-    };
-    std::vector<CachedFormat> formats_;
+    friend class Renderer;
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
 };
 
 /**
- * Superficie di disegno di UNA finestra. Le bitmap D2D sono risorse di device,
- * quindi ogni finestra ha le sue: è inevitabile, non una duplicazione evitata
- * per distrazione.
+ * Superficie di disegno di UNA finestra. Le texture sono risorse di device,
+ * quindi ogni finestra ha le sue: è inevitabile, non una duplicazione sfuggita.
  */
 class Renderer {
 public:
-    bool init(GraphicsCore& core, HWND hwnd);
+    Renderer();
+    ~Renderer();
+    Renderer(const Renderer&)            = delete;
+    Renderer& operator=(const Renderer&) = delete;
+
+    /**
+     * @param nativeWindow handle nativo della finestra: HWND su Windows,
+     *        NSView* su macOS. È l'unico punto in cui la piattaforma entra, ed è
+     *        opaco di proposito — chi chiama lo ha già in mano dal suo shell.
+     */
+    bool init(GraphicsCore& core, void* nativeWindow);
     void shutdown();
 
-    /** Crea le bitmap di questo target dalle sorgenti già decodificate nel core. */
+    /** Crea le texture di questo target dalle sorgenti già decodificate nel core. */
     bool uploadSprites();
 
-    void resize(UINT width, UINT height);
+    void resize(unsigned width, unsigned height);
 
     void begin(Color clear);
     /** @return false se il target va ricreato (device lost). */
@@ -110,11 +113,11 @@ public:
     void drawSprite(int index, float scale, float opacity);
 
     /** Come drawSprite ma dentro un rettangolo dato: serve alla miniatura. */
-    void drawSpriteIn(int index, D2D1_RECT_F box, float scale, float opacity);
+    void drawSpriteIn(int index, Rect box, float scale, float opacity);
 
-    void fillRect(D2D1_RECT_F rect, Color color, float radius = 0.0f);
-    void drawRectOutline(D2D1_RECT_F rect, Color color, float stroke, float radius = 0.0f);
-    void drawText(const std::wstring& text, D2D1_RECT_F box, float fontSize,
+    void fillRect(Rect r, Color color, float radius = 0.0f);
+    void drawRectOutline(Rect r, Color color, float stroke, float radius = 0.0f);
+    void drawText(const std::wstring& text, Rect box, float fontSize,
                   Color color, TextAlign align = TextAlign::Center, bool bold = false);
 
     void drawLine(Point a, Point b, Color color, float stroke = 1.0f);
@@ -122,23 +125,17 @@ public:
     void drawPolyline(const Point* pts, std::size_t count, Color color, float stroke = 1.5f);
 
     /** Ritaglio rettangolare, per tenere le tracce dentro il loro riquadro. */
-    void pushClip(D2D1_RECT_F rect);
+    void pushClip(Rect r);
     void popClip();
 
-    D2D1_SIZE_F size() const;
-    bool        ready() const noexcept { return static_cast<bool>(target_); }
-    /** Bitmap effettivamente caricate SU QUESTO target, non quelle decodificate. */
-    int         spriteCount() const noexcept { return static_cast<int>(sprites_.size()); }
+    Size size() const;
+    bool ready() const noexcept;
+    /** Texture effettivamente caricate SU QUESTO target, non quelle decodificate. */
+    int  spriteCount() const noexcept;
 
 private:
-    bool createTarget();
-
-    GraphicsCore* core_ = nullptr;
-    HWND          hwnd_ = nullptr;
-
-    winrt::com_ptr<ID2D1HwndRenderTarget> target_;
-    winrt::com_ptr<ID2D1SolidColorBrush>  brush_;
-    std::vector<winrt::com_ptr<ID2D1Bitmap>> sprites_;
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
 };
 
 } // namespace mz::render

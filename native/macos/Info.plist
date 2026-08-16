@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+ "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Mind Zoom</string>
+    <key>CFBundleDisplayName</key>
+    <string>Mind Zoom</string>
+    <key>CFBundleIdentifier</key>
+    <string>it.mindzoom.app</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleExecutable</key>
+    <string>MindZoom</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+
+    <!-- Senza questa chiave il processo viene TERMINATO al primo uso di
+         CBCentralManager, non semplicemente negato. Da macOS 11 in avanti. -->
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>Mind Zoom legge le onde cerebrali dalla fascia Muse via Bluetooth per guidare lo zoom dell'immagine.</string>
+
+    <!-- L'esperienza gira a schermo intero su un secondo monitor. -->
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
+</dict>
+</plist>
