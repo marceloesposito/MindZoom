@@ -74,6 +74,10 @@ struct MuseClient::Impl {
     void handleNotification(const std::uint8_t* data, std::size_t len);
     void setState(State s) { self.state_.store(s, std::memory_order_release); }
     void log(const std::string& m) { if (self.onLog_) self.onLog_(m); }
+    void setDeviceName(std::string name) {
+        std::lock_guard<std::mutex> lock(self.nameMutex_);
+        self.deviceName_ = std::move(name);
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -244,11 +248,7 @@ void MuseClient::Impl::handleNotification(const std::uint8_t* data, std::size_t 
     self.owner->peripheral = peripheral;
     peripheral.delegate = self;
 
-    {
-        std::lock_guard<std::mutex> lock(self.owner->self.nameMutex_);
-        self.owner->self.deviceName_ =
-            peripheral.name ? peripheral.name.UTF8String : "Muse";
-    }
+    self.owner->setDeviceName(peripheral.name ? peripheral.name.UTF8String : "Muse");
 
     self.owner->setState(mz::ble::State::Connecting);
     [central connectPeripheral:peripheral options:nil];

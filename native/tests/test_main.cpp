@@ -683,7 +683,7 @@ void testRecording() {
     // lasciare un file vuoto, che poi ricompare nell'elenco e viene rifiutato.
     {
         const std::wstring empty = L"mz_test_vuota.mzr";
-        _wremove(empty.c_str());
+        ble::detail::removeFile(empty);
         {
             ble::Recorder rec;
             check(rec.arm(empty), "la registrazione si arma");
@@ -751,12 +751,12 @@ void testRecording() {
         check(!emptyRec.ok, "una registrazione senza campioni viene rifiutata");
         check(emptyRec.error != bad.error,
               "il motivo distingue 'vuota' da 'file estraneo'");
-        _wremove(headerOnly.c_str());
+        ble::detail::removeFile(headerOnly);
     }
 
-    _wremove(path.c_str());
-    _wremove(L"mz_test_vuota.mzr");
-    _wremove(L"mz_test_garbage.mzr");
+    ble::detail::removeFile(path);
+    ble::detail::removeFile(L"mz_test_vuota.mzr");
+    ble::detail::removeFile(L"mz_test_garbage.mzr");
 }
 
 /** Riempie la STFT con valori ADC dati da `gen`, finché non emette un frame. */

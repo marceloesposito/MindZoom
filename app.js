@@ -11,8 +11,8 @@
  * selezionabile via CONFIG.USE_ADAPTIVE_PIPELINE = false per confronto A/B.
  */
 
-const SCALE_LABELS = [32, 32, 100, 220, 700, 1500, 3000, 6000, 10000, 17000, 25000, 41000];
-const TOTAL_IMAGES = 12;
+const SCALE_LABELS = [1, 63, 127, 303, 704, 1473, 2759, 2759, 3564, 4421, 8274];
+const TOTAL_IMAGES = 11;
 const IMAGE_EXTENSION = '.webp';
 const IMAGE_PATH = '/images/';
 
