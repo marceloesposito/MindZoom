@@ -320,6 +320,29 @@ void Calibration::finalize() {
     message_  = "Calibrazione completata";
 }
 
+void Calibration::adoptBand(double lo, double hi, double neutral) {
+    if (!(hi > lo)) return;   // banda degenere: si tiene quella di prima
+
+    absMin_   = lo;
+    absMax_   = hi;
+    neutralM_ = std::clamp(neutral, lo, hi);
+
+    if (!valid_) {
+        // Prima adozione: la banda locale parte dal neutro, come dopo una
+        // calibrazione riuscita.
+        localMax_ = neutralM_;
+        localMin_ = neutralM_;
+        valid_    = true;
+        stage_    = CalibStage::Done;
+        message_  = "Banda adattiva attiva";
+    } else {
+        // Adozioni successive: si conserva l'isteresi gia' maturata, solo
+        // riportata dentro i nuovi estremi.
+        localMax_ = std::clamp(localMax_, absMin_, absMax_);
+        localMin_ = std::clamp(localMin_, absMin_, absMax_);
+    }
+}
+
 void Calibration::useFallbackProfile() {
     if (stage_ != CalibStage::Failed) return;
 

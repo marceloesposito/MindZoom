@@ -31,6 +31,10 @@ std::wstring toWide(const char* utf8) {
 struct Options {
     bool         record = true;
     std::wstring replayPath;
+    // Su questo ramo la banda adattiva e' il comportamento normale;
+    // --calibrazione rimette quella a due fasi, per poterle confrontare nella
+    // stessa giornata e sulla stessa testa.
+    bool         adaptiveBand = true;
 };
 
 Options parseOptions(int argc, char** argv) {
@@ -39,6 +43,8 @@ Options parseOptions(int argc, char** argv) {
         const std::string a = argv[i];
         if (a == "--senza-log") {
             o.record = false;
+        } else if (a == "--calibrazione") {
+            o.adaptiveBand = false;
         } else if (a == "--riproduci" && i + 1 < argc) {
             o.replayPath = toWide(argv[++i]);
         }
@@ -203,6 +209,7 @@ void fatal(NSString* text) {
     startOpt.record        = _opt.record;
     startOpt.replayPath    = _opt.replayPath;
     startOpt.debugDir      = debugDir;
+    startOpt.adaptiveBand  = _opt.adaptiveBand;
 
     const std::string err = mz::app::experience::start(startOpt);
     if (!err.empty()) {

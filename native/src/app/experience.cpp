@@ -5,6 +5,7 @@
 #include "ble/recording.hpp"
 #include "ble/synthetic.hpp"
 #include "config.hpp"
+#include "control/adaptive_band.hpp"
 #include "control/calibration.hpp"
 #include "dsp/gating.hpp"
 #include "dsp/stft.hpp"
@@ -120,6 +121,9 @@ struct Shared {
     // l'esperienza intera - quindi vive qui e non in CalibStage, che altrimenti
     // finirebbe per descrivere cose che con la calibrazione non c'entrano.
     std::atomic<bool>          landingVisible{true};
+    // Banda adattiva invece della calibrazione a due fasi (vedi StartOptions).
+    // Letto dal thread DSP e dal disegno, scritto una volta sola in start().
+    std::atomic<bool>          adaptiveBand{true};
     // Modale di gestione Bluetooth (tasto B): stato + riconnetti/disconnetti a
     // comando, invece del solo testo passivo del pannello diagnostico.
     std::atomic<bool>          bleModalVisible{false};
@@ -343,8 +347,14 @@ void dspThread() {
     dsp::Gating            gating;
     control::IndexSmoother smoother;
     control::Calibration   calib;
+    control::AdaptiveBand  adaptive;
 
-    auto phase = control::Phase::Onboarding;
+    // Con la banda adattiva non c'e' onboarding da attraversare: l'esperienza
+    // comincia subito, e il controllo resta fermo da solo finche' la banda non
+    // e' pronta (velocity() torna 0 finche' non le si e' adottata una banda).
+    const bool adattiva = g.adaptiveBand.load(std::memory_order_relaxed);
+
+    auto phase = adattiva ? control::Phase::Interactive : control::Phase::Onboarding;
     double phaseElapsed = 0.0;
     double doneHold     = 0.0;
     double velocityRaw  = 0.0;
@@ -435,7 +445,16 @@ void dspThread() {
                 const double c = smoother.push(*index, dt);
                 st.smoothedIndex = c;
 
-                if (phase == control::Phase::Onboarding) {
+                if (adattiva) {
+                    // La banda insegue il segnale: si alimenta con gli stessi
+                    // campioni su cui poi si guida, e la si riadotta a ogni
+                    // giro (adoptBand conserva l'isteresi, vedi li').
+                    adaptive.push(c);
+                    if (adaptive.ready()) {
+                        calib.adoptBand(adaptive.lo(), adaptive.hi(), adaptive.mid());
+                    }
+                    velocityRaw = calib.velocity(c, dt, tune);
+                } else if (phase == control::Phase::Onboarding) {
                     calib.sample(c, quality.contactOk &&
                                     quality.fault == dsp::SignalFault::None);
                 } else {
@@ -462,7 +481,23 @@ void dspThread() {
         const bool signalFresh =
             st.frames > 0 && std::chrono::duration<double>(now - lastFrameAt).count() < 1.0;
 
-        if (phase == control::Phase::Onboarding) {
+        if (adattiva) {
+            // Nessuna fase da attraversare: si resta in Interactive dal primo
+            // istante. Il tempo qui non serve a niente, ma la diagnostica sul
+            // riscaldamento si', e va scritta con lo stesso ritmo del resto.
+            calibDiagTimer += elapsed;
+            if (calibDiagTimer >= 2.0) {
+                calibDiagTimer = 0.0;
+                char buf[320];
+                std::snprintf(buf, sizeof(buf),
+                    "adattiva: pronta=%d riscaldamento=%.0f%% campioni=%zu "
+                    "banda=[%.3f .. %.3f] M=%.3f signalFresh=%d contactOk=%d plausible=%d",
+                    adaptive.ready() ? 1 : 0, 100.0 * adaptive.warmupProgress(), adaptive.size(),
+                    adaptive.lo(), adaptive.hi(), adaptive.mid(),
+                    signalFresh, contactOk, signalPlausible);
+                g.pushBleLog(buf);
+            }
+        } else if (phase == control::Phase::Onboarding) {
             const auto stagePrima = calib.stage();
             calib.tick(elapsed, signalFresh && contactOk && signalPlausible);
 
@@ -532,6 +567,9 @@ void dspThread() {
         st.calibSeparation    = calib.separation();
         st.calibValid = calib.valid();
         st.calibUsingFallback = calib.usingFallback();
+        st.adaptiveActive = adattiva;
+        st.adaptiveReady  = adaptive.ready();
+        st.adaptiveWarmup = adaptive.warmupProgress();
         st.absMin   = calib.absMin();
         st.absMax   = calib.absMax();
         st.neutral  = calib.neutral();
@@ -1019,6 +1057,53 @@ void drawLandingPage(render::Renderer& r, const app::ControlState& st, double an
                                : st.bleState == 0 ? kBad : kWarn;
     drawStatusHint(r, render::rect(cx - 400.0f, cy + 318.0f, cx + 400.0f, cy + 346.0f), stato,
                   colore);
+}
+
+/**
+ * Riscaldamento della banda adattiva: quello che si vede al posto della
+ * calibrazione.
+ *
+ * NON e' una calibrazione mascherata: non si chiede niente alla persona, non
+ * si puo' fallire e non c'e' un traguardo da raggiungere. E' solo il tempo che
+ * serve perche' i percentili dell'indice significhino qualcosa - e infatti il
+ * testo dice di guardare la foto, non di fare un esercizio.
+ *
+ * La foto sta gia' dietro (in modalita' adattiva l'esperienza e' partita dal
+ * primo istante): qui sopra ci va solo una velatura e una riga, cosi' il
+ * passaggio a "adesso comandi tu" non e' un cambio di schermata ma lo
+ * svanire di un velo.
+ */
+void drawWarmupOverlay(render::Renderer& r, const app::ControlState& st) {
+    const auto  win = r.size();
+    const float cx  = win.width * 0.5f;
+    const float cy  = win.height * 0.5f;
+
+    r.fillRect(render::rect(0, 0, win.width, win.height), {0.02f, 0.02f, 0.03f, 0.82f});
+
+    r.drawText(L"Un momento", render::rect(cx - 400.0f, cy - 130.0f, cx + 400.0f, cy - 50.0f),
+              46.0f, kInk, render::TextAlign::Center, true);
+    r.drawTextBody(L"Sto imparando com'e' fatto il tuo segnale.\n"
+                   L"Non devi fare niente: guarda la fotografia.",
+                  render::rect(cx - 400.0f, cy - 34.0f, cx + 400.0f, cy + 26.0f), 18.0f, kMuted);
+
+    const float barW = 320.0f, barH = 6.0f, barY = cy + 62.0f;
+    r.fillRect(render::rect(cx - barW / 2, barY, cx + barW / 2, barY + barH),
+              {1, 1, 1, 0.10f}, barH * 0.5f);
+    const auto avanz = static_cast<float>(std::clamp(st.adaptiveWarmup, 0.0, 1.0));
+    if (avanz > 0.0f) {
+        r.fillRect(render::rect(cx - barW / 2, barY, cx - barW / 2 + barW * avanz, barY + barH),
+                  kAccent2, barH * 0.5f);
+    }
+
+    // Se il segnale non arriva la barra non avanza, e va detto: altrimenti
+    // sembra che il programma sia bloccato.
+    if (!st.signalFresh) {
+        drawStatusHint(r, render::rect(cx - 400.0f, barY + 26.0f, cx + 400.0f, barY + 54.0f),
+                      L"In attesa del segnale dalla fascia.", kWarn);
+    } else if (st.signalFault != 0 || !st.contactOk) {
+        drawStatusHint(r, render::rect(cx - 400.0f, barY + 26.0f, cx + 400.0f, barY + 54.0f),
+                      L"Il segnale non e' utilizzabile: sistema la fascia.", kBad);
+    }
 }
 
 void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, double focusFrac,
@@ -1652,6 +1737,8 @@ std::string start(const StartOptions& opt) {
     // Ogni avvio riparte dalla pagina d'ingresso, anche se il processo era
     // gia' stato usato: start() e' il punto in cui l'esperienza ricomincia.
     g.landingVisible.store(true, std::memory_order_relaxed);
+    // Va scritto PRIMA che parta il thread DSP, che lo legge una volta sola.
+    g.adaptiveBand.store(opt.adaptiveBand, std::memory_order_relaxed);
 
     g.openDebugLog(opt.debugDir);
 
@@ -1838,6 +1925,9 @@ void frame(render::Renderer& r, double dt) {
         r.drawSprite(cf.activeIndex + 1, static_cast<float>(cf.nextScale),
                     static_cast<float>(cf.nextAlpha));
         drawProjectionScale(r, cf);
+        // Con la banda adattiva la foto e' gia' viva mentre la banda si forma:
+        // il riscaldamento e' un velo sopra, non una schermata al posto.
+        if (st.adaptiveActive && !st.adaptiveReady) drawWarmupOverlay(r, st);
     } else {
         drawCalibrationCard(r, st, focusFrac, animT);
     }

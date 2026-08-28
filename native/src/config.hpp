@@ -172,6 +172,48 @@ inline constexpr double kCalibPrepareS = 6.5;
 // finisce mai non e' "rigorosa", e' inutilizzabile.
 inline constexpr double kCalibMinSeparationT = 2.5;
 
+// --- Banda adattiva (alternativa alla calibrazione a due fasi) ---
+//
+// Vedi control/adaptive_band.hpp per il perche'. Qui solo i tre numeri che la
+// governano.
+//
+// La finestra decide DUE cose in tensione fra loro, e va scelta guardando
+// entrambe - misurate rigiocando tre sessioni reali con finestre diverse
+// (sweep del 28/08, zoom out disponibile e spostamento netto):
+//
+//   finestra   out%          netto (in - out)
+//     20 s     34-40%        30 / 13 / -14      la banda insegue troppo:
+//     30 s     32-40%        43 / 33 /  -7      il netto va a zero, cioe' si
+//                                               oscilla sul posto invece di
+//                                               viaggiare in profondita'
+//     45 s     29-40%        61 / 54 /   3      <- scelta
+//     60 s     25-39%        79 / 70 /  11
+//    150 s     15-34%       134 /140 /  40      la banda resta indietro
+//                                               rispetto alla deriva: 81% del
+//                                               tempo sopra il neutro, che e'
+//                                               il difetto da cui si partiva
+//
+// Corta, il neutro sta sempre al centro ma il controllo "si abitua" a te in
+// pochi secondi e non si va da nessuna parte: concentrarsi a lungo smette di
+// portare avanti. Lunga, si viaggia ma torna il problema originale. 45 s
+// tengono lo zoom out disponibile circa un terzo del tempo (era un sesto con
+// la calibrazione) senza azzerare la possibilita' di andare in profondita'.
+inline constexpr double kAdaptiveWindowS = 45.0;
+
+// Prima di questo tempo di segnale utile il controllo resta fermo: e' il
+// "riscaldamento". Non e' una calibrazione mascherata - non si chiede niente
+// alla persona e non si puo' fallire - e' solo il tempo che serve perche' i
+// percentili significhino qualcosa. Meno della meta' della finestra, cosi' si
+// comincia presto e la banda si affina strada facendo.
+inline constexpr double kAdaptiveWarmupS = 20.0;
+
+// Estremi della banda, in percentili della distribuzione corrente. Non 0 e 100:
+// gli estremi assoluti su una distribuzione a code pesanti come questa sono
+// dominati da un singolo campione anomalo. 15/85 lasciano fuori le code e
+// tengono la parte in cui l'indice vive davvero.
+inline constexpr double kAdaptiveLoPercentile = 0.15;
+inline constexpr double kAdaptiveHiPercentile = 0.85;
+
 // --- Banda di ripiego, quando la calibrazione personale non e' mai partita ---
 //
 // Usata SOLO su richiesta esplicita dell'utente dalla schermata "calibrazione

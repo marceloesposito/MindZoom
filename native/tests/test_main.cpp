@@ -5,6 +5,7 @@
 #include "app/displays.hpp"
 #include "ble/recording.hpp"
 #include "config.hpp"
+#include "control/adaptive_band.hpp"
 #include "control/calibration.hpp"
 #include "control/tunables.hpp"
 #include "control/zoom.hpp"
@@ -402,6 +403,112 @@ void testCalibrationFailures() {
     check(silent.valid(), "il ripiego e' valido");
     check(silent.usingFallback(), "il ripiego si dichiara come tale");
     check(silent.absMax() > silent.absMin(), "il ripiego da' comunque una banda utilizzabile");
+}
+
+void testAdaptiveBand() {
+    group("19. Banda adattiva");
+
+    const auto campioniPer = [](double secondi) {
+        return static_cast<int>(secondi * config::kControlHz) + 4;
+    };
+
+    // Riscaldamento: prima di kAdaptiveWarmupS non si guida.
+    {
+        control::AdaptiveBand b;
+        for (int i = 0; i < 20; ++i) b.push(1.0 + 0.01 * i);
+        check(!b.ready(), "pochi campioni -> non ancora pronta");
+        check(b.warmupProgress() < 1.0, "il riscaldamento non e' finito");
+    }
+
+    // Su una distribuzione nota i percentili devono uscire dove ci si aspetta.
+    // Rampa uniforme 0..1: mediana ~0.5, p15 ~0.15, p85 ~0.85.
+    {
+        control::AdaptiveBand b;
+        const int n = campioniPer(config::kAdaptiveWarmupS + 5.0);
+        // Rampa uniforme sull'intero intervallo: i percentili sono allora
+        // noti esattamente. (Un `i % 101` sembrerebbe equivalente ma non lo e'
+        // se n non e' un multiplo di 101: l'ultimo tratto incompleto pesa
+        // due volte e sposta la mediana - preso in castagna proprio qui.)
+        for (int i = 0; i < n; ++i) b.push(static_cast<double>(i) / (n - 1));
+        check(b.ready(), "passato il riscaldamento -> pronta");
+        nearly(b.mid(), 0.5, 0.06, "il neutro e' la mediana");
+        nearly(b.lo(), config::kAdaptiveLoPercentile, 0.06, "estremo basso al percentile giusto");
+        nearly(b.hi(), config::kAdaptiveHiPercentile, 0.06, "estremo alto al percentile giusto");
+    }
+
+    // IL PUNTO DI TUTTO: il neutro cade al centro della distribuzione, non in
+    // un punto qualsiasi. E' il difetto della calibrazione a due fasi, dove
+    // misurato sul campo cadeva al 19°, 21°, 47° e 100° percentile.
+    // Distribuzione asimmetrica a coda destra, come l'indice di Pope vero.
+    {
+        control::AdaptiveBand b;
+        std::uint32_t seed = 12345;
+        std::vector<double> visti;
+        const int n = campioniPer(config::kAdaptiveWindowS);
+        for (int i = 0; i < n; ++i) {
+            seed = seed * 1664525u + 1013904223u;
+            const double u = ((seed >> 8) & 0xFFFF) / 65535.0;
+            const double c = 0.4 + 2.5 * u * u * u;   // coda destra marcata
+            visti.push_back(c);
+            b.push(c);
+        }
+        check(b.ready(), "distribuzione asimmetrica -> pronta");
+
+        // Percentile in cui cade il neutro, sugli stessi campioni della finestra.
+        std::sort(visti.begin(), visti.end());
+        const auto sotto = static_cast<double>(
+            std::lower_bound(visti.begin(), visti.end(), b.mid()) - visti.begin());
+        const double pct = 100.0 * sotto / static_cast<double>(visti.size());
+        check(pct > 40.0 && pct < 60.0,
+              "il neutro cade a meta' della distribuzione, non a un percentile qualsiasi");
+        check(b.lo() < b.mid() && b.mid() < b.hi(), "banda ordinata");
+    }
+
+    // La banda INSEGUE la deriva: e' l'altro difetto che deve risolvere.
+    // Misurato sul campo: l'indice sale del 36-64% durante una sessione
+    // mentre la banda calibrata resta ferma dov'era.
+    {
+        control::AdaptiveBand b;
+        const int n = campioniPer(config::kAdaptiveWindowS);
+        for (int i = 0; i < n; ++i) b.push(1.0);
+        const double primaM = b.mid();
+        for (int i = 0; i < n; ++i) b.push(2.0);   // il segnale raddoppia
+        nearly(b.mid(), 2.0, 0.05, "dopo una finestra intera il neutro ha seguito il segnale");
+        check(b.mid() > primaM + 0.9, "il neutro si e' spostato davvero");
+    }
+
+    // Segnale piatto: banda degenere, meglio non guidare affatto.
+    {
+        control::AdaptiveBand b;
+        const int n = campioniPer(config::kAdaptiveWarmupS + 5.0);
+        for (int i = 0; i < n; ++i) b.push(1.5);
+        check(!b.ready(), "segnale costante -> banda degenere, non pronta");
+    }
+
+    // Adozione da parte della legge di controllo: la banda entra, l'isteresi
+    // gia' maturata non viene buttata via.
+    {
+        control::Calibration cal;
+        cal.adoptBand(0.5, 1.5, 1.0);
+        check(cal.valid(), "adoptBand rende la calibrazione valida");
+        nearly(cal.neutral(), 1.0, 1e-9, "neutro adottato");
+        nearly(cal.localMax(), 1.0, 1e-9, "la banda locale parte dal neutro");
+
+        cal.velocity(1.4, kDt, kTune);            // porta il massimo locale in alto
+        const double localePrima = cal.localMax();
+        check(localePrima > 1.0, "il massimo locale si e' mosso");
+
+        cal.adoptBand(0.45, 1.55, 1.02);          // la banda si sposta un poco
+        nearly(cal.localMax(), localePrima, 1e-9,
+               "una nuova adozione NON azzera l'isteresi gia' maturata");
+
+        cal.adoptBand(0.5, 1.05, 0.8);            // ora gli estremi la stringono
+        check(cal.localMax() <= 1.05 + 1e-12,
+              "l'isteresi viene riportata dentro i nuovi estremi");
+
+        cal.adoptBand(2.0, 1.0, 1.5);             // degenere: si ignora
+        nearly(cal.absMin(), 0.5, 1e-9, "una banda degenere non sostituisce quella buona");
+    }
 }
 
 void testExtremaVelocity() {
@@ -1221,6 +1328,7 @@ int main() {
     testCalibration();
     testCalibrationStatistics();
     testCalibrationFailures();
+    testAdaptiveBand();
     testExtremaVelocity();
     testSmoother();
     testZoom();

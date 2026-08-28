@@ -53,6 +53,11 @@ struct ControlState {
     // non da una misura personale - vedi Calibration::usingFallback().
     bool   calibUsingFallback = false;
 
+    // --- banda adattiva (al posto della calibrazione a due fasi) ---
+    bool   adaptiveActive   = false;  // la sessione sta usando la banda adattiva
+    bool   adaptiveReady    = false;  // riscaldamento finito, il controllo guida
+    double adaptiveWarmup   = 0.0;    // [0,1] quanto manca alla fine del riscaldamento
+
     // --- banda di controllo ---
     double absMin   = 0.0;
     double absMax   = 0.0;

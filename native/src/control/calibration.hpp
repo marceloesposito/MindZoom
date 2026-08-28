@@ -160,6 +160,20 @@ public:
     bool usingFallback() const noexcept { return usingFallback_; }
 
     /**
+     * Adotta estremi calcolati da fuori (vedi control/adaptive_band.hpp), senza
+     * passare dalle due fasi. La LEGGE di controllo resta questa: cambia solo
+     * da dove vengono gli estremi, cosi' non esistono due leggi da tenere
+     * allineate.
+     *
+     * Va chiamata di continuo, non una volta sola: la banda adattiva si muove.
+     * Per questo NON tocca la banda locale (l'isteresi che rende il controllo
+     * fasico) se non per riportarla dentro i nuovi estremi - azzerarla a ogni
+     * chiamata la terrebbe incollata al neutro e il gate resterebbe chiuso per
+     * sempre.
+     */
+    void adoptBand(double lo, double hi, double neutral);
+
+    /**
      * Velocità di zoom dalla concentrazione `c` relativa agli estremi.
      * Positiva = zoom in, negativa = zoom out, 0 = fermo.
      * Torna 0 finché la calibrazione non è valida.

@@ -34,6 +34,12 @@ struct StartOptions {
     // ogni stop()). Vuota per disattivarlo - lo scrive solo lo shell che lo
     // valorizza.
     std::wstring debugDir;
+
+    // Banda adattiva al posto della calibrazione a due fasi: si entra subito
+    // nell'esperienza e gli estremi inseguono i percentili correnti
+    // dell'indice (control/adaptive_band.hpp). E' il motivo per cui esiste
+    // questo ramo; false ripristina la calibrazione classica, per confronto.
+    bool adaptiveBand = true;
 };
 
 /**
