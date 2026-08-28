@@ -24,6 +24,16 @@ else()
     add_compile_options(-Wall -Wextra)
 endif()
 
+if(APPLE)
+    # Senza ARC un CBPeripheral/CBCentralManager assegnato a un campo di una
+    # struct C++ (mz::ble::MuseClient::Impl e affini) non viene mai trattenuto:
+    # resta vivo per puro caso finche' CoreBluetooth lo tiene nella sua cache
+    # interna, e puo' sparire sotto i piedi. Innocuo sui .cpp puri (nessun
+    # effetto senza sintassi Objective-C), quindi si applica a tutto il target
+    # invece di isolarlo ai soli .mm.
+    add_compile_options(-fobjc-arc)
+endif()
+
 # Core: DSP + legge di controllo. Deterministico e senza dipendenze, quindi
 # testabile per intero senza hardware né finestra.
 add_library(mz_core STATIC
@@ -53,6 +63,11 @@ enable_testing()
 add_executable(mz_tests tests/test_main.cpp)
 target_link_libraries(mz_tests PRIVATE mz_core mz_platform)
 add_test(NAME core COMMAND mz_tests)
+
+# Genera una registrazione .mzr sintetica (segnale plausibile, non EEG vero):
+# serve a esercitare l'esperienza (--riproduci) senza fascia collegata.
+add_executable(mz_gen_test_recording tools/gen_test_recording.cpp)
+target_link_libraries(mz_gen_test_recording PRIVATE mz_core)
 
 # La sonda da console e' stata rimossa: chiedeva di imparare un secondo
 # programma per ottenere quello che l'applicazione fa gia' da sola. Registra,
@@ -117,8 +132,46 @@ if(WIN32)
                 "$<TARGET_FILE_DIR:mz_app>/assets"
         COMMENT "Copia delle immagini in assets/")
 elseif(APPLE)
-    message(STATUS
-        "macOS: core, rendering, schermi e BLE hanno il loro backend. "
-        "L'eseguibile no: manca la divisione di src/app/main.cpp fra logica e "
-        "shell. Si compilano mz_core, mz_render, mz_platform, mz_ble e i test.")
+    # app/experience.cpp e' l'estrazione portabile della logica di main.cpp
+    # (DSP, calibrazione, disegno); vedi il commento in app/experience.hpp per
+    # cosa manca ancora rispetto al ramo Windows (proiezione a due schermi).
+    add_executable(mz_app MACOSX_BUNDLE
+        src/app/experience.cpp
+        src/app/telemetry.cpp
+        src/app/shell_macos.mm
+    )
+    target_link_libraries(mz_app PRIVATE mz_ble mz_render mz_platform
+        "-framework Cocoa")
+    set_target_properties(mz_app PROPERTIES
+        OUTPUT_NAME "MindZoom"
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/macos/Info.plist")
+
+    # Gli asset viaggiano dentro il bundle, accanto all'eseguibile: lo shell li
+    # cerca in <bundle>/Contents/MacOS/assets (stessa convenzione "accanto
+    # all'eseguibile" del ramo Windows).
+    add_custom_command(TARGET mz_app POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_CURRENT_SOURCE_DIR}/../images"
+                "$<TARGET_FILE_DIR:mz_app>/assets"
+        COMMENT "Copia delle immagini in assets/")
+
+    # Nessun font da impacchettare: l'accento e' Iowan Old Style e il corpo
+    # Helvetica Neue, entrambi di sistema su macOS. La copia della cartella
+    # assets/fonts serviva a Space Grotesk (e poi a Newsreader), che non si
+    # usano piu'; GraphicsCore::loadFonts resta al suo posto per quando
+    # servisse di nuovo un carattere non presente su ogni Mac.
+
+    # La firma che il linker mette da solo (adhoc,linker-signed) copre solo
+    # l'eseguibile nudo, PRIMA che gli step qui sopra riempiano il bundle: non
+    # sigilla l'Info.plist ne' le risorse ("Info.plist=not bound" a
+    # `codesign -dv`). Senza un Info.plist sigillato TCC non riesce ad
+    # attribuire NSBluetoothAlwaysUsageDescription al processo e la richiesta
+    # di autorizzazione Bluetooth resta bloccata a meta' invece di comparire -
+    # osservato sul campo: CoreBluetooth logga "TCC ... req 1 complete 0" e
+    # li' si ferma. Risigillare l'intero bundle ad-hoc dopo che e' completo
+    # risolve: e' lo stesso comando che servira' per l'impacchettamento verso
+    # un secondo Mac, solo eseguito ad ogni build invece che una volta sola.
+    add_custom_command(TARGET mz_app POST_BUILD
+        COMMAND codesign --force --deep --sign - "$<TARGET_BUNDLE_DIR:mz_app>"
+        COMMENT "Firma ad-hoc del bundle (Info.plist e risorse sigillati)")
 endif()

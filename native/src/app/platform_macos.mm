@@ -5,10 +5,12 @@
 // toolchain Objective-C.
 
 #import <Cocoa/Cocoa.h>
+#include <mach-o/dyld.h>
 
 #include "app/platform.hpp"
 
 #include <string>
+#include <vector>
 
 namespace mz::app::platform {
 namespace {
@@ -87,6 +89,31 @@ std::FILE* openChoiceFile(bool forWrite) {
 
     NSString* path = [dir stringByAppendingPathComponent:@"schermo.txt"];
     return std::fopen(path.fileSystemRepresentation, forWrite ? "wt" : "rt");
+}
+
+std::wstring exeDirectory() {
+    // _NSGetExecutablePath puo' restituire un percorso con "..", link simbolici
+    // ecc.: si passa da NSString per normalizzarlo, come fa gia' choiceDir().
+    std::uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size);   // prima chiamata: solo per sapere size
+    std::vector<char> buf(size);
+    if (_NSGetExecutablePath(buf.data(), &size) != 0) return {};
+
+    NSString* full = [[NSString stringWithUTF8String:buf.data()]
+                          stringByResolvingSymlinksInPath];
+    return toWide([full stringByDeletingLastPathComponent]);
+}
+
+void ensureDirectory(const std::wstring& path) {
+    // path e' sempre ASCII qui (sottocartelle come "registrazioni" o "assets"),
+    // quindi l'allargamento byte-per-byte da wchar_t a char e' sicuro.
+    NSString* s = [[NSString alloc] initWithBytes:path.data()
+                                            length:path.size() * sizeof(wchar_t)
+                                          encoding:NSUTF32LittleEndianStringEncoding];
+    [[NSFileManager defaultManager] createDirectoryAtPath:s
+                             withIntermediateDirectories:YES
+                                              attributes:nil
+                                                   error:nil];
 }
 
 } // namespace mz::app::platform

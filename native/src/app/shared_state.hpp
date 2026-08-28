@@ -15,7 +15,11 @@ enum class Command : int {
     RetryCalibration,
     // Riparte da zero: cambiata la sorgente del segnale, gli estremi calibrati
     // su un'altra sessione non valgono più.
-    RestartSession
+    RestartSession,
+    // Solo dalla schermata di calibrazione non riuscita (segnale mai
+    // arrivato): invece di ricominciare, usa una banda di ripiego non
+    // personale - vedi Calibration::useFallbackProfile.
+    UseFallbackProfile
 };
 
 /** Motivo di fallimento della calibrazione, per scegliere il testo da mostrare. */
@@ -35,13 +39,19 @@ struct ControlState {
 
     // --- calibrazione ---
     int    calibStage         = 0;    // control::CalibStage
-    double calibDisplayTarget = 0.5;  // altezza normalizzata del quadratino
-    bool   calibShowTarget    = false; // il quadratino si mostra solo in concentrazione
+    double calibDisplayTarget = 0.5;  // quanto e' pieno il cerchio interno, normalizzato
+    bool   calibShowTarget    = false; // il cerchio bersaglio si mostra solo in concentrazione
     double calibProgress      = 0.0;  // [0,1] verso la fine della fase
     double calibEffN          = 0.0;  // campioni INDIPENDENTI raccolti
     double calibSeparation    = 0.0;  // distanza fra le fasi, in errori standard
+    // Fase del respiro guidato in Relax, in [0, kBreathCycleS): vedi
+    // Calibration::breathPhase(). Ferma quando il segnale non e' utilizzabile.
+    double calibBreathPhase   = 0.0;
     bool   calibValid         = false;
     int    failReason         = 0;
+    // La banda attuale viene dal ripiego generico (tasto M da "non riuscita"),
+    // non da una misura personale - vedi Calibration::usingFallback().
+    bool   calibUsingFallback = false;
 
     // --- banda di controllo ---
     double absMin   = 0.0;

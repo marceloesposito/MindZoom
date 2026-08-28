@@ -45,6 +45,46 @@ CGRect toCG(Rect r) {
     return CGRectMake(r.left, r.top, r.right - r.left, r.bottom - r.top);
 }
 
+/**
+ * Iowan Old Style: serif old-style, caldo e solido, scelto dopo un provino a
+ * confronto (dodici candidati renderizzati con questo stesso codice).
+ *
+ * Ha preso il posto di Space Grotesk, che era un grottesco geometrico -
+ * tecnico, squadrato, giusto per un pannello di strumentazione ma in
+ * contraddizione con una schermata che chiede di rilassarsi. Un serif porta le
+ * grazie e il ritmo della pagina stampata: si legge come un libro invece che
+ * come un cruscotto.
+ *
+ * DIFFERENZA rispetto ai font a variazione usati prima qui: Iowan e' una
+ * famiglia STATICA, con facce separate per peso. Non ha l'asse 'wght', quindi
+ * chiedere una variazione non avrebbe effetto e si otterrebbe sempre il
+ * Roman: la faccia si sceglie per nome. La soglia a 550 sta in mezzo fra i due
+ * soli pesi che l'applicazione chiede (400 per il corpo, 640 per i titoli).
+ *
+ * E' un font di SISTEMA, presente su macOS - per questo non viene impacchettato
+ * come si faceva con Space Grotesk. CTFontCreateWithName non fallisce mai se il
+ * nome non risolve (ripiega sul font di sistema), quindi anche su un Mac che
+ * non lo avesse il testo esce comunque.
+ */
+CTFontRef createTextFont(CGFloat size, CGFloat weight) {
+    return CTFontCreateWithName(weight >= 550.0 ? CFSTR("IowanOldStyle-Bold")
+                                                : CFSTR("IowanOldStyle-Roman"),
+                                size, nullptr);
+}
+
+/**
+ * Helvetica Neue: la controparte umanistica di Segoe UI, presente su ogni
+ * macOS - e il font da cui e' nato lo stile svizzero (Akzidenz-Grotesk prima,
+ * Helvetica poi). Fa da corpo neutro sotto le intestazioni in Iowan Old Style:
+ * l'accoppiata serif per i titoli e sans per il corpo e' la stessa
+ * dell'impaginato editoriale, e mantiene leggibili le righe piccole di
+ * diagnostica, dove le grazie a 12px si impasterebbero.
+ */
+CTFontRef createBodyFont(CGFloat size, bool bold) {
+    return CTFontCreateWithName(bold ? CFSTR("HelveticaNeue-Medium") : CFSTR("HelveticaNeue"),
+                                size, nullptr);
+}
+
 void setColor(CGContextRef ctx, Color c, bool fill) {
     if (fill) CGContextSetRGBFillColor(ctx, c.r, c.g, c.b, c.a);
     else      CGContextSetRGBStrokeColor(ctx, c.r, c.g, c.b, c.a);
@@ -133,6 +173,29 @@ bool GraphicsCore::loadSprites(const std::wstring& dir, int count) {
         d.sources.push_back(image);
     }
     return true;
+}
+
+bool GraphicsCore::loadFonts(const std::wstring& dir) {
+    // Oggi non serve a niente: sia il font d'accento (Iowan Old Style) sia
+    // quello di corpo (Helvetica Neue) sono di sistema, e la cartella non
+    // esiste nemmeno nel bundle. Resta perche' e' l'unico punto in cui
+    // impacchettare un font tornerebbe utile - per esempio se si volesse un
+    // carattere non presente su ogni Mac - e perche' il valore di ritorno non
+    // e' mai stato fatale: chi chiama disegna comunque, col font di sistema.
+    const std::wstring path = dir + L"/Accent.ttf";
+    CFStringRef cfPath = toCFString(path);
+    if (!cfPath) return false;
+
+    CFURLRef url = CFURLCreateWithFileSystemPath(kCFAllocatorDefault, cfPath,
+                                                  kCFURLPOSIXPathStyle, false);
+    CFRelease(cfPath);
+    if (!url) return false;
+
+    CFErrorRef error = nullptr;
+    const bool ok = CTFontManagerRegisterFontsForURL(url, kCTFontManagerScopeProcess, &error);
+    if (error) CFRelease(error);
+    CFRelease(url);
+    return ok;
 }
 
 // ---------------------------------------------------------------------------
@@ -312,6 +375,116 @@ void Renderer::fillRect(Rect r, Color color, float radius) {
     }
 }
 
+void Renderer::fillRectGradient(Rect r, Color top, Color bottom, float radius) {
+    auto& d = *impl_;
+    if (!d.ctx) return;
+
+    CGContextSaveGState(d.ctx);
+    if (radius > 0.0f) addRoundedRect(d.ctx, toCG(r), radius);
+    else               CGContextAddRect(d.ctx, toCG(r));
+    CGContextClip(d.ctx);
+
+    CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    const CGFloat comps[8] = {top.r, top.g, top.b, top.a, bottom.r, bottom.g, bottom.b, bottom.a};
+    CGGradientRef  grad    = CGGradientCreateWithColorComponents(cs, comps, nullptr, 2);
+
+    // Leggermente diagonale (10 gradi dalla verticale, verso destra scendendo)
+    // invece di puramente verticale: da' profondita' senza essere appariscente.
+    // La linea passa per il centro del rettangolo, cosi' l'inclinazione si
+    // vede allo stesso modo qualunque sia la larghezza.
+    constexpr CGFloat kTiltDeg = 10.0;
+    const CGFloat cx    = (r.left + r.right) * 0.5;
+    const CGFloat halfH = (r.bottom - r.top) * 0.5;
+    const CGFloat dx    = halfH * std::tan(kTiltDeg * M_PI / 180.0);
+    CGContextDrawLinearGradient(d.ctx, grad, CGPointMake(cx - dx, r.top),
+                               CGPointMake(cx + dx, r.bottom), 0);
+    CGGradientRelease(grad);
+    CGColorSpaceRelease(cs);
+    CGContextRestoreGState(d.ctx);
+}
+
+void Renderer::fillRectShadow(Rect r, Color color, float radius, Color shadowColor,
+                              float shadowBlur, Point shadowOffset) {
+    auto& d = *impl_;
+    if (!d.ctx) return;
+
+    CGContextSaveGState(d.ctx);
+    CGColorRef sc = CGColorCreateGenericRGB(shadowColor.r, shadowColor.g, shadowColor.b,
+                                            shadowColor.a);
+    // L'offset e' in coordinate utente e passa per la stessa CTM ribaltata del
+    // resto: dy positivo qui vuol dire "verso il basso", come ovunque altrove.
+    CGContextSetShadowWithColor(d.ctx, CGSizeMake(shadowOffset.x, shadowOffset.y), shadowBlur, sc);
+    CGColorRelease(sc);
+
+    setColor(d.ctx, color, true);
+    if (radius > 0.0f) {
+        addRoundedRect(d.ctx, toCG(r), radius);
+        CGContextFillPath(d.ctx);
+    } else {
+        CGContextFillRect(d.ctx, toCG(r));
+    }
+    CGContextRestoreGState(d.ctx);
+}
+
+void Renderer::fillCircle(Point center, float radius, Color color) {
+    auto& d = *impl_;
+    if (!d.ctx || radius <= 0.0f) return;
+    setColor(d.ctx, color, true);
+    CGContextFillEllipseInRect(
+        d.ctx, CGRectMake(center.x - radius, center.y - radius, radius * 2.0f, radius * 2.0f));
+}
+
+void Renderer::fillCircleGradient(Point center, float radius, Color inner, Color mid,
+                                  Color outer) {
+    auto& d = *impl_;
+    if (!d.ctx || radius <= 0.0f) return;
+
+    CGContextSaveGState(d.ctx);
+    CGContextAddEllipseInRect(
+        d.ctx, CGRectMake(center.x - radius, center.y - radius, radius * 2.0f, radius * 2.0f));
+    CGContextClip(d.ctx);
+
+    CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    const CGFloat comps[12] = {
+        inner.r, inner.g, inner.b, inner.a, mid.r, mid.g, mid.b, mid.a,
+        outer.r, outer.g, outer.b, outer.a,
+    };
+    const CGFloat locs[3] = {0.0, 0.55, 1.0};
+    CGGradientRef  grad   = CGGradientCreateWithColorComponents(cs, comps, locs, 3);
+    const CGPoint  c      = CGPointMake(center.x, center.y);
+    CGContextDrawRadialGradient(d.ctx, grad, c, 0.0, c, radius, 0);
+    CGGradientRelease(grad);
+    CGColorSpaceRelease(cs);
+    CGContextRestoreGState(d.ctx);
+}
+
+void Renderer::drawArc(Point center, float radius, float startDeg, float endDeg, float thickness,
+                       Color color) {
+    auto& d = *impl_;
+    if (!d.ctx || radius <= 0.0f) return;
+
+    // Punto per punto invece di CGContextAddArc: cosi' l'angolo si legge nella
+    // stessa convenzione (y verso il basso) di tutto il resto del file, senza
+    // doversi fidare di come CG interpreta "senso orario" sotto una CTM
+    // ribaltata.
+    const double startRad = startDeg * M_PI / 180.0;
+    const double endRad   = endDeg * M_PI / 180.0;
+    const int    segments = std::max(2, static_cast<int>(std::abs(endDeg - startDeg) / 3.0) + 1);
+
+    setColor(d.ctx, color, false);
+    CGContextSetLineWidth(d.ctx, thickness);
+    CGContextSetLineCap(d.ctx, kCGLineCapRound);
+    CGContextBeginPath(d.ctx);
+    for (int i = 0; i <= segments; ++i) {
+        const double t  = startRad + (endRad - startRad) * (static_cast<double>(i) / segments);
+        const float  px = center.x + radius * static_cast<float>(std::cos(t));
+        const float  py = center.y + radius * static_cast<float>(std::sin(t));
+        if (i == 0) CGContextMoveToPoint(d.ctx, px, py);
+        else        CGContextAddLineToPoint(d.ctx, px, py);
+    }
+    CGContextStrokePath(d.ctx);
+}
+
 void Renderer::drawRectOutline(Rect r, Color color, float stroke, float radius) {
     auto& d = *impl_;
     if (!d.ctx) return;
@@ -360,18 +533,15 @@ void Renderer::popClip() {
     if (impl_->ctx) CGContextRestoreGState(impl_->ctx);
 }
 
-void Renderer::drawText(const std::wstring& text, Rect box, float fontSize, Color color,
-                        TextAlign align, bool bold) {
-    auto& d = *impl_;
-    if (!d.ctx || text.empty()) return;
+namespace {
+
+/** Corpo comune di drawText/drawTextBody: il font arriva gia' fatto, non lo possiede. */
+void drawFramedText(CGContextRef ctx, const std::wstring& text, Rect box, Color color,
+                    TextAlign align, CTFontRef font) {
+    if (!ctx || text.empty()) return;
 
     CFStringRef cf = toCFString(text);
     if (!cf) return;
-
-    // Helvetica Neue e' la controparte ragionevole di Segoe UI: presente su ogni
-    // macOS, stesse proporzioni umanistiche, stessa leggibilita' a corpo piccolo.
-    CTFontRef font = CTFontCreateWithName(
-        bold ? CFSTR("HelveticaNeue-Medium") : CFSTR("HelveticaNeue"), fontSize, nullptr);
 
     CGColorRef cgColor = CGColorCreateGenericRGB(color.r, color.g, color.b, color.a);
 
@@ -397,13 +567,13 @@ void Renderer::drawText(const std::wstring& text, Rect box, float fontSize, Colo
     CGPathAddRect(path, nullptr, CGRectMake(0, 0, box.width(), box.height()));
     CTFrameRef frame = CTFramesetterCreateFrame(setter, CFRangeMake(0, 0), path, nullptr);
 
-    CGContextSaveGState(d.ctx);
+    CGContextSaveGState(ctx);
     // Il testo si compone in coordinate y-su: si annulla il ribaltamento globale
     // per il tempo di disegnarlo, invece di ribaltare ogni glifo.
-    CGContextTranslateCTM(d.ctx, box.left, box.top + box.height());
-    CGContextScaleCTM(d.ctx, 1.0, -1.0);
-    CTFrameDraw(frame, d.ctx);
-    CGContextRestoreGState(d.ctx);
+    CGContextTranslateCTM(ctx, box.left, box.top + box.height());
+    CGContextScaleCTM(ctx, 1.0, -1.0);
+    CTFrameDraw(frame, ctx);
+    CGContextRestoreGState(ctx);
 
     CFRelease(frame);
     CGPathRelease(path);
@@ -412,8 +582,83 @@ void Renderer::drawText(const std::wstring& text, Rect box, float fontSize, Colo
     CFRelease(attrs);
     CFRelease(para);
     CGColorRelease(cgColor);
-    CFRelease(font);
     CFRelease(cf);
+}
+
+/** Corpo comune di drawTextCentered/drawTextBodyCentered: stessa idea, font non posseduto. */
+void drawCenteredText(CGContextRef ctx, const std::wstring& text, Point center, Color color,
+                      CTFontRef font) {
+    if (!ctx || text.empty()) return;
+
+    CFStringRef cf = toCFString(text);
+    if (!cf) return;
+
+    CGColorRef cgColor = CGColorCreateGenericRGB(color.r, color.g, color.b, color.a);
+
+    CFStringRef keys[]   = {kCTFontAttributeName, kCTForegroundColorAttributeName};
+    CFTypeRef   values[] = {font, cgColor};
+    CFDictionaryRef attrs = CFDictionaryCreate(
+        kCFAllocatorDefault, reinterpret_cast<const void**>(keys),
+        reinterpret_cast<const void**>(values), 2,
+        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+
+    CFAttributedStringRef attributed = CFAttributedStringCreate(kCFAllocatorDefault, cf, attrs);
+    CTLineRef              line      = CTLineCreateWithAttributedString(attributed);
+
+    CGFloat      ascent = 0, descent = 0, leading = 0;
+    const double width  = CTLineGetTypographicBounds(line, &ascent, &descent, &leading);
+
+    CGContextSaveGState(ctx);
+    // Stessa idea del ribaltamento locale in drawText, ma l'origine locale va
+    // esattamente sulla baseline: e' il punto che CTLineDraw prende per buono,
+    // e sposandola di (ascesa - discesa)/2 sotto il centro la riga risulta
+    // centrata sul punto dato invece che ancorata al top di un riquadro.
+    CGContextTranslateCTM(ctx, center.x - static_cast<CGFloat>(width) * 0.5,
+                          center.y + (ascent - descent) * 0.5);
+    CGContextScaleCTM(ctx, 1.0, -1.0);
+    CGContextSetTextPosition(ctx, 0, 0);
+    CTLineDraw(line, ctx);
+    CGContextRestoreGState(ctx);
+
+    CFRelease(line);
+    CFRelease(attributed);
+    CFRelease(attrs);
+    CGColorRelease(cgColor);
+    CFRelease(cf);
+}
+
+} // namespace
+
+void Renderer::drawText(const std::wstring& text, Rect box, float fontSize, Color color,
+                        TextAlign align, bool bold) {
+    if (!impl_->ctx) return;
+    CTFontRef font = createTextFont(fontSize, bold ? 640.0 : 400.0);
+    drawFramedText(impl_->ctx, text, box, color, align, font);
+    CFRelease(font);
+}
+
+void Renderer::drawTextBody(const std::wstring& text, Rect box, float fontSize, Color color,
+                            TextAlign align, bool bold) {
+    if (!impl_->ctx) return;
+    CTFontRef font = createBodyFont(fontSize, bold);
+    drawFramedText(impl_->ctx, text, box, color, align, font);
+    CFRelease(font);
+}
+
+void Renderer::drawTextCentered(const std::wstring& text, Point center, float fontSize,
+                                Color color, bool bold) {
+    if (!impl_->ctx) return;
+    CTFontRef font = createTextFont(fontSize, bold ? 640.0 : 400.0);
+    drawCenteredText(impl_->ctx, text, center, color, font);
+    CFRelease(font);
+}
+
+void Renderer::drawTextBodyCentered(const std::wstring& text, Point center, float fontSize,
+                                    Color color, bool bold) {
+    if (!impl_->ctx) return;
+    CTFontRef font = createBodyFont(fontSize, bold);
+    drawCenteredText(impl_->ctx, text, center, color, font);
+    CFRelease(font);
 }
 
 } // namespace mz::render

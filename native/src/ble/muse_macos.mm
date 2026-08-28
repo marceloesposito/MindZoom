@@ -32,7 +32,11 @@
 namespace {
 
 // UUID del protocollo Muse, identici a quelli del client JS e del backend Windows.
-NSString* const kServiceUuid = @"273E0000-4C4D-454D-96BE-F03BAC821358";
+// Il servizio e' un UUID a 16 bit (0xFE8D) espanso con la Bluetooth Base UUID:
+// e' quello che il dispositivo annuncia davvero, non un 273E come le
+// characteristic - un valore diverso qui significa scansione e discoverServices
+// che non trovano mai nulla (visto sul campo: vedi muse.cpp, kServiceUuid).
+NSString* const kServiceUuid = @"0000FE8D-0000-1000-8000-00805F9B34FB";
 NSString* const kControlUuid = @"273E0001-4C4D-454D-96BE-F03BAC821358";
 NSString* const kEegUuid     = @"273E0013-4C4D-454D-96BE-F03BAC821358";
 
@@ -66,11 +70,30 @@ struct MuseClient::Impl {
     dsp::ChainLocator  locator;
     bool               wantConnection = false;
 
+    // Sottoscrizione alle notifiche: la sequenza di avvio parte solo quando
+    // ENTRAMBE sono confermate, come su Windows (che blocca su
+    // WriteClientCharacteristicConfigurationDescriptorAsync prima di scrivere
+    // qualunque comando).
+    bool               controlNotifying = false;
+    bool               eegNotifying     = false;
+
+    // Handshake di avvio: stato dello step corrente. `startupGeneration` si
+    // incrementa a ogni (ri)avvio della sequenza cosi' un ack o un timeout in
+    // arrivo in ritardo da un tentativo precedente non trova piu' corrispondenza
+    // e viene ignorato invece di far avanzare lo step sbagliato.
+    std::size_t        startupIndex      = 0;
+    unsigned           startupGeneration = 0;
+    bool               startupAwaitingAck = false;
+
     explicit Impl(MuseClient& s) : self(s) {}
 
     void startScan();
     void sendCommand(const std::string& cmd);
+    void maybeStartHandshake();
     void runStartupSequence();
+    void startupStep();
+    void startupAdvance();
+    void onControlAck();
     void handleNotification(const std::uint8_t* data, std::size_t len);
     void setState(State s) { self.state_.store(s, std::memory_order_release); }
     void log(const std::string& m) { if (self.onLog_) self.onLog_(m); }
@@ -97,30 +120,67 @@ MuseClient::~MuseClient() {
 }
 
 void MuseClient::start() {
-    impl_->wantConnection = true;
-    // Il CBCentralManager non puo' essere usato prima che riporti PoweredOn:
-    // la scansione parte dal callback centralManagerDidUpdateState.
-    impl_->central = [[CBCentralManager alloc] initWithDelegate:impl_->delegate
-                                                          queue:impl_->queue];
+    // CBCentralManager/CBPeripheral si possono toccare solo dalla coda passata
+    // a initWithDelegate:queue: - e' la stessa su cui arrivano i delegate.
+    // start()/stop() sono chiamati dal thread della UI (o dal DSP), mai da li':
+    // senza dispatch_sync qui, l'assegnazione a impl_->central correrebbe senza
+    // sincronizzazione con le callback che la leggono/mutano in parallelo -
+    // osservato sul campo come SIGSEGV in cancelPeripheralConnection: (ARC che
+    // fa retain su un puntatore scritto a meta' da un altro thread).
+    dispatch_sync(impl_->queue, ^{
+        impl_->wantConnection = true;
+        if (!impl_->central) {
+            // Un solo CBCentralManager per tutta la vita del processo, creato
+            // qui la prima volta e mai piu' sostituito. Ricrearlo a ogni
+            // riconnessione (come faceva questa funzione) lascia il vecchio
+            // CBCentralManager senza piu' nessun riferimento forte proprio
+            // mentre puo' avere ancora una didDiscoverPeripheral: in coda: se
+            // arriva dopo che start() ha gia' installato il central nuovo,
+            // scrive in owner->peripheral un CBPeripheral legato al central
+            // vecchio (ormai deallocato). Alla riconnessione successiva stop()
+            // passa quel peripheral orfano al central NUOVO in
+            // cancelPeripheralConnection: - osservato sul campo (26/08) come
+            // SIGSEGV in objc_retain dentro quella chiamata, tre volte, sempre
+            // dopo riconnessioni ravvicinate. Il CBCentralManager non si puo'
+            // usare prima che riporti PoweredOn: la scansione della primissima
+            // volta parte dal callback centralManagerDidUpdateState.
+            impl_->central = [[CBCentralManager alloc] initWithDelegate:impl_->delegate
+                                                                  queue:impl_->queue];
+            NSLog(@"[MZDIAG] start: creato CBCentralManager (unico per il processo)");
+        } else if (impl_->central.state == CBManagerStatePoweredOn) {
+            // Riconnessione: il central esiste gia' ed e' pronto, si riparte
+            // subito dalla scansione invece che aspettare un
+            // centralManagerDidUpdateState che con un central gia' esistente
+            // non arriva piu' (fa gia' PoweredOn da quando il central e' nato).
+            NSLog(@"[MZDIAG] start: central gia' pronto, riscansione diretta");
+            impl_->startScan();
+        }
+        // Se il central esiste ma non e' ancora PoweredOn, non c'e' altro da
+        // fare qui: wantConnection e' gia' true, sara' centralManagerDidUpdateState
+        // a far partire la scansione appena lo stato cambia.
+    });
     state_.store(State::Scanning, std::memory_order_release);
 }
 
 void MuseClient::stop() {
     if (!impl_) return;
-    impl_->wantConnection = false;   // disconnessione voluta: niente riaggancio
+    dispatch_sync(impl_->queue, ^{
+        impl_->wantConnection = false;   // disconnessione voluta: niente riaggancio
 
-    if (impl_->central) {
-        [impl_->central stopScan];
-        if (impl_->peripheral) [impl_->central cancelPeripheralConnection:impl_->peripheral];
-    }
-    impl_->peripheral  = nil;
-    impl_->controlChar = nil;
-    impl_->eegChar     = nil;
+        if (impl_->central) {
+            [impl_->central stopScan];
+            if (impl_->peripheral) [impl_->central cancelPeripheralConnection:impl_->peripheral];
+        }
+        impl_->peripheral  = nil;
+        impl_->controlChar = nil;
+        impl_->eegChar     = nil;
+    });
     state_.store(State::Disconnected, std::memory_order_release);
 }
 
 void MuseClient::resumeStreaming() {
-    if (streaming()) impl_->sendCommand("d");
+    // sendCommand tocca peripheral/controlChar: stessa regola, stessa coda.
+    if (streaming()) dispatch_async(impl_->queue, ^{ impl_->sendCommand("d"); });
 }
 
 std::string MuseClient::deviceName() const {
@@ -153,36 +213,101 @@ void MuseClient::Impl::sendCommand(const std::string& cmd) {
     buf.push_back(static_cast<std::uint8_t>('\n'));
 
     NSData* data = [NSData dataWithBytes:buf.data() length:buf.size()];
-    [peripheral writeValue:data
-         forCharacteristic:controlChar
-                      type:CBCharacteristicWriteWithResponse];
+
+    // Il backend Windows (e il driver JS originale) scrive PRIMA senza
+    // risposta, e ripiega sulla scrittura normale solo se il dispositivo non
+    // la accetta - vedi il commento in muse.cpp. La characteristic di
+    // controllo della fascia in pratica supporta solo WriteWithoutResponse:
+    // forzare sempre WriteWithResponse (come faceva questa funzione) viene
+    // rifiutato dal dispositivo - osservato sul campo come "scrittura
+    // fallita" per ogni comando.
+    const CBCharacteristicWriteType type =
+        (controlChar.properties & CBCharacteristicPropertyWriteWithoutResponse)
+            ? CBCharacteristicWriteWithoutResponse
+            : CBCharacteristicWriteWithResponse;
+    [peripheral writeValue:data forCharacteristic:controlChar type:type];
 }
 
+namespace {
+struct StartupStep { const char* cmd; int afterMs; };
+// Stessi comandi e stessi ritardi EXTRA del backend Windows (i ritardi fra un
+// sendCommand e il successivo in runStartupSequence, li'). La differenza è che
+// li' ogni sendCommand aspetta anche awaitControlResponse(400) PRIMA di questi
+// ritardi: quella parte, non riproducibile con un timer fisso, e' cio' che
+// startupStep/onControlAck ricostruiscono qui sotto.
+constexpr StartupStep kStartupSteps[] = {
+    {"v6",    100}, {"s",     100}, {"h",     100},
+    {"p21",   200}, {"dc001",   0}, {"L1",    300},
+    {"h",     100}, {"p1041", 200},
+    {"dc001",   0}, {"L1",    200}, {"s",       0},
+};
+constexpr std::size_t kStartupStepCount = sizeof(kStartupSteps) / sizeof(kStartupSteps[0]);
+} // namespace
+
 void MuseClient::Impl::runStartupSequence() {
-    // Stessa sequenza e stessi ritardi del backend Windows. Li' erano sleep su un
-    // thread dedicato, qui sono blocchi ritardati sulla coda BLE: CoreBluetooth
-    // non ammette attese bloccanti sulla sua coda, e bloccarla impedirebbe di
-    // ricevere proprio le risposte che si stanno aspettando.
-    struct Passo { int ritardoMs; const char* cmd; };
-    static const Passo passi[] = {
-        {   0, "v6"    }, { 100, "s"     }, { 200, "h"     },
-        { 300, "p21"   }, { 500, "dc001" }, { 500, "L1"    },
-        { 800, "h"     }, { 900, "p1041" },
-        {1100, "dc001" }, {1100, "L1"    }, {1300, "s"     },
-    };
+    NSLog(@"[MZDIAG] runStartupSequence: avvio handshake");
+    startupIndex = 0;
+    ++startupGeneration;
+    startupStep();
+}
 
-    for (const auto& p : passi) {
-        const std::string cmd = p.cmd;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, p.ritardoMs * NSEC_PER_MSEC),
-                       queue, ^{
-            sendCommand(cmd);
-        });
-    }
-
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1500 * NSEC_PER_MSEC), queue, ^{
+/**
+ * Manda il comando dello step corrente, poi aspetta la risposta vera sulla
+ * characteristic di controllo (onControlAck) - o, se non arriva, un timeout di
+ * sicurezza di 400ms: esattamente lo stesso valore e lo stesso ruolo di
+ * awaitControlResponse(400) sul backend Windows. E' questa attesa a scandire
+ * la sequenza, non il timer da solo: senza, i comandi partono troppo
+ * ravvicinati e la fascia non avvia lo streaming (osservato sul campo - luce
+ * blu lampeggiante fissa, nessun pacchetto riconosciuto).
+ */
+void MuseClient::Impl::startupStep() {
+    if (startupIndex >= kStartupStepCount) {
         setState(State::Streaming);
         log("streaming avviato");
+        return;
+    }
+
+    log("handshake " + std::to_string(startupIndex + 1) + "/" +
+        std::to_string(kStartupStepCount) + ": '" + kStartupSteps[startupIndex].cmd + "'");
+    sendCommand(kStartupSteps[startupIndex].cmd);
+    startupAwaitingAck = true;
+
+    const unsigned gen = startupGeneration;
+    const std::size_t idx = startupIndex;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 400 * NSEC_PER_MSEC), queue, ^{
+        // idx != startupIndex: questo timer e' di uno step precedente, gia'
+        // avanzato per altra via (ack arrivato, o un altro timeout). Senza
+        // questo controllo un timer rimasto in sospeso puo' confondersi con lo
+        // step ATTUALE (stesso startupAwaitingAck condiviso) e farlo avanzare
+        // in anticipo con un messaggio fuorviante - osservato sul campo.
+        if (gen != startupGeneration || idx != startupIndex || !startupAwaitingAck) return;
+        log("  -> timeout, nessun ack per '" + std::string(kStartupSteps[idx].cmd) + "'");
+        startupAdvance();
     });
+}
+
+/** Chiamato da didUpdateValueForCharacteristic quando risponde la characteristic di controllo. */
+void MuseClient::Impl::onControlAck() {
+    if (!startupAwaitingAck) return;
+    log("  -> ack ricevuto");
+    startupAdvance();
+}
+
+void MuseClient::Impl::startupAdvance() {
+    startupAwaitingAck = false;
+    const int  extraMs = kStartupSteps[startupIndex].afterMs;
+    ++startupIndex;
+
+    const unsigned gen = startupGeneration;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, extraMs * NSEC_PER_MSEC), queue, ^{
+        if (gen != startupGeneration) return;
+        startupStep();
+    });
+}
+
+/** La sequenza parte solo quando ENTRAMBE le notifiche sono confermate attive. */
+void MuseClient::Impl::maybeStartHandshake() {
+    if (controlNotifying && eegNotifying) runStartupSequence();
 }
 
 void MuseClient::Impl::handleNotification(const std::uint8_t* data, std::size_t len) {
@@ -229,6 +354,7 @@ void MuseClient::Impl::handleNotification(const std::uint8_t* data, std::size_t 
 @implementation MZMuseDelegate
 
 - (void)centralManagerDidUpdateState:(CBCentralManager*)central {
+    NSLog(@"[MZDIAG] centralManagerDidUpdateState: %ld", (long)central.state);
     if (!self.owner) return;
     if (central.state == CBManagerStatePoweredOn) {
         if (self.owner->wantConnection) self.owner->startScan();
@@ -242,6 +368,7 @@ void MuseClient::Impl::handleNotification(const std::uint8_t* data, std::size_t 
  didDiscoverPeripheral:(CBPeripheral*)peripheral
      advertisementData:(NSDictionary<NSString*, id>*)advertisementData
                   RSSI:(NSNumber*)RSSI {
+    NSLog(@"[MZDIAG] didDiscoverPeripheral: %@ RSSI=%@", peripheral.name, RSSI);
     if (!self.owner || self.owner->peripheral) return;   // gia' agganciato
 
     [central stopScan];
@@ -256,16 +383,32 @@ void MuseClient::Impl::handleNotification(const std::uint8_t* data, std::size_t 
 
 - (void)centralManager:(CBCentralManager*)central
   didConnectPeripheral:(CBPeripheral*)peripheral {
+    if (self.owner) self.owner->log("connesso, cerco i servizi");
     [peripheral discoverServices:@[[CBUUID UUIDWithString:kServiceUuid]]];
+}
+
+- (void)centralManager:(CBCentralManager*)central
+didFailToConnectPeripheral:(CBPeripheral*)peripheral
+                 error:(NSError*)error {
+    if (self.owner) {
+        self.owner->log("connessione FALLITA: " +
+                        std::string(error.localizedDescription.UTF8String));
+    }
 }
 
 - (void)centralManager:(CBCentralManager*)central
 didDisconnectPeripheral:(CBPeripheral*)peripheral
                  error:(NSError*)error {
+    if (self.owner) {
+        self.owner->log("disconnesso" +
+                        (error ? (": " + std::string(error.localizedDescription.UTF8String)) : ""));
+    }
     if (!self.owner) return;
-    self.owner->peripheral  = nil;
-    self.owner->controlChar = nil;
-    self.owner->eegChar     = nil;
+    self.owner->peripheral       = nil;
+    self.owner->controlChar      = nil;
+    self.owner->eegChar          = nil;
+    self.owner->controlNotifying = false;
+    self.owner->eegNotifying     = false;
     self.owner->setState(mz::ble::State::Disconnected);
 
     // Riaggancio automatico solo se la disconnessione non era voluta. Un solo
@@ -275,6 +418,10 @@ didDisconnectPeripheral:(CBPeripheral*)peripheral
 }
 
 - (void)peripheral:(CBPeripheral*)peripheral didDiscoverServices:(NSError*)error {
+    if (self.owner) {
+        self.owner->log("servizi trovati: " + std::to_string(peripheral.services.count) +
+                        (error ? (", errore: " + std::string(error.localizedDescription.UTF8String)) : ""));
+    }
     if (error || peripheral.services.count == 0) return;
     for (CBService* s in peripheral.services) {
         [peripheral discoverCharacteristics:@[[CBUUID UUIDWithString:kControlUuid],
@@ -286,7 +433,10 @@ didDisconnectPeripheral:(CBPeripheral*)peripheral
 - (void)peripheral:(CBPeripheral*)peripheral
 didDiscoverCharacteristicsForService:(CBService*)service
              error:(NSError*)error {
-    if (!self.owner || error) return;
+    if (!self.owner) return;
+    self.owner->log("characteristic trovate: " + std::to_string(service.characteristics.count) +
+                    (error ? (", errore: " + std::string(error.localizedDescription.UTF8String)) : ""));
+    if (error) return;
 
     for (CBCharacteristic* c in service.characteristics) {
         if ([c.UUID isEqual:[CBUUID UUIDWithString:kControlUuid]]) {
@@ -297,23 +447,61 @@ didDiscoverCharacteristicsForService:(CBService*)service
             [peripheral setNotifyValue:YES forCharacteristic:c];
         }
     }
+    if (!self.owner->controlChar) self.owner->log("ATTENZIONE: characteristic controllo non trovata");
+    if (!self.owner->eegChar) self.owner->log("ATTENZIONE: characteristic EEG non trovata");
+    // La sequenza di avvio parte da didUpdateNotificationStateForCharacteristic,
+    // quando ENTRAMBE le sottoscrizioni sono confermate attive - non da qui:
+    // setNotifyValue e' asincrono, e su Windows l'equivalente
+    // (WriteClientCharacteristicConfigurationDescriptorAsync) e' bloccante,
+    // quindi la' i comandi partono solo a sottoscrizione gia' avvenuta.
+}
 
-    if (self.owner->controlChar && self.owner->eegChar) {
-        self.owner->runStartupSequence();
+- (void)peripheral:(CBPeripheral*)peripheral
+didUpdateNotificationStateForCharacteristic:(CBCharacteristic*)characteristic
+             error:(NSError*)error {
+    if (!self.owner) return;
+    const bool isControl = [characteristic.UUID isEqual:[CBUUID UUIDWithString:kControlUuid]];
+    self.owner->log(std::string("notifiche ") + (isControl ? "controllo" : "EEG") +
+                    (error ? (" FALLITE: " + std::string(error.localizedDescription.UTF8String))
+                           : " attive"));
+    if (error) return;
+
+    if (isControl) {
+        self.owner->controlNotifying = true;
+    } else if ([characteristic.UUID isEqual:[CBUUID UUIDWithString:kEegUuid]]) {
+        self.owner->eegNotifying = true;
     }
+    self.owner->maybeStartHandshake();
 }
 
 - (void)peripheral:(CBPeripheral*)peripheral
 didUpdateValueForCharacteristic:(CBCharacteristic*)characteristic
              error:(NSError*)error {
-    if (!self.owner || error || !characteristic.value) return;
+    if (!self.owner) return;
+    if (error) {
+        self.owner->log("errore notifica: " + std::string(error.localizedDescription.UTF8String));
+        return;
+    }
+    if (!characteristic.value) return;
 
     if ([characteristic.UUID isEqual:[CBUUID UUIDWithString:kEegUuid]]) {
         NSData* d = characteristic.value;
         self.owner->handleNotification(static_cast<const std::uint8_t*>(d.bytes), d.length);
+    } else if ([characteristic.UUID isEqual:[CBUUID UUIDWithString:kControlUuid]]) {
+        // Risposta del Muse a un comando: fa avanzare l'handshake, esattamente
+        // come awaitControlResponse sul backend Windows - vedi il commento in
+        // Impl::startupStep.
+        self.owner->onControlAck();
     }
-    // Le risposte sulla characteristic di controllo sono JSON di stato: utili in
-    // diagnostica, non necessarie al funzionamento, quindi non si interpretano.
+}
+
+- (void)peripheral:(CBPeripheral*)peripheral
+didWriteValueForCharacteristic:(CBCharacteristic*)characteristic
+             error:(NSError*)error {
+    if (error && self.owner) {
+        self.owner->log("scrittura comando FALLITA: " +
+                        std::string(error.localizedDescription.UTF8String));
+    }
 }
 
 @end

@@ -95,6 +95,9 @@ struct Shared {
     std::atomic<bool>          running{true};
     std::atomic<std::uint64_t> dropped{0};
     std::atomic<bool>          hudVisible{true};
+    // Modale di gestione Bluetooth (tasto B): stato + riconnetti/disconnetti a
+    // comando, invece del solo testo passivo del pannello diagnostico.
+    std::atomic<bool>          bleModalVisible{false};
 
     // Ultimi messaggi del BLE, mostrati nel pannello diagnostico: senza, quando
     // la fascia cade non si capisce il motivo. Frequenza bassissima, quindi un
@@ -279,6 +282,28 @@ std::string startReplay(const std::wstring& path) {
 
     g.replayWorker = std::thread(replayThread, std::move(loaded.samples));
     return {};
+}
+
+/**
+ * Tasto C nella modale Bluetooth: chiude un'eventuale riproduzione e forza un
+ * nuovo tentativo di connessione alla fascia reale.
+ */
+void reconnectBle() {
+    stopReplay();
+    g_muse.stop();
+    g_muse.start();
+    g.resetHistory.store(true, std::memory_order_release);
+    g.command.store(static_cast<int>(app::Command::RestartSession), std::memory_order_release);
+    g.pushBleLog("riconnessione richiesta dall'utente");
+}
+
+/**
+ * Tasto X nella modale Bluetooth: disconnessione voluta, niente riaggancio
+ * automatico finche' non si chiede di riconnettersi (vedi MuseClient::stop).
+ */
+void disconnectBle() {
+    g_muse.stop();
+    g.pushBleLog("disconnessione richiesta dall'utente");
 }
 
 /**
@@ -1119,8 +1144,66 @@ void drawHud(render::Renderer& r, const app::ControlState& st, const control::Zo
     y += 6.0f;
     line(L"su/giu sensibilita'   sin/des tolleranza   S smoothing   L hold   R reset",
          {0.45f, 0.48f, 0.55f, 1.0f}, 12.0f);
-    line(L"P sessione registrata   D schermo   H pannello   ESC esce",
+    line(L"P sessione registrata   D schermo   H pannello   B bluetooth   ESC esce",
          {0.45f, 0.48f, 0.55f, 1.0f}, 12.0f);
+}
+
+/**
+ * Modale di gestione Bluetooth (tasto B): stato della connessione e due
+ * azioni a comando (C riconnetti, X disconnetti), invece del solo testo
+ * passivo del pannello diagnostico. Sopra a tutto il resto, sfondo scurito.
+ */
+void drawBleModal(render::Renderer& r, const app::ControlState& st) {
+    const auto  win = r.size();
+    const float cx  = win.width * 0.5f;
+    const float cy  = win.height * 0.5f;
+    const float w   = std::min(520.0f, win.width * 0.7f);
+    const float h   = 260.0f;
+
+    r.fillRect(render::rect(0, 0, win.width, win.height), {0.0f, 0.0f, 0.0f, 0.6f});
+
+    const render::Rect box = render::rect(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2);
+    r.fillRect(box, kPanel, 20.0f);
+    r.drawRectOutline(box, {kAccent.r, kAccent.g, kAccent.b, 0.35f}, 1.5f, 20.0f);
+
+    float y = box.top + 24.0f;
+    r.drawText(L"Bluetooth", render::rect(box.left, y, box.right, y + 40),
+               26.0f, kInk, render::TextAlign::Center, true);
+    y += 60.0f;
+
+    if (st.replaying) {
+        r.drawText(L"Sorgente: dati simulati/riproduzione",
+                   render::rect(box.left, y, box.right, y + 24), 16.0f, kAccent,
+                   render::TextAlign::Center);
+        y += 30.0f;
+        r.drawText(L"C torna alla fascia reale", render::rect(box.left, y, box.right, y + 20),
+                   13.0f, kMuted, render::TextAlign::Center);
+    } else {
+        const wchar_t* bleNames[] = {L"Disconnesso", L"Ricerca in corso", L"Connessione in corso",
+                                     L"Streaming"};
+        const int bs = std::clamp(st.bleState, 0, 3);
+        const render::Color stColor = (bs == 3) ? kOk : (bs == 0 ? kBad : kWarn);
+        r.drawText(std::wstring(L"Stato: ") + bleNames[bs],
+                   render::rect(box.left, y, box.right, y + 26), 17.0f, stColor,
+                   render::TextAlign::Center, true);
+        y += 36.0f;
+
+        const std::string name = g_muse.deviceName();
+        if (!name.empty()) {
+            const std::wstring wname(name.begin(), name.end());
+            r.drawText(L"Dispositivo: " + wname, render::rect(box.left, y, box.right, y + 22),
+                       14.0f, kMuted, render::TextAlign::Center);
+            y += 28.0f;
+        }
+    }
+
+    y = box.bottom - 70.0f;
+    r.drawText(L"C connetti/riconnetti      X disconnetti",
+               render::rect(box.left, y, box.right, y + 24), 15.0f, kInk,
+               render::TextAlign::Center, true);
+    y += 30.0f;
+    r.drawText(L"ESC chiude", render::rect(box.left, y, box.right, y + 18), 12.0f, kMuted,
+               render::TextAlign::Center);
 }
 
 // ---------------------------------------------------------------------------
@@ -1254,6 +1337,13 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
             switch (wp) {
                 case VK_ESCAPE:
+                    // La modale si chiude con lo stesso tasto che chiude tutto
+                    // il resto: se e' aperta lo intercetta lei, altrimenti si
+                    // chiude il programma.
+                    if (g.bleModalVisible.load(std::memory_order_relaxed)) {
+                        g.bleModalVisible.store(false, std::memory_order_relaxed);
+                        return 0;
+                    }
                     PostMessageW(g.opHwnd ? g.opHwnd : hwnd, WM_CLOSE, 0, 0);
                     return 0;
                 case VK_RETURN: {
@@ -1283,6 +1373,16 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 case 'H':
                     g.hudVisible.store(!g.hudVisible.load(std::memory_order_relaxed),
                                        std::memory_order_relaxed);
+                    return 0;
+                case 'B':
+                    g.bleModalVisible.store(!g.bleModalVisible.load(std::memory_order_relaxed),
+                                            std::memory_order_relaxed);
+                    return 0;
+                case 'C':
+                    if (g.bleModalVisible.load(std::memory_order_relaxed)) reconnectBle();
+                    return 0;
+                case 'X':
+                    if (g.bleModalVisible.load(std::memory_order_relaxed)) disconnectBle();
                     return 0;
 
                 // --- taratura dal vivo ---
@@ -1729,6 +1829,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
         drawHud(renderer, st, probe, &cf, control::Tunables{});
         drawScreenPickerPanel(renderer, 0);
         drawScreenPicker(renderer, 0);
+        drawBleModal(renderer, st);
         const bool drawn = renderer.end();
 
         renderer.shutdown();
@@ -1923,6 +2024,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
 
         if (choosing) {
             drawScreenPickerPanel(renderer, g.candidate.load(std::memory_order_relaxed));
+        }
+
+        if (g.bleModalVisible.load(std::memory_order_relaxed) && !choosing) {
+            drawBleModal(renderer, st);
         }
 
         renderer.end();

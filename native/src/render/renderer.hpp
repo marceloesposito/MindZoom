@@ -70,6 +70,18 @@ public:
     /** Decodifica <dir>/1.jpg .. <dir>/N.jpg (o .webp/.png). Una volta sola. */
     bool loadSprites(const std::wstring& dir, int count);
 
+    /**
+     * Registra un font impacchettato accanto all'eseguibile presso il sistema
+     * (per processo), cosi' drawText lo trova per nome. Se manca o il backend
+     * non la supporta (solo macOS per ora), drawText ripiega sul font di
+     * sistema: mai fatale.
+     *
+     * Oggi non serve: i due caratteri in uso (Iowan Old Style per gli accenti,
+     * Helvetica Neue per il corpo) sono entrambi di sistema. Resta per quando
+     * servisse di nuovo un font non presente su ogni macchina.
+     */
+    bool loadFonts(const std::wstring& dir);
+
     std::size_t spriteCount() const noexcept;
 
 private:
@@ -119,6 +131,52 @@ public:
     void drawRectOutline(Rect r, Color color, float stroke, float radius = 0.0f);
     void drawText(const std::wstring& text, Rect box, float fontSize,
                   Color color, TextAlign align = TextAlign::Center, bool bold = false);
+
+    /**
+     * Una riga sola (niente a-capo), il cui centro tipografico - non il
+     * riquadro che la contiene - coincide con `center`. drawText ancora al
+     * TOP del box passato: bene per i paragrafi, sbagliato per una cifra dentro
+     * un pallino o l'etichetta di un pulsante, dove l'occhio nota lo scarto.
+     */
+    void drawTextCentered(const std::wstring& text, Point center, float fontSize, Color color,
+                          bool bold = false);
+
+    // drawText/drawTextCentered disegnano nel font d'accento (Iowan Old Style):
+    // intestazioni, cifre, etichette dei pulsanti. drawTextBody e la sua
+    // variante centrata usano invece un sans neutro (Helvetica Neue) per il
+    // corpo del testo - stessa idea dell'accoppiamento titolo/corpo dello
+    // stile svizzero, due famiglie con un ruolo ciascuna invece di una sola
+    // ovunque.
+    void drawTextBody(const std::wstring& text, Rect box, float fontSize, Color color,
+                      TextAlign align = TextAlign::Center, bool bold = false);
+    void drawTextBodyCentered(const std::wstring& text, Point center, float fontSize, Color color,
+                              bool bold = false);
+
+    // --- Primitive "avanzate", finora solo macOS: nulla nel backend Windows le
+    // chiama ancora (main.cpp non e' stato portato), quindi non serve una
+    // controparte Direct2D subito. Quando shell_win32 passera' a experience.cpp
+    // andranno implementate anche li'.
+
+    /** Riempimento con sfumatura verticale (top -> bottom), stesso arrotondamento di fillRect. */
+    void fillRectGradient(Rect r, Color top, Color bottom, float radius = 0.0f);
+
+    /** Come fillRect, ma con un'ombra morbida dietro (blur gaussiano, offset in coordinate finestra). */
+    void fillRectShadow(Rect r, Color color, float radius, Color shadowColor, float shadowBlur,
+                        Point shadowOffset);
+
+    void fillCircle(Point center, float radius, Color color);
+
+    /**
+     * Cerchio con sfumatura radiale a tre tappe (centro / meta' / bordo): il
+     * trattamento "alla Siri" riservato ai pochi elementi che lo meritano - i
+     * cerchi animati della calibrazione, non la grafica ovunque.
+     */
+    void fillCircleGradient(Point center, float radius, Color inner, Color mid, Color outer);
+
+    /** Arco tratteggiato spesso, per indicatori circolari di progresso. Angoli in gradi,
+     *  0 = verso destra, crescenti in senso orario (coerente con y verso il basso). */
+    void drawArc(Point center, float radius, float startDeg, float endDeg, float thickness,
+                Color color);
 
     void drawLine(Point a, Point b, Color color, float stroke = 1.0f);
     /** Spezzata: una geometria per chiamata, trascurabile a qualche centinaio di punti. */

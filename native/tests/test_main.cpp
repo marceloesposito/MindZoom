@@ -75,11 +75,18 @@ void feedPhase(control::Calibration& cal, double centro, double rumore = 0.0) {
     }
 }
 
+/** Consuma la pausa Prepare (tempo, non campioni) finche' non passa da sola. */
+void passPrepare(control::Calibration& cal) {
+    const auto partenza = cal.stage();
+    for (int i = 0; i < 2000 && cal.stage() == partenza; ++i) cal.tick(kDt, true);
+}
+
 /** Porta una calibrazione a termine con estremi noti, senza passare dal segnale. */
 void calibrateTo(control::Calibration& cal, double lo, double hi) {
-    cal.start();          // -> CONCENTRATE
-    feedPhase(cal, hi);   // -> RELAX
-    feedPhase(cal, lo);   // -> Done oppure Failed
+    cal.start();          // -> CONCENTRATE (bersaglio che cresce, ora la prima fase)
+    feedPhase(cal, hi);   // registra absMax -> PREPARE
+    passPrepare(cal);     // -> RELAX
+    feedPhase(cal, lo);   // registra absMin -> Done oppure Failed
 }
 
 /**
@@ -202,7 +209,8 @@ void testCalibration() {
     check(cal.stage() == control::CalibStage::Intro, "si parte dalla schermata introduttiva");
 
     cal.start();
-    check(cal.stage() == control::CalibStage::Concentrate, "start -> fase di concentrazione");
+    check(cal.stage() == control::CalibStage::Concentrate,
+          "start -> fase di concentrazione (bersaglio che cresce, ora la prima)");
 
     // I primi campioni sono il transitorio di reazione al prompt: non contano.
     for (int i = 0; i < 4; ++i) { cal.sample(99.0); cal.tick(kDt, true); }
@@ -210,14 +218,18 @@ void testCalibration() {
           "quattro campioni non bastano a chiudere la fase");
 
     feedPhase(cal, 2.0);
+    check(cal.stage() == control::CalibStage::Prepare,
+          "raccolti abbastanza campioni indipendenti si passa alla pausa");
+
+    passPrepare(cal);
     check(cal.stage() == control::CalibStage::Relax,
-          "raccolti i campioni richiesti si passa al rilassamento");
+          "la pausa finisce da sola e si passa al rilassamento");
 
     feedPhase(cal, 1.0);
     check(cal.stage() == control::CalibStage::Done, "la calibrazione si chiude da sola");
     check(cal.valid(), "calibrazione valida");
-    nearly(cal.absMax(), 2.0, 1e-9, "absMax dal picco registrato (scarta il transitorio)");
-    nearly(cal.absMin(), 1.0, 1e-9, "absMin dal minimo registrato");
+    nearly(cal.absMax(), 2.0, 1e-9, "absMax dal picco registrato in concentrazione (scarta il transitorio)");
+    nearly(cal.absMin(), 1.0, 1e-9, "absMin dal minimo registrato in relax");
     nearly(cal.neutral(), 1.5, 1e-9, "neutro M = media dei due estremi");
     nearly(cal.localMax(), 1.5, 1e-9, "la banda locale parte dal neutro");
     nearly(cal.localMin(), 1.5, 1e-9, "banda locale inizializzata su M");
@@ -314,18 +326,26 @@ void testCalibrationStatistics() {
               "fasi sovrapposte -> separazione sotto la soglia");
     }
 
-    // La barra deve arrivare a 1 solo quando la fase si chiude davvero.
+    // La barra deve arrivare a 1 solo quando la fase si chiude davvero, senza
+    // scatti. Il ritmo e' garantito solo in Relax, che chiude a un bordo di
+    // ciclo del respiro guidato: Concentrate (ora la prima fase) non ha questo
+    // vincolo e puo' chiudersi in un solo tick appena il traguardo statistico
+    // e' pieno - e' la scelta di design, vedi Calibration::tick. Si porta
+    // quindi la calibrazione fino a Relax e si misura li'.
     {
         control::Calibration cal;
-        cal.start();
+        cal.start();            // -> CONCENTRATE
+        feedPhase(cal, 2.0);    // -> PREPARE
+        passPrepare(cal);       // -> RELAX
+
         double maxPrima = 0.0;
         const auto partenza = cal.stage();
         for (int i = 0; i < 2000 && cal.stage() == partenza; ++i) {
-            cal.sample(2.0);
+            cal.sample(1.0);
             maxPrima = std::max(maxPrima, cal.progress());
             cal.tick(kDt, true);
         }
-        check(cal.stage() == control::CalibStage::Relax, "la fase si e' chiusa");
+        check(cal.stage() == control::CalibStage::Done, "la fase (relax) si e' chiusa");
         check(maxPrima < 1.0 + 1e-9, "la barra non supera mai il 100%");
         check(maxPrima > 0.9, "la barra arriva quasi a fondo prima di chiudere");
     }
@@ -334,33 +354,54 @@ void testCalibrationStatistics() {
 void testCalibrationFailures() {
     group("5. Fallimenti di calibrazione");
 
+    // La modulazione debole non fa piu' fallire: lo span misurato viene
+    // allargato al minimo invece di rimandare la persona a ricominciare da
+    // capo - vedi Calibration::finalize.
     control::Calibration narrow;
     calibrateTo(narrow, 1.00, 1.01);   // span 0.01 su M~1 -> sotto kCalibMinSpanRel
-    check(narrow.stage() == control::CalibStage::Failed, "span troppo stretta -> fallimento");
-    check(!narrow.valid(), "calibrazione fallita non e' valida");
-    nearly(narrow.velocity(5.0, kDt, kTune), 0.0, 1e-12,
-           "calibrazione fallita -> velocita' nulla");
+    check(narrow.stage() == control::CalibStage::Done,
+          "span troppo stretta -> si chiude comunque, niente piu' fallimento bloccante");
+    check(narrow.valid(), "calibrazione valida anche con modulazione minima");
+    check(narrow.absMax() - narrow.absMin() > 0.01 + 1e-9,
+          "lo span misurato viene allargato al minimo, non lasciato com'era");
 
-    // Nessun campione: la rete di sicurezza deve chiudere, altrimenti in
-    // un'installazione pubblica la barra resterebbe ferma per sempre.
-    control::Calibration silent;
-    silent.start();
-    silent.tick(config::kCalibMaxPhaseS + 1.0, true);
-    check(silent.stage() == control::CalibStage::Failed,
-          "nessun campione utile entro il tempo massimo -> fallimento");
-
-    // Due fasi indistinguibili: la seconda non si chiude mai da sola e deve
-    // cadere nella rete di sicurezza con il messaggio giusto.
+    // Due fasi indistinguibili: non falliscono piu', si chiudono comunque col
+    // meglio raccolto entro il tempo massimo per fase.
     control::Calibration piatta;
-    piatta.start();
+    piatta.start();                     // -> CONCENTRATE
     feedPhase(piatta, 1.0, 0.4);
-    check(piatta.stage() == control::CalibStage::Relax, "prima fase chiusa");
+    passPrepare(piatta);
+    check(piatta.stage() == control::CalibStage::Relax, "prima fase chiusa, si passa al relax");
     for (int i = 0; i < 6000 && piatta.stage() == control::CalibStage::Relax; ++i) {
-        piatta.sample(1.0 + 0.4 * ((i % 7) / 7.0 - 0.5));
+        piatta.sample(1.0 + 0.4 * ((i % 7) / 7.0 - 0.5));   // stessa distribuzione: nessuna vera differenza
         piatta.tick(kDt, true);
     }
-    check(piatta.stage() == control::CalibStage::Failed,
-          "fasi non distinguibili -> fallimento invece di attesa infinita");
+    check(piatta.stage() == control::CalibStage::Done,
+          "fasi non distinguibili -> si chiude comunque invece di attesa infinita");
+    check(piatta.valid(), "anche con modulazione debole la calibrazione e' valida");
+
+    // L'UNICO fallimento rimasto: zero campioni utilizzabili per l'intera
+    // calibrazione, entrambe le fasi scadute per il tempo massimo.
+    control::Calibration silent;
+    silent.start();                                     // -> CONCENTRATE
+    silent.tick(config::kCalibMaxPhaseS + 1.0, true);    // timeout -> avanza comunque
+    check(silent.stage() == control::CalibStage::Prepare,
+          "concentrazione senza campioni: il tempo massimo fa avanzare, non fallire");
+    silent.tick(config::kCalibPrepareS + 1.0, true);     // pausa finita -> RELAX
+    silent.tick(config::kCalibMaxPhaseS + 1.0, true);    // timeout, ancora zero campioni
+    check(silent.stage() == control::CalibStage::Failed,
+          "zero campioni per l'intera calibrazione -> unico fallimento rimasto");
+    check(!silent.valid(), "calibrazione fallita non e' valida");
+    nearly(silent.velocity(5.0, kDt, kTune), 0.0, 1e-12,
+           "calibrazione fallita -> velocita' nulla");
+
+    // Il ripiego esplicito (tasto M): sostituisce gli estremi mai misurati con
+    // una banda generica, e resta distinguibile da una calibrazione vera.
+    silent.useFallbackProfile();
+    check(silent.stage() == control::CalibStage::Done, "il ripiego chiude la calibrazione");
+    check(silent.valid(), "il ripiego e' valido");
+    check(silent.usingFallback(), "il ripiego si dichiara come tale");
+    check(silent.absMax() > silent.absMin(), "il ripiego da' comunque una banda utilizzabile");
 }
 
 void testExtremaVelocity() {

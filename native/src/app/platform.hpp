@@ -39,4 +39,14 @@ std::vector<Display> enumerateDisplaysNative();
  */
 std::FILE* openChoiceFile(bool forWrite);
 
+/**
+ * Cartella dell'eseguibile in corso. Assets e registrazioni vivono accanto ad
+ * esso. Usata solo dallo shell macOS: main.cpp (Windows) ha la sua versione
+ * locale basata su GetModuleFileNameW.
+ */
+std::wstring exeDirectory();
+
+/** Crea `path` se non esiste gia'. Non fallisce se esiste gia'. */
+void ensureDirectory(const std::wstring& path);
+
 } // namespace mz::app::platform
