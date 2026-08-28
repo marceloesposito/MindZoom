@@ -354,7 +354,16 @@ void dspThread() {
     // e' pronta (velocity() torna 0 finche' non le si e' adottata una banda).
     const bool adattiva = g.adaptiveBand.load(std::memory_order_relaxed);
 
-    auto phase = adattiva ? control::Phase::Interactive : control::Phase::Onboarding;
+    // Con la banda adattiva l'esperienza NON passa mai da Onboarding: e' la
+    // fase da cui dipende il disegno della scheda di calibrazione. Va usata
+    // ovunque si riparta da capo (avvio, RestartSession, ricalibrazione),
+    // altrimenti un solo punto dimenticato rimette in scena una calibrazione
+    // che in questa modalita' non esiste - preso proprio cosi': --riproduci
+    // emette RestartSession e faceva ricomparire la scheda.
+    const auto faseIniziale =
+        adattiva ? control::Phase::Interactive : control::Phase::Onboarding;
+
+    auto phase = faseIniziale;
     double phaseElapsed = 0.0;
     double doneHold     = 0.0;
     double velocityRaw  = 0.0;
@@ -387,9 +396,14 @@ void dspThread() {
             // calibrazione non verrebbe mai mostrata. Dall'introduzione, unico
             // altro punto che emette StartCalibration, la fase e' gia' questa
             // e la riga non cambia nulla.
-            phase        = control::Phase::Onboarding;
+            phase        = faseIniziale;
             phaseElapsed = 0.0;
             doneHold     = 0.0;
+            // In modalita' adattiva "ricalibrare" vuol dire dimenticare la
+            // banda e rifare il riscaldamento: non c'e' nessuna calibrazione
+            // da rifare, ma la richiesta ha comunque senso (un'altra persona
+            // che prova dopo, la fascia sistemata meglio).
+            if (adattiva) adaptive.reset();
         } else if (cmd == app::Command::UseFallbackProfile) {
             calib.useFallbackProfile();
         } else if (cmd == app::Command::RestartSession) {
@@ -399,11 +413,13 @@ void dspThread() {
             smoother.reset();
             velocityRaw = 0.0;
             velocitySmooth.reset();
-            phase        = control::Phase::Onboarding;
+            phase        = faseIniziale;
             phaseElapsed = 0.0;
             doneHold     = 0.0;
             gatedWindows = 0;
             contactOk    = false;
+            // Cambia la sorgente del segnale: la banda vecchia non vale piu'.
+            if (adattiva) adaptive.reset();
         }
 
         const control::Tunables tune = g.tunables.read();
