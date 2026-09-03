@@ -1,8 +1,11 @@
 // Controparte macOS di platform_win32.cpp: enumerare gli schermi e trovare dove
 // si scrive la scelta.
 //
-// ATTENZIONE: non e' mai stato compilato. Scritto su Windows, dove non esiste un
-// toolchain Objective-C.
+// enumerateDisplaysNative() e' verificata dal test "Enumerazione degli schermi"
+// (tests/test_main.cpp): su questa macchina rileva correttamente 1 schermo. Non
+// era mai stata usata dallo shell macOS pero' (nessuna modalita' a due schermi
+// finche' non l'ha portata experience.cpp/shell_macos.mm) - la firma resta la
+// stessa di platform_win32.cpp apposta.
 
 #import <Cocoa/Cocoa.h>
 #include <mach-o/dyld.h>

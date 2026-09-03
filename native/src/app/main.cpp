@@ -1752,12 +1752,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
     // sono ancora ne carica zero. Il risultato non è un errore, è un programma
     // che gira senza mostrare nulla.
     const std::wstring assets = exeDirectory() + L"\\assets";
-    if (!graphics.loadSprites(assets, config::kTotalImages)) {
+    if (!graphics.loadSprites(assets, config::kScaleLabels.data(), config::kTotalImages)) {
         if (!selfTest) {
+            std::wstring nomi;
+            for (int i = 0; i < config::kTotalImages; ++i) {
+                if (i > 0) nomi += L", ";
+                nomi += std::to_wstring(config::kScaleLabels[i]);
+            }
             MessageBoxW(hwnd,
                         (L"Immagini non caricate da:\n" + assets +
-                         L"\n\nServono 1..12 in .webp oppure .png.\n\n"
-                         L"Se i file ci sono, probabilmente manca il codec WebP: "
+                         L"\n\nServono " + std::to_wstring(config::kTotalImages) +
+                         L" immagini in .webp oppure .png, chiamate con l'ingrandimento: " +
+                         nomi +
+                         L".\n\nSe i file ci sono, probabilmente manca il codec WebP: "
                          L"installa \"Estensioni immagini WebP\" dal Microsoft Store "
                          L"oppure affianca gli stessi file convertiti in .png.").c_str(),
                         L"Mind Zoom", MB_ICONERROR);

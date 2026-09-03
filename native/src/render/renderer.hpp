@@ -67,8 +67,14 @@ public:
     bool init();
     void shutdown();
 
-    /** Decodifica <dir>/1.jpg .. <dir>/N.jpg (o .webp/.png). Una volta sola. */
-    bool loadSprites(const std::wstring& dir, int count);
+    /**
+     * Decodifica <dir>/<magnitudes[0]>.jpg .. <dir>/<magnitudes[count-1]>.jpg
+     * (o .webp/.png), nell'ordine dell'array. Una volta sola. I nomi sono
+     * l'ingrandimento (config::kScaleLabels), non un indice progressivo: cosi'
+     * la cartella assets si autodocumenta invece di essere una sequenza opaca
+     * 1..N leggibile solo insieme al codice.
+     */
+    bool loadSprites(const std::wstring& dir, const int* magnitudes, int count);
 
     /**
      * Registra un font impacchettato accanto all'eseguibile presso il sistema
@@ -165,6 +171,21 @@ public:
                         Point shadowOffset);
 
     void fillCircle(Point center, float radius, Color color);
+
+    /**
+     * Molti rettangolini tutti dello STESSO colore, in una chiamata sola.
+     *
+     * Esiste per il campo di puntini della pagina d'ingresso, che ne disegna
+     * decine di migliaia per fotogramma. Passando da fillCircle il costo non e'
+     * il riempimento - i puntini sono di uno o due pixel - ma il contorno: un
+     * colore da costruire e un tracciato da avviare per ognuno. Raggruppandoli
+     * per colore quel contorno si paga una volta per gruppo invece che una
+     * volta per puntino.
+     *
+     * A queste dimensioni un quadratino e un cerchietto sono indistinguibili:
+     * la forma si perde comunque nell'antialiasing.
+     */
+    void fillRects(const Rect* rects, int count, Color color);
 
     /**
      * Cerchio con sfumatura radiale a tre tappe (centro / meta' / bordo): il

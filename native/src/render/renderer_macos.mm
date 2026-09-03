@@ -3,24 +3,34 @@
 // Stessa interfaccia del backend Windows (render/renderer.hpp), stessa
 // semantica, stesse primitive. Chi disegna non cambia una riga.
 //
-// Scelta di Core Graphics e non Metal: il carico e' due quad texturati in
-// crossfade piu' qualche primitiva 2D, cioe' esattamente cio' per cui Direct2D
-// era stato scelto sull'altra sponda. Metal chiederebbe shader, pipeline state e
-// un command buffer per fare la stessa cosa.
+// Il disegno e' diviso in due, e la divisione e' la ragione per cui l'app sta
+// nel fotogramma:
+//
+//   - la FOTO sta su due CALayer e la compone la GPU (vedi Renderer::Impl).
+//     E' un'immagine da 3190x3190 ridimensionata a ogni fotogramma, due volte
+//     per via del crossfade: su CPU costava 8-15 fps, su GPU e' gratis.
+//   - TUTTO IL RESTO (testo, pannelli, barra della scala) si disegna con Core
+//     Graphics in un contesto bitmap fuori schermo, che a end() diventa il
+//     contenuto di un layer sopra la foto. E' poca roba, sta larga in CPU, e
+//     lascia intatte le primitive gia' scritte: chi disegna non cambia una riga.
+//
+// Metal non serve: la GPU la si usa gia' tutta tramite Core Animation, senza
+// shader, pipeline state ne' command buffer.
 //
 // Il modello begin/end non e' quello di NSView, che disegna quando gli viene
-// chiesto: qui si disegna in un contesto bitmap fuori schermo e a end() lo si
-// consegna al layer della vista. Cosi' il ciclo di gioco resta padrone del
-// tempo, come su Windows.
+// chiesto: il ciclo di gioco resta padrone del tempo, come su Windows.
 //
-// ATTENZIONE: questo file non e' mai stato compilato. E' stato scritto su
-// Windows, dove non esiste un toolchain Objective-C. Va considerato un punto di
-// partenza verificato nella logica ma non nella sintassi.
+// Due trappole di prestazioni sono documentate dove si risolvono, e sono
+// entrambe costate misure col profiler: materializeSprite() (Image I/O tiene le
+// immagini "pigre" e le ridecodifica a ogni disegno) e createContext() (lo
+// spazio colore del contesto deve essere quello dello schermo, o Core Animation
+// converte l'intera bitmap a ogni fotogramma).
 
 #import <Cocoa/Cocoa.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <CoreText/CoreText.h>
 #import <ImageIO/ImageIO.h>
+#import <QuartzCore/QuartzCore.h>
 
 #include "render/renderer.hpp"
 
@@ -73,6 +83,25 @@ CTFontRef createTextFont(CGFloat size, CGFloat weight) {
 }
 
 /**
+ * CTFontCreateWithName fa un lookup/match nel catalogo dei font di sistema:
+ * non e' gratis, e va rifatto la stessa identica ricerca ogni volta che si
+ * disegna testo con la stessa taglia. Le combinazioni (size, weight) distinte
+ * usate nell'app sono poche (una manciata), quindi si tiene una cache
+ * per-processo che le crea una sola volta: mai svuotata, ma il numero di
+ * voci e' limitato a priori dal set di taglie che il codice di disegno usa.
+ */
+CTFontRef cachedTextFont(CGFloat size, CGFloat weight) {
+    struct Entry { CGFloat size; CGFloat weight; CTFontRef font; };
+    static std::vector<Entry> cache;
+    for (const auto& e : cache) {
+        if (e.size == size && e.weight == weight) return e.font;
+    }
+    CTFontRef font = createTextFont(size, weight);
+    cache.push_back({size, weight, font});
+    return font;
+}
+
+/**
  * Helvetica Neue: la controparte umanistica di Segoe UI, presente su ogni
  * macOS - e il font da cui e' nato lo stile svizzero (Akzidenz-Grotesk prima,
  * Helvetica poi). Fa da corpo neutro sotto le intestazioni in Iowan Old Style:
@@ -85,9 +114,38 @@ CTFontRef createBodyFont(CGFloat size, bool bold) {
                                 size, nullptr);
 }
 
+/** Stessa cache di cachedTextFont, per il font di corpo. */
+CTFontRef cachedBodyFont(CGFloat size, bool bold) {
+    struct Entry { CGFloat size; bool bold; CTFontRef font; };
+    static std::vector<Entry> cache;
+    for (const auto& e : cache) {
+        if (e.size == size && e.bold == bold) return e.font;
+    }
+    CTFontRef font = createBodyFont(size, bold);
+    cache.push_back({size, bold, font});
+    return font;
+}
+
+/**
+ * I colori dell'applicazione sono scritti in sRGB, ma il contesto ora vive
+ * nello spazio dello schermo (vedi createContext): CGContextSetRGB* li
+ * interpreterebbe come componenti dello spazio del contesto, e su un pannello
+ * piu' ampio dell'sRGB uscirebbero piu' saturi. Si passa quindi un CGColor
+ * esplicitamente sRGB e la conversione la fa Core Graphics, una volta per
+ * chiamata di disegno invece che su tutti i pixel del fotogramma.
+ */
+CGColorSpaceRef srgbSpace() {
+    static CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    return cs;
+}
+
 void setColor(CGContextRef ctx, Color c, bool fill) {
-    if (fill) CGContextSetRGBFillColor(ctx, c.r, c.g, c.b, c.a);
-    else      CGContextSetRGBStrokeColor(ctx, c.r, c.g, c.b, c.a);
+    const CGFloat comp[4] = {c.r, c.g, c.b, c.a};
+    CGColorRef col = CGColorCreate(srgbSpace(), comp);
+    if (!col) return;
+    if (fill) CGContextSetFillColorWithColor(ctx, col);
+    else      CGContextSetStrokeColorWithColor(ctx, col);
+    CGColorRelease(col);
 }
 
 /** Rettangolo con angoli tondi, come FillRoundedRectangle di D2D. */
@@ -138,19 +196,91 @@ void GraphicsCore::shutdown() { impl_->release(); }
 
 std::size_t GraphicsCore::spriteCount() const noexcept { return impl_->sources.size(); }
 
-bool GraphicsCore::loadSprites(const std::wstring& dir, int count) {
+// Ridisegna l'immagine appena letta da Image I/O dentro un bitmap nostro, e
+// restituisce una CGImage che punta a quel bitmap.
+//
+// Serve perche' la CGImage che esce da CGImageSourceCreateImageAtIndex resta
+// legata al file compresso: non possiede i pixel, possiede un "provider" che
+// chiama Image I/O per farsi decodificare al volo la porzione che serve, e i
+// pixel decodificati finiscono in una cache di sistema a capienza limitata. Le
+// nostre otto foto fanno 3190x3190 l'una, cioe' ~40 MB di RGBA a testa e ~326
+// MB in tutto: la cache di Image I/O non ci sta nemmeno vicino, quindi butta
+// via il decodificato subito e lo rifa' al disegno dopo. Con lo zoom continuo
+// il disegno dopo e' il frame dopo, sempre. Misurato con `sample` sul processo
+// vivo: sotto CGContextDrawImage c'era img_data_lock ->
+// WebPReadPlugin::decodeImageImp -> VP8DecodeMB, cioe' il decode VP8 completo
+// dentro la chiamata di disegno, a ogni fotogramma e per due sprite (il
+// crossfade), raddoppiati quando c'e' anche la finestra di proiezione.
+// kCGImageSourceShouldCacheImmediately non basta: forza il primo decode, ma non
+// impedisce l'eviction, e infatti nel secondo `sample` VP8DecodeMB era ancora
+// in cima.
+//
+// Un bitmap creato da noi invece non e' evictabile da nessuno: i pixel sono
+// nostri e restano finche' non li rilasciamo. Il formato e' scelto identico a
+// quello del contesto di rendering (32 bit little-endian, sRGB), cosi' il draw
+// e' una copia scalata e basta - senza il rimescolamento di canali che si
+// vedeva come vConvert_PermuteChannels_ARGB8888 in vImage.
+//
+// "Identico" va preso alla lettera, alfa compreso. Le foto sono opache e il
+// primo tentativo usava NoneSkipFirst (xRGB), che in memoria ha lo stesso
+// layout di PremultipliedFirst e sembrava gratis in piu': niente alfa da
+// moltiplicare. Non lo era. Il contesto di destinazione e' PremultipliedFirst,
+// quindi Core Graphics si ricostruiva il canale alfa a ogni disegno - nel
+// `sample` si vedeva come ripc_AcquireRIPImageData -> CGSImageDataLock ->
+// vImageOverwriteChannelsWithScalar_ARGB8888, cioe' una passata su tutti e 10
+// i megapixel per riempire di 255 un canale, per sprite e per fotogramma: da
+// sola il 41% del costo del disegno. Meglio pagare l'alfa una volta qui.
+//
+// Si tiene la risoluzione piena apposta: lo zoom arriva a 1.5x sulla scala
+// "cover" (control/zoom.cpp), che su uno schermo da 2560 px larghi vorrebbe
+// 3840 px di sorgente - piu' dei 3190 che abbiamo. Ridurre le foto si vedrebbe
+// proprio nel momento di massimo ingrandimento, che e' il punto dell'app.
+static CGImageRef materializeSprite(CGImageRef lazy) {
+    const std::size_t w = CGImageGetWidth(lazy);
+    const std::size_t h = CGImageGetHeight(lazy);
+    if (w == 0 || h == 0) return nullptr;
+
+    // Si resta nello spazio colore della foto stessa: cosi' questo passaggio
+    // non trasforma nemmeno un pixel, e' solo una decompressione. Convertire
+    // qui in sRGB cambierebbe i valori dell'immagine al microscopio, che deve
+    // restare quella che e'.
+    CGColorSpaceRef cs = nullptr;
+    CGColorSpaceRef own = CGImageGetColorSpace(lazy);
+    if (own && CGColorSpaceGetModel(own) == kCGColorSpaceModelRGB) {
+        cs = CGColorSpaceRetain(own);
+    }
+    if (!cs) cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+
+    CGContextRef bmp = CGBitmapContextCreate(nullptr, w, h, 8, 0, cs,
+                                             kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Big);
+    // Le foto sono opache ma il bitmap nasce trasparente: senza questo, i bordi
+    // che il draw non copre resterebbero a alfa 0.
+    if (bmp) CGContextSetAlpha(bmp, 1.0);
+    CGColorSpaceRelease(cs);
+    if (!bmp) return nullptr;
+
+    // Un solo decode, a scala 1:1, senza ricampionamento.
+    CGContextSetInterpolationQuality(bmp, kCGInterpolationNone);
+    CGContextDrawImage(bmp, CGRectMake(0, 0, static_cast<CGFloat>(w), static_cast<CGFloat>(h)), lazy);
+
+    CGImageRef solid = CGBitmapContextCreateImage(bmp);
+    CGContextRelease(bmp);
+    return solid;
+}
+
+bool GraphicsCore::loadSprites(const std::wstring& dir, const int* magnitudes, int count) {
     auto& d = *impl_;
     d.release();
     d.sources.reserve(static_cast<std::size_t>(count));
 
-    for (int i = 1; i <= count; ++i) {
+    for (int i = 0; i < count; ++i) {
         CGImageRef image = nullptr;
 
         // Stesso ordine di preferenza del backend Windows: JPEG per primo. Su
         // macOS il WebP e' decodificabile da Image I/O solo da Big Sur in avanti,
         // quindi la stessa ragione di prudenza vale anche qui.
         for (const wchar_t* ext : {L".jpg", L".webp", L".png"}) {
-            const std::wstring path = dir + L"/" + std::to_wstring(i) + ext;
+            const std::wstring path = dir + L"/" + std::to_wstring(magnitudes[i]) + ext;
             CFStringRef cfPath = toCFString(path);
             if (!cfPath) continue;
 
@@ -164,7 +294,14 @@ bool GraphicsCore::loadSprites(const std::wstring& dir, int count) {
             if (!src) continue;
 
             if (CGImageSourceGetCount(src) > 0) {
-                image = CGImageSourceCreateImageAtIndex(src, 0, nullptr);
+                CGImageRef lazy = CGImageSourceCreateImageAtIndex(src, 0, nullptr);
+                if (lazy) {
+                    // Da qui in poi il file compresso non serve piu': i pixel
+                    // sono in un bitmap nostro. Vedi materializeSprite() per il
+                    // perche' non basti lasciare fare a Image I/O.
+                    image = materializeSprite(lazy);
+                    CGImageRelease(lazy);
+                }
             }
             CFRelease(src);
             if (image) break;
@@ -202,11 +339,34 @@ bool GraphicsCore::loadFonts(const std::wstring& dir) {
 // Renderer
 // ---------------------------------------------------------------------------
 
+// La foto non passa piu' per il contesto CPU: sta su due CALayer, e a ogni
+// fotogramma cambiano solo la geometria e l'opacita' di quei layer. Il
+// ridimensionamento lo fa la GPU in fase di composizione, gratis.
+//
+// Prima invece ogni fotogramma rifaceva su CPU il ricampionamento di una foto
+// da 3190x3190 (10,2 megapixel) fino alla dimensione dello schermo, due volte -
+// il crossfade ne disegna sempre due - con kCGInterpolationHigh. Nel `sample`
+// erano resample_horizontal/resample_vertical + argb32_image_mark_argb32, e
+// misurato col contatore in shell_macos.mm faceva 8-20 fps. Nessuna scelta di
+// formato pixel poteva salvarlo: il costo era proprio il filtraggio di 10
+// megapixel per sprite per fotogramma.
+//
+// Le foto vecchie (1024x768, vedi git) erano 13 volte piu' piccole ed e' per
+// questo che con quelle non si notava niente.
+//
+// L'albero dei layer, dal basso:
+//     view.layer                 sfondo (colore di begin())
+//       +- clipLayer[0] -> picLayer[0]     sprite attivo
+//       +- clipLayer[1] -> picLayer[1]     sprite successivo (crossfade)
+//       +- uiLayer                          testo/pannelli, dal contesto CPU
+// Il contesto CPU resta esattamente com'era per tutto il resto del disegno:
+// e' poca roba e va benissimo su CPU. Cambia solo che ora e' trasparente e fa
+// da velo sopra la foto, invece di essere l'intero fotogramma.
 struct Renderer::Impl {
     GraphicsCore* core = nullptr;
     NSView*       view = nil;
 
-    CGContextRef  ctx    = nullptr;   // bitmap fuori schermo
+    CGContextRef  ctx    = nullptr;   // bitmap fuori schermo, solo interfaccia
     unsigned      width  = 0;
     unsigned      height = 0;
     CGFloat       scale  = 1.0;       // fattore Retina
@@ -218,12 +378,66 @@ struct Renderer::Impl {
     // selftest per un problema che qui non esiste.
     std::size_t sprites = 0;
 
+    CALayer* uiLayer      = nil;
+    CALayer* clipLayer[2] = {nil, nil};
+    CALayer* picLayer[2]  = {nil, nil};
+    int      usedSprites  = 0;   // quanti sprite ha chiesto questo fotogramma
+
     void destroyContext() {
         if (ctx) { CGContextRelease(ctx); ctx = nullptr; }
     }
 
     bool createContext(unsigned w, unsigned h);
+    void buildLayers();
+    void layoutLayers();
 };
+
+// I layer si costruiscono una volta sola: dopo, a ogni fotogramma, si toccano
+// solo frame/opacity/contents.
+void Renderer::Impl::buildLayers() {
+    CALayer* root = view.layer;
+    if (!root || uiLayer) return;
+
+    // Si tiene la convenzione nativa di Core Animation (origine in basso a
+    // sinistra) e si converte a mano in un punto solo, invece di affidarsi a
+    // geometryFlipped: la vista e' flipped e le due cose si sommerebbero.
+    root.geometryFlipped = NO;
+    root.masksToBounds   = YES;
+
+    for (int i = 0; i < 2; ++i) {
+        picLayer[i] = [CALayer layer];
+        picLayer[i].anchorPoint  = CGPointZero;
+        picLayer[i].contentsGravity = kCAGravityResize;
+        // Trilinear: la foto e' quasi sempre rimpicciolita (3190 px su uno
+        // schermo da 2560), ed e' il caso in cui il mipmap si vede.
+        picLayer[i].minificationFilter  = kCAFilterTrilinear;
+        picLayer[i].magnificationFilter = kCAFilterLinear;
+
+        clipLayer[i] = [CALayer layer];
+        clipLayer[i].anchorPoint  = CGPointZero;
+        clipLayer[i].masksToBounds = YES;
+        clipLayer[i].hidden        = YES;
+        [clipLayer[i] addSublayer:picLayer[i]];
+        [root addSublayer:clipLayer[i]];
+    }
+
+    uiLayer = [CALayer layer];
+    uiLayer.anchorPoint = CGPointZero;
+    [root addSublayer:uiLayer];
+
+    layoutLayers();
+}
+
+void Renderer::Impl::layoutLayers() {
+    if (!uiLayer) return;
+    const CGRect b = CGRectMake(0, 0, width, height);
+    uiLayer.frame = b;
+    uiLayer.contentsScale = scale;
+    for (int i = 0; i < 2; ++i) {
+        picLayer[i].contentsScale  = scale;
+        clipLayer[i].contentsScale = scale;
+    }
+}
 
 Renderer::Renderer() : impl_(std::make_unique<Impl>()) {}
 Renderer::~Renderer() { impl_->destroyContext(); }
@@ -236,7 +450,25 @@ bool Renderer::Impl::createContext(unsigned w, unsigned h) {
     const std::size_t pw = static_cast<std::size_t>(width * scale);
     const std::size_t ph = static_cast<std::size_t>(height * scale);
 
-    CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    // Nello spazio colore dello schermo, non in sRGB. Il layer di Core
+    // Animation vuole i pixel nel profilo del pannello (qui "Color LCD"): se
+    // glieli si danno in sRGB, a ogni fotogramma converte lui l'intera bitmap
+    // sulla CPU. Nel `sample` era il 50% del tempo del thread principale -
+    // CA::Render::copy_image -> CGColorTransformConvertUsingCMSConverter ->
+    // vImageConvert_AnyToAny. Convertire qui una volta i pochi colori delle
+    // primitive (vedi setColor) invece che tutti i pixel a ogni fotogramma.
+    CGColorSpaceRef cs = nullptr;
+    NSScreen* screen = view.window.screen ?: [NSScreen mainScreen];
+    if (screen) {
+        CGColorSpaceRef sc = screen.colorSpace.CGColorSpace;
+        // Solo se e' davvero RGB: su un profilo esotico si ricadrebbe in un
+        // contesto che CGBitmapContextCreate rifiuta.
+        if (sc && CGColorSpaceGetModel(sc) == kCGColorSpaceModelRGB) {
+            cs = CGColorSpaceRetain(sc);
+        }
+    }
+    if (!cs) cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+
     ctx = CGBitmapContextCreate(nullptr, pw, ph, 8, 0, cs,
                                 kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
     CGColorSpaceRelease(cs);
@@ -267,6 +499,7 @@ bool Renderer::init(GraphicsCore& core, void* nativeWindow) {
                          static_cast<unsigned>(b.size.height))) {
         return false;
     }
+    d.buildLayers();
     return uploadSprites();
 }
 
@@ -285,6 +518,10 @@ bool Renderer::uploadSprites() {
 
 void Renderer::resize(unsigned width, unsigned height) {
     impl_->createContext(width, height);
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    impl_->layoutLayers();
+    [CATransaction commit];
 }
 
 Size Renderer::size() const {
@@ -298,9 +535,29 @@ int Renderer::spriteCount() const noexcept { return static_cast<int>(impl_->spri
 void Renderer::begin(Color clear) {
     auto& d = *impl_;
     if (!d.ctx) return;
+
+    // Una sola transazione per fotogramma, con le animazioni implicite spente:
+    // senza questo Core Animation interpolerebbe da solo ogni cambio di frame
+    // e opacita' su 0,25 s, e lo zoom risulterebbe in ritardo e molliccio.
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+
+    d.usedSprites = 0;
+
+    // Lo sfondo ora e' il layer contenitore. Il contesto CPU si azzera
+    // trasparente perche' e' diventato un velo sopra la foto: dove non ci
+    // disegna niente si deve vedere lo sprite sotto.
+    if (d.view.layer) {
+        CGFloat comp[4] = {clear.r, clear.g, clear.b, clear.a};
+        CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        CGColorRef bg = CGColorCreate(cs, comp);
+        CGColorSpaceRelease(cs);
+        d.view.layer.backgroundColor = bg;
+        CGColorRelease(bg);
+    }
+
     CGContextSaveGState(d.ctx);
-    setColor(d.ctx, clear, true);
-    CGContextFillRect(d.ctx, CGRectMake(0, 0, d.width, d.height));
+    CGContextClearRect(d.ctx, CGRectMake(0, 0, d.width, d.height));
 }
 
 bool Renderer::end() {
@@ -309,12 +566,19 @@ bool Renderer::end() {
     CGContextRestoreGState(d.ctx);
 
     CGImageRef frame = CGBitmapContextCreateImage(d.ctx);
-    if (!frame) return false;
+    if (!frame) { [CATransaction commit]; return false; }
 
     // Consegna al layer: il compositore fa il resto. Va fatto sul thread
     // principale, che e' anche quello del ciclo di disegno.
-    d.view.layer.contents = (__bridge id)frame;
+    d.uiLayer.contents = (__bridge id)frame;
     CGImageRelease(frame);
+
+    // Gli sprite che questo fotogramma non ha chiesto vanno nascosti, o
+    // resterebbero appesi quelli del fotogramma prima (per esempio tornando
+    // alla pagina d'ingresso).
+    for (int i = d.usedSprites; i < 2; ++i) d.clipLayer[i].hidden = YES;
+
+    [CATransaction commit];
     return true;
 }
 
@@ -349,18 +613,25 @@ void Renderer::drawSpriteIn(int index, Rect box, float scale, float opacity) {
     const float x = box.left + (bw - w) * 0.5f;
     const float y = box.top + (bh - h) * 0.5f;
 
-    CGContextSaveGState(d.ctx);
-    CGContextClipToRect(d.ctx, toCG(box));
-    CGContextSetAlpha(d.ctx, opacity);
+    // Oltre due sprite per fotogramma non se ne sono mai chiesti (il crossfade
+    // ne usa due); se un giorno servissero, qui e' dove aggiungere layer.
+    if (!d.uiLayer || d.usedSprites >= 2) return;
+    const int slot = d.usedSprites++;
 
-    // Il contesto e' gia' ribaltato per avere y verso il basso; CGContextDrawImage
-    // disegna con l'origine in basso, quindi va ribaltato di nuovo localmente,
-    // altrimenti le immagini uscirebbero capovolte.
-    CGContextTranslateCTM(d.ctx, x, y + h);
-    CGContextScaleCTM(d.ctx, 1.0, -1.0);
-    CGContextDrawImage(d.ctx, CGRectMake(0, 0, w, h), img);
+    // Da y verso il basso (convenzione del renderer) a y verso l'alto
+    // (convenzione di Core Animation). E' l'unico punto in cui si converte.
+    const CGFloat clipY = static_cast<CGFloat>(d.height) - box.bottom;
+    d.clipLayer[slot].frame = CGRectMake(box.left, clipY, bw, bh);
 
-    CGContextRestoreGState(d.ctx);
+    // Dentro il ritaglio le coordinate ripartono da zero, sempre con y in su.
+    const CGFloat picY = bh - ((y - box.top) + h);
+    d.picLayer[slot].frame = CGRectMake(x - box.left, picY, w, h);
+
+    if (d.picLayer[slot].contents != (__bridge id)img) {
+        d.picLayer[slot].contents = (__bridge id)img;
+    }
+    d.clipLayer[slot].opacity = opacity;
+    d.clipLayer[slot].hidden  = NO;
 }
 
 void Renderer::fillRect(Rect r, Color color, float radius) {
@@ -432,6 +703,32 @@ void Renderer::fillCircle(Point center, float radius, Color color) {
     setColor(d.ctx, color, true);
     CGContextFillEllipseInRect(
         d.ctx, CGRectMake(center.x - radius, center.y - radius, radius * 2.0f, radius * 2.0f));
+}
+
+void Renderer::fillRects(const Rect* rects, int count, Color color) {
+    auto& d = *impl_;
+    if (!d.ctx || !rects || count <= 0) return;
+    setColor(d.ctx, color, true);
+
+    // Antialiasing spento per tutto il gruppo. A un pixel di lato non arrotonda
+    // nessuno spigolo - non c'e' spigolo da arrotondare - ma manda ogni
+    // rettangolo nel rasterizzatore con copertura parziale: misurato col
+    // profiler, aa_render e argb32_mark_constmask erano i tre quarti del costo
+    // dell'intera schermata d'ingresso. Spento, i puntini restano netti e il
+    // campo torna dentro il fotogramma.
+    CGContextSaveGState(d.ctx);
+    CGContextSetShouldAntialias(d.ctx, false);
+
+    // A blocchi, per non tenere in piedi un vettore grande quanto il campo.
+    constexpr int kBatch = 512;
+    CGRect buf[kBatch];
+    int n = 0;
+    for (int i = 0; i < count; ++i) {
+        buf[n++] = toCG(rects[i]);
+        if (n == kBatch) { CGContextFillRects(d.ctx, buf, static_cast<std::size_t>(n)); n = 0; }
+    }
+    if (n > 0) CGContextFillRects(d.ctx, buf, static_cast<std::size_t>(n));
+    CGContextRestoreGState(d.ctx);
 }
 
 void Renderer::fillCircleGradient(Point center, float radius, Color inner, Color mid,
@@ -632,33 +929,29 @@ void drawCenteredText(CGContextRef ctx, const std::wstring& text, Point center, 
 void Renderer::drawText(const std::wstring& text, Rect box, float fontSize, Color color,
                         TextAlign align, bool bold) {
     if (!impl_->ctx) return;
-    CTFontRef font = createTextFont(fontSize, bold ? 640.0 : 400.0);
+    CTFontRef font = cachedTextFont(fontSize, bold ? 640.0 : 400.0);
     drawFramedText(impl_->ctx, text, box, color, align, font);
-    CFRelease(font);
 }
 
 void Renderer::drawTextBody(const std::wstring& text, Rect box, float fontSize, Color color,
                             TextAlign align, bool bold) {
     if (!impl_->ctx) return;
-    CTFontRef font = createBodyFont(fontSize, bold);
+    CTFontRef font = cachedBodyFont(fontSize, bold);
     drawFramedText(impl_->ctx, text, box, color, align, font);
-    CFRelease(font);
 }
 
 void Renderer::drawTextCentered(const std::wstring& text, Point center, float fontSize,
                                 Color color, bool bold) {
     if (!impl_->ctx) return;
-    CTFontRef font = createTextFont(fontSize, bold ? 640.0 : 400.0);
+    CTFontRef font = cachedTextFont(fontSize, bold ? 640.0 : 400.0);
     drawCenteredText(impl_->ctx, text, center, color, font);
-    CFRelease(font);
 }
 
 void Renderer::drawTextBodyCentered(const std::wstring& text, Point center, float fontSize,
                                     Color color, bool bold) {
     if (!impl_->ctx) return;
-    CTFontRef font = createBodyFont(fontSize, bold);
+    CTFontRef font = cachedBodyFont(fontSize, bold);
     drawCenteredText(impl_->ctx, text, center, color, font);
-    CFRelease(font);
 }
 
 } // namespace mz::render

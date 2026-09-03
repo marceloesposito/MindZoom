@@ -374,6 +374,8 @@ void dspThread() {
     double calibDiagTimer  = 0.0;   // diagnostica temporanea, vedi sotto
 
     util::Ema velocitySmooth;
+    // Smoothing elastico: solo sul ramo che guida lo zoom, vedi kElasticTauS.
+    util::TwoPoleEma elastic;
 
     auto lastTick    = std::chrono::steady_clock::now();
     auto lastFrameAt = lastTick;
@@ -389,6 +391,7 @@ void dspThread() {
         if (cmd == app::Command::StartCalibration || cmd == app::Command::RetryCalibration) {
             calib.start();
             smoother.reset();
+            elastic.reset();
             velocityRaw = 0.0;
             velocitySmooth.reset();
             // Anche la fase torna indietro: il tasto K arriva da un'esperienza
@@ -411,6 +414,7 @@ void dspThread() {
             stft  = dsp::SlidingStft{};
             gating.reset();
             smoother.reset();
+            elastic.reset();
             velocityRaw = 0.0;
             velocitySmooth.reset();
             phase        = faseIniziale;
@@ -460,6 +464,11 @@ void dspThread() {
                 gatedWindows = 0;
                 const double c = smoother.push(*index, dt);
                 st.smoothedIndex = c;
+                // Stadio in piu', solo per chi guida lo zoom: la banda
+                // adattiva e la calibrazione misurano `c` vero, altrimenti la
+                // stima degli estremi si restringerebbe insieme allo smoothing
+                // invece di restare fedele al segnale.
+                const double cZoom = elastic.push(c, dt, tune.elasticTauS);
 
                 if (adattiva) {
                     // La banda insegue il segnale: si alimenta con gli stessi
@@ -469,12 +478,12 @@ void dspThread() {
                     if (adaptive.ready()) {
                         calib.adoptBand(adaptive.lo(), adaptive.hi(), adaptive.mid());
                     }
-                    velocityRaw = calib.velocity(c, dt, tune);
+                    velocityRaw = calib.velocity(cZoom, dt, tune);
                 } else if (phase == control::Phase::Onboarding) {
                     calib.sample(c, quality.contactOk &&
                                     quality.fault == dsp::SignalFault::None);
                 } else {
-                    velocityRaw = calib.velocity(c, dt, tune);
+                    velocityRaw = calib.velocity(cZoom, dt, tune);
                 }
             }
 
@@ -736,6 +745,24 @@ inline float causticHash(std::uint32_t n) noexcept {
 class CausticSwarm {
 public:
     /**
+     * Quante particelle usa questo sciame e quanto grandi sono i puntini.
+     *
+     * Serve perche' i tre sciami non fanno lo stesso mestiere: quelli di
+     * respiro e bersaglio riempiono un disco di poco piu' di duecento pixel,
+     * quello della pagina d'ingresso deve coprire lo SCHERMO INTERO e con una
+     * grana molto piu' fine - decine di migliaia di puntini invece di qualche
+     * centinaio. Da qui in giu' quasi tutte le distanze sono espresse in
+     * MULTIPLI DELLA SPAZIATURA MEDIA fra particelle, non in valori assoluti:
+     * e' l'unico modo perche' le stesse regole diano lo stesso aspetto a
+     * densita' che differiscono di due ordini di grandezza.
+     */
+    void configure(int n, float dotScale) {
+        n         = std::max(1, n);
+        dotScale_ = dotScale;
+        if (n != n_) { n_ = n; seeded_ = false; }
+    }
+
+    /**
      * @param t orologio monotono (mai la fase del respiro, che si ripete ogni
      *        ciclo: usarla qui renderebbe il moto prevedibile un ciclo dopo
      *        l'altro, esattamente cio' che non si vuole).
@@ -744,97 +771,320 @@ public:
      *        fatto di puntini, mai di un disco pieno.
      * @param seedBase distingue sciami diversi (respiro vs bersaglio) che
      *        userebbero altrimenti lo stesso pattern di semi.
+     * @param gather [0,1]: 0 = sparso su tutto il riquadro, 1 = raccolto nella
+     *        sfera. Non e' un'interpolazione fra due disegni: e' il CONTENIMENTO
+     *        che cambia forma, e le particelle ci arrivano dentro con la loro
+     *        fisica - separazione, allineamento, coesione, campo ondoso. Il
+     *        passaggio si vede come uno stormo che si stringe, non come una
+     *        dissolvenza.
+     * @param boxHalfW,boxHalfH semiampiezze del riquadro da coprire quando
+     *        gather=0, in unita' di `radius`. A gather=1 non contano.
      *
      * La tinta non e' un parametro: viene tutta da swarmTint, la stessa rampa
-     * verde-blu per entrambi gli sciami. Sono le due fasi a distinguersi per
-     * testo e anello esterno, non per il colore dei puntini.
+     * verde-blu per entrambi gli sciami.
      */
     void draw(render::Renderer& r, render::Point c, float radius, double t, float fill,
-             std::uint32_t seedBase) {
+             std::uint32_t seedBase, float gather = 1.0f,
+             float boxHalfW = 1.0f, float boxHalfH = 1.0f) {
         if (radius < 2.0f || fill <= 0.0f) return;
-        ensureSeeded(seedBase);
+        const float bx = std::max(1.0f, boxHalfW);
+        const float by = std::max(1.0f, boxHalfH);
+        const float g  = std::clamp(gather, 0.0f, 1.0f);
+        ensureSeeded(seedBase, bx, by);
 
         const auto tf = static_cast<float>(t);
         const float dt = lastT_.has_value() ? std::clamp(tf - *lastT_, 0.0f, 0.1f) : 0.0f;
         lastT_ = tf;
-        step(dt, tf, seedBase);
+        step(dt, tf, seedBase, bx, by, g);
 
-        // Niente alone qui: su una nuvola densa di puntini un alone morbido si
-        // fonde con loro e il risultato legge come un disco pieno invece che
-        // come punti distinti - il problema che l'alone risolveva sui
-        // filamenti sottili del tentativo precedente non esiste piu' qui.
         const int visible = std::clamp(
-            static_cast<int>(std::ceil(kN * std::clamp(fill, 0.0f, 1.0f))), 0, kN);
+            static_cast<int>(std::ceil(n_ * std::clamp(fill, 0.0f, 1.0f))), 0, n_);
+
+        // I puntini si accumulano in secchielli di tinta e opacita' e si
+        // disegnano un secchiello alla volta. Con decine di migliaia di
+        // elementi il costo non e' riempirli - sono grandi un pixel - ma
+        // impostare un colore e avviare un tracciato per ognuno: cosi' quel
+        // costo si paga una volta per secchiello. Vedi Renderer::fillRects.
+        for (auto& b : buckets_) b.clear();
+        buckets_.resize(kTintSteps * kAlphaSteps);
+
         for (int i = 0; i < visible; ++i) {
             const auto  si = static_cast<std::size_t>(i);
-            const auto  ui = static_cast<std::uint32_t>(i);
-            const render::Point p{c.x + px_[si] * radius, c.y + py_[si] * radius};
+            const float fade = fadeOf(life_[si]);
+            if (fade <= 0.01f) continue;
+
+            const std::uint32_t h = hashSeed(seedBase, i);
 
             // Tinta: posizione FISSA per particella lungo la rampa verde-blu,
             // piu' una deriva lenta e di ampiezza diversa per ciascuna. Senza
             // la deriva l'insieme e' un mosaico immobile di colori; con una
             // deriva comune respirerebbe tutto all'unisono, che si legge come
-            // un lampeggio. Cosi' invece le tinte si rimescolano di continuo
-            // senza che il gruppo abbia un ritmo percepibile.
-            const float tintSeed = causticHash(seedBase + ui * 13u + 29u);
-            const float drift    = 0.10f + 0.16f * causticHash(seedBase + ui * 31u + 77u);
+            // un lampeggio.
+            const float tintSeed = causticHash(h + 29u);
+            const float drift    = 0.10f + 0.16f * causticHash(h + 77u);
             const float mixv     = tintSeed +
                                   drift * std::sin(tf * 0.23f + tintSeed * kTau * 3.0f);
-            const render::Color base = swarmTint(mixv);
 
             // Profondita': una "distanza" fissa per particella governa INSIEME
             // opacita' e dimensione, invece di due valori scorrelati. E' il
             // modo in cui l'occhio legge la terza dimensione in una nuvola -
-            // cio' che e' lontano e' insieme piu' piccolo e piu' sbiadito;
-            // variarli separatamente (com'era prima) da' solo disordine.
-            // L'esponente 1.6 sbilancia la distribuzione verso il fondo, cosi'
-            // i pochi puntini in primo piano risaltano davvero.
-            const float depth = std::pow(causticHash(seedBase + ui * 53u + 8u), 1.6f);
+            // cio' che e' lontano e' insieme piu' piccolo e piu' sbiadito.
+            const float depth = std::pow(causticHash(h + 8u), 1.6f);
 
-            // Ombreggiatura sferica: la nuvola e' confinata nel cerchio
-            // unitario (vedi il clamp in step), e z = sqrt(1 - r^2) e' la
-            // quota che quel punto avrebbe sulla sfera di cui il cerchio e'
-            // la silhouette. Chi sta al bordo e' visto di taglio - piu'
-            // piccolo e piu' spento; chi sta al centro e' rivolto verso di
-            // noi. E' quello che trasforma un disco di puntini in una sfera,
-            // senza nessuna geometria 3D vera dietro.
-            const float rr2 = std::min(1.0f, px_[si] * px_[si] + py_[si] * py_[si]);
-            const float z   = std::sqrt(1.0f - rr2);
-            const float sh  = depth * (0.30f + 0.70f * z);
+            // Ombreggiatura sferica: la nuvola raccolta e' confinata nel
+            // cerchio unitario, e z = sqrt(1 - r^2) e' la quota che quel punto
+            // avrebbe sulla sfera di cui il cerchio e' la silhouette. E' quello
+            // che trasforma un disco di puntini in una sfera, senza nessuna
+            // geometria 3D vera dietro.
+            //
+            // Da sparsa pero' non c'e' nessuna sfera da ombreggiare: lo stesso
+            // calcolo spegnerebbe tutto cio' che sta lontano dal centro, cioe'
+            // i bordi dello schermo. L'ombreggiatura entra quindi insieme alla
+            // raccolta, e da sparsa resta la sola profondita'.
+            const float rr2  = px_[si] * px_[si] + py_[si] * py_[si];
+            const float lim  = limitAt(px_[si], py_[si], bx, by, g);
+            const float unit = std::min(1.0f, rr2 / std::max(lim * lim, 1e-6f));
+            const float z    = std::sqrt(1.0f - unit);
+            const float sh   = depth * ((0.30f + 0.70f * z) * g + (1.0f - g));
 
-            const float dotR  = 0.35f + 0.95f * sh;
-            const float alpha = 0.12f + 0.78f * sh;
-            r.fillCircle(p, dotR, {base.r, base.g, base.b, alpha});
+            // Soglia sul raggio: sotto il mezzo punto un quadratino
+            // antialiasato si spalma su un pixel solo e sbiadisce fino a
+            // sparire. Rimpicciolire oltre questo limite non rende i puntini
+            // piu' fini, li cancella - misurato a schermo.
+            const float dotR  = std::max(kDotFloor, (0.35f + 0.95f * sh) * dotScale_) * fade;
+            const float alpha = (0.12f + 0.78f * sh) * fade;
+            if (alpha <= 0.01f) continue;
+
+            const int ti = std::clamp(static_cast<int>(mixv * kTintSteps), 0, kTintSteps - 1);
+            const int ai = std::clamp(static_cast<int>(alpha * kAlphaSteps), 0, kAlphaSteps - 1);
+
+            const float x = c.x + px_[si] * radius;
+            const float y = c.y + py_[si] * radius;
+            buckets_[static_cast<std::size_t>(ti * kAlphaSteps + ai)].push_back(
+                render::rect(x - dotR, y - dotR, x + dotR, y + dotR));
+        }
+
+        for (int ti = 0; ti < kTintSteps; ++ti) {
+            const render::Color base = swarmTint((ti + 0.5f) / kTintSteps);
+            for (int ai = 0; ai < kAlphaSteps; ++ai) {
+                const auto& b = buckets_[static_cast<std::size_t>(ti * kAlphaSteps + ai)];
+                if (b.empty()) continue;
+                const float a = (ai + 0.5f) / kAlphaSteps;
+                r.fillRects(b.data(), static_cast<int>(b.size()), {base.r, base.g, base.b, a});
+            }
         }
     }
 
 private:
-    static constexpr int   kN   = 380;
     static constexpr float kTau = 6.28318530718f;
+    static constexpr float kPi  = 3.14159265359f;
+    // Secchielli di colore per il disegno raggruppato. Abbastanza da non far
+    // vedere gradini sulla rampa di tinta, pochi da restare qualche centinaio
+    // di chiamate per fotogramma.
+    static constexpr int kTintSteps  = 16;
+    static constexpr int kAlphaSteps = 12;
+    static constexpr int kMaxDim     = 256;   // tetto alle celle per lato
 
-    void ensureSeeded(std::uint32_t seedBase) {
+    /** Seme di una particella, che cambia a ogni sua rinascita. */
+    std::uint32_t hashSeed(std::uint32_t seedBase, int i) const {
+        return seedBase + static_cast<std::uint32_t>(i) * 2654435761u +
+               gen_[static_cast<std::size_t>(i)] * 7919u;
+    }
+
+    /**
+     * Inviluppo di comparsa e scomparsa lungo la vita della particella.
+     *
+     * Serve a far respirare il campo: senza, i puntini sono sempre gli stessi
+     * per sempre e l'insieme, per quanto si muova, resta lo stesso insieme. Con
+     * la rinascita invece qualcuno svanisce e qualcun altro compare altrove, e
+     * la nuvola si rinnova di continuo. E' anche cio' che tiene la copertura
+     * uniforme: i boids, lasciati a se', si raggruppano e lasciano vuoti.
+     */
+    static float fadeOf(float life) {
+        const float in  = std::clamp(life / 0.10f, 0.0f, 1.0f);
+        const float out = std::clamp((1.0f - life) / 0.15f, 0.0f, 1.0f);
+        const float e   = std::min(in, out);
+        return e * e * (3.0f - 2.0f * e);   // smoothstep
+    }
+
+    /**
+     * Limite radiale del contenimento nella direzione di (x,y).
+     *
+     * A gather=1 vale sempre 1: il cerchio unitario di sempre. A gather=0 e' la
+     * distanza dal centro al bordo del riquadro in quella direzione, cioe' lo
+     * schermo intero. In mezzo la forma passa dal rettangolo al cerchio con
+     * continuita': e' questa forma che si stringe a trascinarsi dietro le
+     * particelle.
+     */
+    static float limitAt(float x, float y, float bx, float by, float g) {
+        // Distanza dal centro al bordo del rettangolo lungo la direzione di
+        // (x,y). Il fattore r c'e' perche' (x,y) e' una POSIZIONE, non un
+        // versore: bx/|x| e' il fattore di scala che porta il punto sul bordo,
+        // e va moltiplicato per la distanza del punto per diventare una
+        // distanza. Senza, il contenimento non era il rettangolo dello schermo
+        // ma una figura che si stringeva man mano che ci si allontanava dal
+        // centro - il campo restava un ovale con i margini neri attorno.
+        const float r = std::sqrt(x * x + y * y);
+        if (r <= 1e-6f) {   // al centro non c'e' direzione
+            const float d = std::max(bx, by);
+            return d + (1.0f - d) * g;
+        }
+        const float ax = std::fabs(x), ay = std::fabs(y);
+        const float tx = ax > 1e-6f ? bx * r / ax : 1e30f;
+        const float ty = ay > 1e-6f ? by * r / ay : 1e30f;
+        const float dbox = std::min(tx, ty);
+        return dbox + (1.0f - dbox) * g;
+    }
+
+    float rnd() {
+        rng_ = rng_ * 1664525u + 1013904223u;
+        return static_cast<float>((rng_ >> 8) & 0xFFFFFFu) / 16777216.0f;
+    }
+
+    /** Posizione nuova, sparsa nel contenimento attuale. */
+    void placeAt(std::size_t si, float bx, float by, float g) {
+        const float x = (rnd() * 2.0f - 1.0f) * bx;
+        const float y = (rnd() * 2.0f - 1.0f) * by;
+        const float lim = limitAt(x, y, bx, by, g);
+        const float rr  = std::sqrt(x * x + y * y);
+        if (rr > lim && rr > 1e-6f) {
+            const float k = lim / rr;
+            px_[si] = x * k; py_[si] = y * k;
+        } else {
+            px_[si] = x; py_[si] = y;
+        }
+        const float va = rnd() * kTau;
+        vx_[si] = std::cos(va) * 0.10f;
+        vy_[si] = std::sin(va) * 0.10f;
+    }
+
+    void ensureSeeded(std::uint32_t seedBase, float bx, float by) {
         if (seeded_) return;
-        for (int i = 0; i < kN; ++i) {
+        const auto n = static_cast<std::size_t>(n_);
+        px_.assign(n, 0.0f); py_.assign(n, 0.0f);
+        vx_.assign(n, 0.0f); vy_.assign(n, 0.0f);
+        life_.assign(n, 0.0f); span_.assign(n, 1.0f); gen_.assign(n, 0u);
+        sax_.assign(n, 0.0f); say_.assign(n, 0.0f);
+        rng_ = seedBase * 2246822519u + 1u;
+
+        const bool spread = (bx > 1.001f || by > 1.001f);
+        for (int i = 0; i < n_; ++i) {
             const auto  si = static_cast<std::size_t>(i);
             const auto  ui = static_cast<std::uint32_t>(i);
-            const float a  = causticHash(seedBase + ui * 97u + 1u) * kTau;
-            const float rr = 0.20f + 0.70f * causticHash(seedBase + ui * 131u + 7u);
-            px_[si] = std::cos(a) * rr;
-            py_[si] = std::sin(a) * rr;
+            if (spread) {
+                // Sparse su tutto il riquadro fin dal primo fotogramma: la
+                // pagina d'ingresso deve aprirsi gia' piena, non riempirsi
+                // sotto gli occhi di chi guarda.
+                px_[si] = (causticHash(seedBase + ui * 97u + 1u)  * 2.0f - 1.0f) * bx;
+                py_[si] = (causticHash(seedBase + ui * 131u + 7u) * 2.0f - 1.0f) * by;
+            } else {
+                const float a  = causticHash(seedBase + ui * 97u + 1u) * kTau;
+                const float rr = 0.20f + 0.70f * causticHash(seedBase + ui * 131u + 7u);
+                px_[si] = std::cos(a) * rr;
+                py_[si] = std::sin(a) * rr;
+            }
             const float va = causticHash(seedBase + ui * 211u + 3u) * kTau;
             vx_[si] = std::cos(va) * 0.10f;
             vy_[si] = std::sin(va) * 0.10f;
+            // Vite gia' sfasate all'avvio, o morirebbero tutte insieme e il
+            // campo lampeggerebbe invece di rinnovarsi con continuita'.
+            life_[si] = causticHash(seedBase + ui * 307u + 11u);
+            span_[si] = kLifeMin + (kLifeMax - kLifeMin) * causticHash(seedBase + ui * 401u + 19u);
         }
         seeded_ = true;
     }
 
+    /**
+     * Griglia uniforme ricostruita a ogni passo, con ordinamento per conteggio.
+     *
+     * Senza, il passo dei boids e' O(n^2): con le poche centinaia di particelle
+     * di prima passava, con le decine di migliaia che servono a coprire lo
+     * schermo sarebbero centinaia di milioni di coppie per fotogramma. Con la
+     * griglia ogni particella guarda solo le 9 celle attorno a se', e il costo
+     * torna proporzionale al numero di particelle.
+     */
+    void buildGrid(float bx, float by, float g, float sense) {
+        // La griglia copre il contenimento ATTUALE, non il riquadro: da
+        // raccolte le particelle stanno in un cerchio unitario, e tenere celle
+        // grandi quanto lo schermo le ammasserebbe tutte in poche caselle,
+        // annullando il vantaggio della griglia.
+        const float hx = (bx + (1.0f - bx) * g) + 0.5f;
+        const float hy = (by + (1.0f - by) * g) + 0.5f;
+        const float spanX = 2.0f * hx, spanY = 2.0f * hy;
+        minX_ = -hx; minY_ = -hy;
+        gw_ = std::clamp(static_cast<int>(std::ceil(spanX / sense)), 1, kMaxDim);
+        gh_ = std::clamp(static_cast<int>(std::ceil(spanY / sense)), 1, kMaxDim);
+        sx_ = static_cast<float>(gw_) / spanX;
+        sy_ = static_cast<float>(gh_) / spanY;
+
+        const int cells = gw_ * gh_;
+        cellStart_.assign(static_cast<std::size_t>(cells) + 1, 0);
+        cellOf_.resize(static_cast<std::size_t>(n_));
+        order_.resize(static_cast<std::size_t>(n_));
+
+        for (int i = 0; i < n_; ++i) {
+            const auto si = static_cast<std::size_t>(i);
+            const int gx = std::clamp(static_cast<int>((px_[si] - minX_) * sx_), 0, gw_ - 1);
+            const int gy = std::clamp(static_cast<int>((py_[si] - minY_) * sy_), 0, gh_ - 1);
+            const int ci = gy * gw_ + gx;
+            cellOf_[si] = ci;
+            ++cellStart_[static_cast<std::size_t>(ci) + 1];
+        }
+        for (int ci = 0; ci < cells; ++ci) {
+            cellStart_[static_cast<std::size_t>(ci) + 1] +=
+                cellStart_[static_cast<std::size_t>(ci)];
+        }
+        cursor_.assign(cellStart_.begin(), cellStart_.end() - 1);
+        for (int i = 0; i < n_; ++i) {
+            const auto si = static_cast<std::size_t>(i);
+            order_[static_cast<std::size_t>(cursor_[static_cast<std::size_t>(cellOf_[si])]++)] = i;
+        }
+    }
+
     /** Un passo di simulazione: regole boids leggere + onde + contenimento. */
-    void step(float dt, float t, std::uint32_t seedBase) {
+    void step(float dt, float t, std::uint32_t seedBase, float bx, float by, float g) {
         if (dt <= 0.0f) return;
-        for (int i = 0; i < kN; ++i) {
+
+        // Tutte le distanze delle regole si misurano in spaziature medie. La
+        // spaziatura la detta l'area del contenimento attuale: raccogliendosi
+        // l'area crolla da tutto lo schermo al cerchio unitario, e con essa
+        // devono rimpicciolirsi spazio vitale e raggio di percezione - altrimenti
+        // da raccolte le particelle si vedrebbero tutte fra loro e si
+        // respingerebbero a vicenda fino a far esplodere la sfera.
+        const float areaBox = 4.0f * bx * by;
+        const float area    = areaBox + (kPi - areaBox) * g;
+        const float spacing = std::sqrt(std::max(area, 1e-4f) / static_cast<float>(n_));
+        const float sense   = 2.0f * spacing;
+        const float sense2  = sense * sense;
+
+        buildGrid(bx, by, g, sense);
+
+        // La ricerca dei vicini e' di gran lunga la parte cara del passo, ed e'
+        // anche quella che cambia piu' lentamente: a campo lento le forze
+        // sociali di un fotogramma e del successivo sono quasi identiche. Se ne
+        // aggiorna quindi meta' per volta - le pari in un fotogramma, le dispari
+        // in quello dopo - e nel frattempo ciascuna riusa l'ultima calcolata.
+        // Ogni particella resta aggiornata ogni due fotogrammi, cioe' ogni 33 ms
+        // a 60 Hz: sotto la soglia di quello che si vede, e vale il doppio delle
+        // particelle a parita' di costo. L'integrazione e il campo ondoso, che
+        // sono cio' che si vede muoversi, restano a ogni fotogramma.
+        ++parity_;
+        const std::uint32_t turno = parity_ & 1u;
+
+        for (int i = 0; i < n_; ++i) {
             const auto si = static_cast<std::size_t>(i);
 
-            const auto ui = static_cast<std::uint32_t>(i);
+            // --- ciclo di vita ---
+            life_[si] += dt / span_[si];
+            if (life_[si] >= 1.0f) {
+                life_[si] = 0.0f;
+                span_[si] = kLifeMin + (kLifeMax - kLifeMin) * rnd();
+                ++gen_[si];                 // tinta e profondita' nuove
+                placeAt(si, bx, by, g);
+                continue;                   // rinata: niente forze in questo passo
+            }
+
+            const std::uint32_t h = hashSeed(seedBase, i);
 
             // Ogni particella ha il PROPRIO spazio vitale e la propria forza
             // di separazione: con un solo raggio uguale per tutte lo sciame si
@@ -842,106 +1092,188 @@ private:
             // vuole. Cosi' invece alcune tengono gli altri a distanza molto
             // piu' del necessario e altre quasi per niente, e la nuvola si
             // organizza da sola in vuoti e addensamenti - la trama "a
-            // caustica" che si sta cercando, che nasce dalla disomogeneita',
-            // non dal disegno.
-            const float roomSeed  = causticHash(seedBase + ui * 71u + 13u);
-            const float personalR = 0.06f + 0.26f * roomSeed * roomSeed;   // spazio vitale
+            // caustica" che si cerca, che nasce dalla disomogeneita'.
+            const float roomSeed  = causticHash(h + 13u);
+            const float personalR = (0.66f + 2.60f * roomSeed * roomSeed) * spacing;
             const float sepGain   = 1.1f + 2.2f * roomSeed;
 
-            // Separazione/allineamento/coesione contro i vicini entro il
-            // raggio di percezione - O(n^2) ma n e' qualche centinaio.
+            const bool aggiorna = ((static_cast<std::uint32_t>(i) & 1u) == turno);
+            if (aggiorna) {
+
+            // Separazione/allineamento/coesione contro i vicini entro il raggio
+            // di percezione, cercati nelle 9 celle attorno invece che fra tutte.
             float sepX = 0.0f, sepY = 0.0f, aliX = 0.0f, aliY = 0.0f, cohX = 0.0f, cohY = 0.0f;
             int   neighbors = 0;
-            for (int j = 0; j < kN; ++j) {
-                if (i == j) continue;
-                const auto  sj = static_cast<std::size_t>(j);
-                const float dx = px_[si] - px_[sj], dy = py_[si] - py_[sj];
-                const float d2 = dx * dx + dy * dy;
-                if (d2 < 0.09f && d2 > 1e-9f) {
-                    const float d   = std::sqrt(d2);
-                    const float inv = 1.0f / d;
-                    // Repulsione a legge inversa e limitata dentro lo spazio
-                    // vitale: cresce rapidamente quando qualcuno entra troppo,
-                    // sparisce appena fuori. Un peso costante (com'era prima)
-                    // spingeva uguale a qualsiasi distanza e appiattiva tutto.
-                    if (d < personalR) {
-                        const float push = std::min(6.0f, (personalR - d) / std::max(d, 0.01f));
-                        sepX += dx * inv * push; sepY += dy * inv * push;
+            const int gx = std::clamp(static_cast<int>((px_[si] - minX_) * sx_), 0, gw_ - 1);
+            const int gy = std::clamp(static_cast<int>((py_[si] - minY_) * sy_), 0, gh_ - 1);
+            for (int oy = -1; oy <= 1; ++oy) {
+                const int cy2 = gy + oy;
+                if (cy2 < 0 || cy2 >= gh_) continue;
+                for (int ox = -1; ox <= 1; ++ox) {
+                    const int cx2 = gx + ox;
+                    if (cx2 < 0 || cx2 >= gw_) continue;
+                    const int ci   = cy2 * gw_ + cx2;
+                    const int from = cellStart_[static_cast<std::size_t>(ci)];
+                    const int to   = cellStart_[static_cast<std::size_t>(ci) + 1];
+                    for (int k = from; k < to; ++k) {
+                        const int j = order_[static_cast<std::size_t>(k)];
+                        if (i == j) continue;
+                        const auto  sj = static_cast<std::size_t>(j);
+                        const float dx = px_[si] - px_[sj], dy = py_[si] - py_[sj];
+                        const float d2 = dx * dx + dy * dy;
+                        if (d2 < sense2 && d2 > 1e-12f) {
+                            const float d   = std::sqrt(d2);
+                            const float inv = 1.0f / d;
+                            if (d < personalR) {
+                                const float push =
+                                    std::min(6.0f, (personalR - d) / std::max(d, 0.01f * spacing));
+                                sepX += dx * inv * push; sepY += dy * inv * push;
+                            }
+                            aliX += vx_[sj];  aliY += vy_[sj];
+                            cohX += px_[sj];  cohY += py_[sj];
+                            ++neighbors;
+                        }
                     }
-                    aliX += vx_[sj];  aliY += vy_[sj];
-                    cohX += px_[sj];  cohY += py_[sj];
-                    ++neighbors;
                 }
             }
-            float ax = sepX * sepGain;
-            float ay = sepY * sepGain;
+            float sx = sepX * sepGain * spacing * kSepScale;
+            float sy = sepY * sepGain * spacing * kSepScale;
             if (neighbors > 0) {
                 const float inv = 1.0f / static_cast<float>(neighbors);
-                // Allineamento e coesione ora vicini: l'allineamento fa le
-                // correnti, la coesione tiene insieme il gruppo. Con la
-                // coesione troppo bassa lo sciame si sfilaccia e il moto
-                // sembra agitato invece che coeso - qui si vuole una nuvola
-                // che si muove come un corpo solo, non particelle che
-                // scappano ciascuna per conto suo.
-                ax += (aliX * inv - vx_[si]) * 0.30f;
-                ay += (aliY * inv - vy_[si]) * 0.30f;
-                ax += (cohX * inv - px_[si]) * 0.16f;
-                ay += (cohY * inv - py_[si]) * 0.16f;
+                // L'allineamento fa le correnti, la coesione tiene insieme il
+                // gruppo. Con la coesione troppo bassa lo sciame si sfilaccia e
+                // il moto sembra agitato invece che coeso. La coesione pero'
+                // cresce con la raccolta: da sparse tirerebbe le particelle in
+                // grumi, lasciando vuoto lo schermo che devono coprire.
+                sx += (aliX * inv - vx_[si]) * 0.30f;
+                sy += (aliY * inv - vy_[si]) * 0.30f;
+                const float coes = 0.16f * (0.25f + 0.75f * g);
+                sx += (cohX * inv - px_[si]) * coes;
+                sy += (cohY * inv - py_[si]) * coes;
             }
+                sax_[si] = sx;
+                say_[si] = sy;
+            }
+
+            float ax = sax_[si];
+            float ay = say_[si];
 
             // Campo ondoso a due scale: una lunga che trascina in correnti
             // ampie, una corta che le increspa. Frequenze incommensurabili fra
-            // loro (0.55/0.47, 1.9/1.7) e fase diversa per particella, quindi
-            // il moto non si ripete mai in modo osservabile - a differenza di
-            // un'unica frequenza comune, che si leggerebbe come un battito.
-            // Ampiezze contenute e frequenze temporali dimezzate: e' il campo
-            // ondoso a dare il "dinamismo", e sopra una certa soglia lo sciame
-            // sembra scosso da fuori invece che vivo per conto proprio.
-            const float seed = causticHash(seedBase + ui * 17u + 5u);
-            ax += std::sin(py_[si] * 3.1f + t * 0.28f + seed * kTau) * 0.45f +
-                  std::sin(py_[si] * 9.7f - t * 0.95f + seed * kTau * 2.1f) * 0.12f;
-            ay += std::cos(px_[si] * 2.7f + t * 0.24f + seed * kTau * 1.3f) * 0.45f +
-                  std::cos(px_[si] * 8.3f - t * 0.85f + seed * kTau * 0.7f) * 0.12f;
+            // loro e fase diversa per particella, quindi il moto non si ripete
+            // mai in modo osservabile - a differenza di un'unica frequenza
+            // comune, che si leggerebbe come un battito.
+            // Il campo si calma man mano che la sfera si forma. Sparso deve
+            // essere vivo - e' quello che si e' scelto guardandolo - ma la
+            // stessa agitazione dentro il cerchio unitario increspa la
+            // silhouette e la sfera non si chiude mai davvero: raccolta, la
+            // forma conta piu' del movimento.
+            const float vivacita = kDynamism * (1.0f - 0.60f * g);
+            const float seed = causticHash(h + 5u);
+            ax += (std::sin(py_[si] * 3.1f + t * 0.28f + seed * kTau) * 0.45f +
+                   std::sin(py_[si] * 9.7f - t * 0.95f + seed * kTau * 2.1f) * 0.12f) * vivacita;
+            ay += (std::cos(px_[si] * 2.7f + t * 0.24f + seed * kTau * 1.3f) * 0.45f +
+                   std::cos(px_[si] * 8.3f - t * 0.85f + seed * kTau * 0.7f) * 0.12f) * vivacita;
 
-            // Contenimento: richiamo morbido che comincia vicino al bordo
-            // (il muro netto arriva dopo, nel clamp) piu' una spinta debole
-            // verso fuori vicino al centro, che evita il collasso al centro.
-            const float rr = std::sqrt(px_[si] * px_[si] + py_[si] * py_[si]);
-            if (rr > 0.92f) { ax -= px_[si] * 2.6f; ay -= py_[si] * 2.6f; }
-            if (rr < 0.12f) { ax += px_[si] * 0.8f; ay += py_[si] * 0.8f; }
+            const float rr  = std::sqrt(px_[si] * px_[si] + py_[si] * py_[si]);
+            const float lim = limitAt(px_[si], py_[si], bx, by, g);
 
-            // Smorzamento: e' anche il freno che decide la velocita' di
-            // regime. Piu' alto (0.95) le strutture duravano ma lo sciame
-            // sfrecciava; piu' basso si spegnerebbe tutto. 0.88 tiene un moto
-            // lento e continuo, che e' quello che serve a una schermata su
-            // cui si deve stare calmi.
+            // Richiamo verso la sfera finale: agisce SOLO su cio' che sta gia'
+            // fuori dal cerchio unitario, con forza proporzionale a quanto la
+            // raccolta e' avanzata. E' la mano che stringe lo stormo. A raccolta
+            // completa non c'e' piu' niente fuori, quindi si annulla da sola e
+            // la sfera resta identica a com'era prima che tutto questo esistesse.
+            if (g > 0.0f && rr > 1.0f) {
+                const float inv  = 1.0f / std::max(rr, 1e-6f);
+                const float pull = g * g * std::min(3.0f, rr - 1.0f) * 2.2f;
+                ax -= px_[si] * inv * pull;
+                ay -= py_[si] * inv * pull;
+            }
+
+            // Contenimento morbido vicino al bordo (il muro netto arriva dopo).
+            // La soglia si sposta verso il bordo man mano che la sfera si forma:
+            // ferma a 0.92 le particelle si accampavano su quell'anello e la
+            // sfera veniva fuori cava, un guscio invece di un corpo. Spinta
+            // quasi contro il muro, la separazione ha spazio per distribuirle in
+            // tutto il volume e il centro si riempie.
+            const float soglia = 0.92f + 0.07f * g;
+            if (rr > soglia * lim) { ax -= px_[si] * 2.6f; ay -= py_[si] * 2.6f; }
+            // Spinta verso fuori vicino al centro: evita il collasso al centro
+            // della SFERA. Da sparse non deve esistere, o scaverebbe un buco in
+            // mezzo allo schermo proprio dove il campo deve essere pieno.
+            if (g > 0.0f && rr < 0.05f) { ax += px_[si] * 0.8f * g; ay += py_[si] * 0.8f * g; }
+
+            // Smorzamento: e' anche il freno che decide la velocita' di regime.
+            // 0.88 tiene un moto lento e continuo, che e' quello che serve a una
+            // schermata su cui si deve stare calmi.
             vx_[si] = (vx_[si] + ax * dt) * 0.88f;
             vy_[si] = (vy_[si] + ay * dt) * 0.88f;
             px_[si] += vx_[si] * dt;
             py_[si] += vy_[si] * dt;
 
-            // Muro netto sul raggio unitario: nessuna particella esce mai dal
-            // cerchio, cosi' la nuvola ha una silhouette circolare pulita e si
-            // legge come una SFERA invece che come una macchia sfrangiata. La
+            // Muro netto sul contenimento: nessuna particella lo attraversa
+            // mai, cosi' la nuvola raccolta ha una silhouette circolare pulita e
+            // si legge come una SFERA invece che come una macchia sfrangiata. La
             // componente radiale di velocita' viene annullata (non riflessa):
             // chi arriva al bordo ci scivola sopra in tangenziale, come su una
             // superficie, invece di rimbalzare verso il centro.
-            const float r2 = std::sqrt(px_[si] * px_[si] + py_[si] * py_[si]);
-            if (r2 > 1.0f) {
+            const float r2   = std::sqrt(px_[si] * px_[si] + py_[si] * py_[si]);
+            const float lim2 = limitAt(px_[si], py_[si], bx, by, g);
+            if (r2 > lim2 && r2 > 1e-6f) {
                 const float inv = 1.0f / r2;
                 const float nx = px_[si] * inv, ny = py_[si] * inv;
-                px_[si] = nx;
-                py_[si] = ny;
+                px_[si] = nx * lim2;
+                py_[si] = ny * lim2;
                 const float radial = vx_[si] * nx + vy_[si] * ny;
                 if (radial > 0.0f) { vx_[si] -= radial * nx; vy_[si] -= radial * ny; }
             }
         }
     }
 
-    std::array<float, kN> px_{}, py_{}, vx_{}, vy_{};
-    bool                  seeded_ = false;
-    std::optional<float>  lastT_;
+    // Durata di vita di una particella, in secondi. Abbastanza lunga da non
+    // vedere un formicolio, abbastanza corta da rinnovare il campo di continuo.
+    static constexpr float kLifeMin = 6.0f;
+    static constexpr float kLifeMax = 18.0f;
+    // La separazione era tarata sulle distanze assolute di prima; ora che si
+    // misura in spaziature va riportata alla stessa scala di forza.
+    static constexpr float kSepScale = 11.0f;
+    // Quanto e' vivo il moto. E' il campo ondoso a dare il dinamismo, e la
+    // velocita' di regime gli e' proporzionale a smorzamento fissato: questo
+    // fattore moltiplica quindi, in pratica, la velocita' delle particelle.
+    static constexpr float kDynamism = 1.6f;
+    // Raggio minimo, in punti. Con l'antialiasing spento (vedi
+    // Renderer::fillRects) un rettangolo piu' stretto di un pixel del
+    // dispositivo puo' arrotondarsi a niente e il puntino sparisce a
+    // intermittenza: questo e' il limite sotto cui non si scende.
+    static constexpr float kDotFloor = 0.40f;
+
+    std::vector<float>         px_, py_, vx_, vy_, life_, span_;
+    // Forze "sociali" (separazione/allineamento/coesione) dell'ultimo calcolo:
+    // vedi step() per il perche' non si ricalcolino a ogni fotogramma.
+    std::vector<float>         sax_, say_;
+    std::uint32_t              parity_ = 0;
+    std::vector<std::uint32_t> gen_;
+    int                        n_        = 380;
+    float                      dotScale_ = 1.0f;
+    bool                       seeded_   = false;
+    std::optional<float>       lastT_;
+    std::uint32_t              rng_ = 1u;
+
+    // --- griglia spaziale, vedi buildGrid ---
+    std::vector<int> cellOf_, cellStart_, order_, cursor_;
+    float            minX_ = 0.0f, minY_ = 0.0f, sx_ = 1.0f, sy_ = 1.0f;
+    int              gw_ = 1, gh_ = 1;
+
+    // --- disegno raggruppato ---
+    std::vector<std::vector<render::Rect>> buckets_;
 };
+
+// Pagina d'ingresso: molte piu' particelle degli altri due sciami, e piu'
+// piccole. Deve coprire tutto lo schermo, e su quella superficie il conteggio
+// del disco di calibrazione si leggerebbe come una spruzzata rada. I valori
+// sono stati scelti guardando la schermata, non a intuito.
+constexpr int   kLandingDots     = 15000;
+constexpr float kLandingDotScale = 0.48f;
 
 CausticSwarm gBreathSwarm;
 CausticSwarm gFocusSwarm;
@@ -1042,10 +1374,43 @@ void drawLandingPage(render::Renderer& r, const app::ControlState& st, double an
 
     r.fillRect(render::rect(0, 0, win.width, win.height), kBg);
 
-    // Lo stesso sciame delle fasi di calibrazione, grande e defilato dietro il
-    // titolo: presenta il linguaggio visivo dell'esperienza prima ancora che
-    // cominci, invece di aprire su uno schermo nero.
-    gLandingSwarm.draw(r, {cx, cy + 40.0f}, 210.0f, animT, 1.0f, 0x1A9F3Du);
+    // Lo stesso sciame delle fasi di calibrazione, ma qui non sta dietro il
+    // titolo: riempie lo SCHERMO. E' la pagina d'ingresso a raccontare cosa
+    // succede quando la fascia comincia a leggere - i pallini sparsi ovunque
+    // sono il segnale che ancora non c'e', la sfera al centro e' il segnale
+    // trovato. Il passaggio fra i due stati non e' un taglio: lo fa la fisica
+    // dello sciame, vedi CausticSwarm::draw.
+    const render::Point swarmC{cx, cy + 40.0f};
+    const float         swarmR = 210.0f;
+    gLandingSwarm.configure(kLandingDots, kLandingDotScale);
+
+    // Semiampiezze del riquadro da coprire, in unita' di swarmR, misurate dal
+    // centro dello sciame al bordo piu' lontano. Il margine del 6% manda i
+    // pallini appena oltre il bordo, cosi' il campo non ha una cornice vuota.
+    const float boxW = std::max(cx, win.width - cx) * 1.06f / swarmR;
+    const float boxH = std::max(swarmC.y, win.height - swarmC.y) * 1.06f / swarmR;
+
+    // Non basta che la fascia sia collegata: una fascia accesa sul tavolo e'
+    // collegata e non dice niente. Serve che stiano arrivando dati recenti e
+    // che superino il vaglio di plausibilita' fisica - le stesse due condizioni
+    // che il pannello diagnostico riassume in "Segnale: OK".
+    const bool segnale = st.signalFresh && st.signalFault == 0 &&
+                        (st.bleState == 3 || st.replaying);
+
+    static float                 gather = 0.0f;
+    static std::optional<double> lastLandingT;
+    const float dt = lastLandingT
+                        ? static_cast<float>(std::clamp(animT - *lastLandingT, 0.0, 0.1))
+                        : 0.0f;
+    lastLandingT = animT;
+    // Costante di tempo asimmetrica: si raduna con calma, perche' e' il momento
+    // da guardare; si disperde piu' in fretta se il segnale cade, perche' li'
+    // conta capire subito che qualcosa non va.
+    const float bersaglio = segnale ? 1.0f : 0.0f;
+    const float tau       = segnale ? 2.6f : 1.2f;
+    gather += (bersaglio - gather) * std::clamp(dt / tau, 0.0f, 1.0f);
+
+    gLandingSwarm.draw(r, swarmC, swarmR, animT, 1.0f, 0x1A9F3Du, gather, boxW, boxH);
 
     // Il riquadro deve stare COMODO attorno al corpo del testo: se l'altezza
     // non basta per l'interlinea, la riga non viene disegnata affatto invece
@@ -1053,9 +1418,16 @@ void drawLandingPage(render::Renderer& r, const app::ControlState& st, double an
     // sparire il titolo senza dire niente.
     r.drawText(L"Mind Zoom", render::rect(cx - 460.0f, cy - 280.0f, cx + 460.0f, cy - 160.0f),
               72.0f, kInk, render::TextAlign::Center, true);
+    // Le ultime due righe spiegano il meccanismo (cosa succede concentrandosi
+    // o rilassandosi) e danno un compito concreto ("un dettaglio della foto"),
+    // non solo l'esistenza di un legame fra attenzione e zoom: e' la lacuna
+    // segnalata dai test con altre persone, che non sapevano su cosa
+    // concentrarsi ne' come.
     r.drawTextBody(L"Un viaggio dentro una fotografia al microscopio,\n"
-                   L"guidato dalla tua attenzione.",
-                  render::rect(cx - 420.0f, cy - 148.0f, cx + 420.0f, cy - 80.0f), 19.0f, kMuted);
+                   L"guidato dalla tua attenzione.\n"
+                   L"Concentrati su un dettaglio della foto e lo zoom cresce;\n"
+                   L"lascia andare lo sguardo, rilassati, e torna indietro.",
+                  render::rect(cx - 420.0f, cy - 148.0f, cx + 420.0f, cy + 20.0f), 19.0f, kMuted);
 
     const render::Rect cta = render::rect(cx - 170.0f, cy + 240.0f, cx + 170.0f, cy + 300.0f);
     drawPillButton(r, cta, L"Premi INVIO per iniziare", kAccent);
@@ -1098,11 +1470,18 @@ void drawWarmupOverlay(render::Renderer& r, const app::ControlState& st) {
 
     r.drawText(L"Un momento", render::rect(cx - 400.0f, cy - 130.0f, cx + 400.0f, cy - 50.0f),
               46.0f, kInk, render::TextAlign::Center, true);
-    r.drawTextBody(L"Sto imparando com'e' fatto il tuo segnale.\n"
-                   L"Non devi fare niente: guarda la fotografia.",
-                  render::rect(cx - 400.0f, cy - 34.0f, cx + 400.0f, cy + 26.0f), 18.0f, kMuted);
+    // Restava un promemoria passivo ("non devi fare niente: guarda la
+    // fotografia") senza dire cosa sarebbe successo dopo: chi arrivava qui
+    // senza aver letto la landing page si ritrovava a comandare lo zoom senza
+    // preavviso. Resta un'attesa passiva - nessun esercizio, vedi il commento
+    // sopra la funzione - ma ora anticipa il meccanismo che sta per diventare
+    // attivo.
+    r.drawTextBody(L"Sto imparando com'e' fatto il tuo segnale: non c'e' nulla da fare,\n"
+                   L"guarda pure la fotografia. Quando la barra si riempie, concentrarti\n"
+                   L"la ingrandira' e rilassarti la fara' tornare indietro.",
+                  render::rect(cx - 420.0f, cy - 34.0f, cx + 420.0f, cy + 56.0f), 18.0f, kMuted);
 
-    const float barW = 320.0f, barH = 6.0f, barY = cy + 62.0f;
+    const float barW = 320.0f, barH = 6.0f, barY = cy + 92.0f;
     r.fillRect(render::rect(cx - barW / 2, barY, cx + barW / 2, barY + barH),
               {1, 1, 1, 0.10f}, barH * 0.5f);
     const auto avanz = static_cast<float>(std::clamp(st.adaptiveWarmup, 0.0, 1.0));
@@ -1588,12 +1967,14 @@ void drawHud(render::Renderer& r, const app::ControlState& st, const control::Zo
 
     y += 8.0f;
     line(L"Sensibilita': " + fixed(t.sensitivity, 1) + L"x    Tolleranza: " +
-             fixed(t.localTolerance, 2) + L"    Smoothing: " + fixed(t.velTauS, 2) + L"s",
+             fixed(t.localTolerance, 2) + L"    Smoothing: " + fixed(t.velTauS, 2) + L"s" +
+             L"    Elastico: " + fixed(t.elasticTauS, 2) + L"s",
          kAccent, 12.0f);
     if (!t.holdEnabled) line(L"Hold/detent SPENTO (diagnostica)", kWarn, 12.0f);
 
     y += 6.0f;
-    line(L"su/giu sensibilita'   sin/des tolleranza   S smoothing   L hold   R reset",
+    line(L"su/giu sensibilita'   sin/des tolleranza   S smoothing   E elastico   L hold   "
+         L"R reset (tienilo premuto: riavvia tutto)",
          {0.45f, 0.48f, 0.55f, 1.0f}, 12.0f);
     line(L"H pannello   B bluetooth   K ricalibra   V debug calibrazione   ESC/Q esce",
          {0.45f, 0.48f, 0.55f, 1.0f}, 12.0f);
@@ -1736,6 +2117,93 @@ void drawBleModal(render::Renderer& r, const app::ControlState& st) {
     r.drawTextBodyCentered(L"ESC chiude", {cx, y}, 12.0f, kMuted);
 }
 
+// ---------------------------------------------------------------------------
+// Doppio schermo: la scelta dello schermo di proiezione, porto di main.cpp
+// (Windows). fieldWidthMeters/niceLength/formatLength/drawProjectionScale
+// esistono gia' piu' sopra (gia' usate in schermo singolo). Lo stato di
+// scelta (displays/choosing/candidate) NON vive qui: e' gestione di finestre,
+// di proprieta' dello shell (vedi ProjectionState in experience.hpp) - qui
+// arriva gia' risolto, solo per disegnare.
+// ---------------------------------------------------------------------------
+
+/**
+ * Sullo schermo candidato durante la scelta: un numero gigante col nome e la
+ * risoluzione. La finestra salta fisicamente da uno schermo all'altro mentre
+ * si scorre, cosi' la scelta si conferma guardando, non leggendo un elenco e
+ * sperando che "Display 2" sia quello giusto.
+ */
+void drawScreenPicker(render::Renderer& r, int candidate, const std::vector<Display>& displays) {
+    const auto win = r.size();
+    r.fillRect(render::rect(0, 0, win.width, win.height), {0.03f, 0.05f, 0.08f, 1.0f});
+
+    const std::wstring number = std::to_wstring(candidate + 1);
+    r.drawText(number,
+               render::rect(0, win.height * 0.5f - 190.0f, win.width, win.height * 0.5f + 60.0f),
+               260.0f, kAccent, render::TextAlign::Center, true);
+
+    std::wstring caption = L"Questo schermo";
+    if (candidate >= 0 && candidate < static_cast<int>(displays.size())) {
+        caption += L"  -  " + displays[static_cast<std::size_t>(candidate)].describe();
+    }
+    r.drawText(caption,
+               render::rect(0, win.height * 0.5f + 70.0f, win.width, win.height * 0.5f + 110.0f),
+               22.0f, kInk, render::TextAlign::Center);
+
+    r.drawText(L"Frecce per cambiare schermo   -   INVIO per confermare",
+               render::rect(0, win.height * 0.5f + 130.0f, win.width, win.height * 0.5f + 170.0f),
+               18.0f, kMuted, render::TextAlign::Center);
+}
+
+/** Sullo schermo dell'operatore durante la scelta: l'elenco, col candidato evidenziato. */
+void drawScreenPickerPanel(render::Renderer& r, int candidate, const std::vector<Display>& displays) {
+    const auto win = r.size();
+    const float cx = win.width * 0.5f;
+
+    r.fillRect(render::rect(0, 0, win.width, win.height), {0.0f, 0.0f, 0.0f, 0.78f});
+
+    const float panelW = 620.0f;
+    const float rowH   = 52.0f;
+    const float panelH = 250.0f + rowH * static_cast<float>(displays.size());
+    const render::Rect panel = render::rect(cx - panelW / 2, win.height * 0.5f - panelH / 2,
+                                          cx + panelW / 2, win.height * 0.5f + panelH / 2);
+    r.fillRectShadow(panel, kPanel, 18.0f, kShadow, 30.0f, {0.0f, 10.0f});
+    r.fillRectGradient(panel, kPanel, darken(kPanel, 0.10f), 18.0f);
+    r.drawRectOutline(panel, {1, 1, 1, 0.10f}, 1.0f, 18.0f);
+
+    float y = panel.top + 34.0f;
+    r.drawText(L"Su quale schermo proiettare?",
+               render::rect(panel.left, y, panel.right, y + 40.0f), 28.0f, kInk,
+               render::TextAlign::Center, true);
+    y += 56.0f;
+
+    r.drawText(L"Il partecipante vedra' solo l'immagine, a schermo intero.\n"
+               L"Qui restano la telemetria e i comandi.",
+               render::rect(panel.left + 36, y, panel.right - 36, y + 60.0f), 16.0f, kMuted);
+    y += 76.0f;
+
+    for (std::size_t i = 0; i < displays.size(); ++i) {
+        const bool sel = (static_cast<int>(i) == candidate);
+        const render::Rect row = render::rect(panel.left + 30, y, panel.right - 30, y + rowH - 8.0f);
+        if (sel) {
+            r.fillRect(row, {kAccent.r, kAccent.g, kAccent.b, 0.20f}, 8.0f);
+            r.drawRectOutline(row, {kAccent.r, kAccent.g, kAccent.b, 0.65f}, 1.5f, 8.0f);
+        }
+        r.drawText(std::to_wstring(i + 1) + L".   " + displays[i].describe(),
+                   render::rect(row.left + 18, row.top + 10, row.right - 18, row.bottom),
+                   18.0f, sel ? kInk : kMuted, render::TextAlign::Left, sel);
+        y += rowH;
+    }
+
+    y += 14.0f;
+    r.drawText(L"Frecce per cambiare   -   INVIO per confermare",
+               render::rect(panel.left, y, panel.right, y + 30.0f), 17.0f, kAccent,
+               render::TextAlign::Center, true);
+    y += 34.0f;
+    r.drawText(L"Il numero compare a schermo intero sullo schermo evidenziato.",
+               render::rect(panel.left + 24, y, panel.right - 24, y + 26.0f), 13.0f, kMuted,
+               render::TextAlign::Center);
+}
+
 // --- stato di rendering, vive nel thread che chiama frame() (il thread principale) ---
 control::ZoomController zoom;
 double        focusFrac = 0.5;
@@ -1852,6 +2320,13 @@ void handleKey(Key key) {
             // alla schermata di calibrazione, che chiedera' il suo.
             if (g.landingVisible.load(std::memory_order_relaxed)) {
                 g.landingVisible.store(false, std::memory_order_relaxed);
+                // Lo zoom deve SEMPRE partire dal minimo: senza questo, il
+                // segnale gia' arrivato mentre si sistemava la fascia (in
+                // banda adattiva l'esperienza e' gia' "viva" da prima
+                // dell'INVIO, vedi frame()) poteva aver spinto currentFocus_
+                // avanti prima ancora che l'utente avesse scelto di iniziare -
+                // osservato sul campo, si partiva gia' a 200x.
+                g.resetHistory.store(true, std::memory_order_release);
                 return;
             }
             const auto st = g.state.read();
@@ -1893,8 +2368,24 @@ void handleKey(Key key) {
         case Key::Left:  g.tune.adjustTolerance(-1);   g.publishTunables(); return;
         case Key::S:     g.tune.adjustSmoothing(+1);   g.publishTunables(); return;
         case Key::ShiftS:g.tune.adjustSmoothing(-1);   g.publishTunables(); return;
+        case Key::E:     g.tune.adjustElastic(+1);     g.publishTunables(); return;
+        case Key::ShiftE:g.tune.adjustElastic(-1);     g.publishTunables(); return;
         case Key::L:     g.tune.holdEnabled = !g.tune.holdEnabled; g.publishTunables(); return;
         case Key::R:     g.tune.reset();               g.publishTunables(); return;
+        case Key::RHold:
+            // Riavvio completo, distinto dal semplice tap su R (che riporta
+            // solo le manopole ai default): tenuto premuto apposta - vedi la
+            // soglia in shell_macos.mm - perche' butta via la banda adattiva
+            // e i progressi della sessione corrente, non solo la taratura.
+            // RestartSession (non StartCalibration) azzera anche STFT e
+            // gating, non solo calibrazione/smoothing: e' il reset piu'
+            // completo che dspThread sa fare senza toccare il BLE.
+            g.landingVisible.store(true, std::memory_order_relaxed);
+            g.command.store(static_cast<int>(app::Command::RestartSession),
+                            std::memory_order_release);
+            g.resetHistory.store(true, std::memory_order_release);
+            g.pushBleLog("riavvio completo richiesto (R tenuto premuto)");
+            return;
         case Key::H:
             g.hudVisible.store(!g.hudVisible.load(std::memory_order_relaxed),
                                std::memory_order_relaxed);
@@ -1904,14 +2395,22 @@ void handleKey(Key key) {
 
 bool wantsQuit() { return g.quitRequested.load(std::memory_order_acquire); }
 
-void frame(render::Renderer& r, double dt) {
+void frame(render::Renderer& r, double dt, const ProjectionState& proj) {
     if (!initialized) return;
 
     const auto st = g.state.read();
     const auto phase = static_cast<control::Phase>(st.phase);
+    const bool showLanding = g.landingVisible.load(std::memory_order_relaxed);
 
     const double velocity = velRender.push(st.velocity, dt, config::kVelRenderTauS);
-    zoom.update(velocity, dt, phase, st.phaseElapsed, g.tune);
+    // Prima dell'INVIO che chiude la pagina d'ingresso l'esperienza non e'
+    // ancora "iniziata" per l'utente, anche se in banda adattiva il thread DSP
+    // e' gia' in Interactive fin dal primo istante (vedi dspThread). Onboarding
+    // e' l'unica fase per cui authorityVelocity torna sempre 0: usarla qui
+    // impedisce che lo zoom derivi mentre ci si sistema la fascia, cosi' non
+    // c'e' niente da annullare quando poi si preme INVIO.
+    const auto zoomPhase = showLanding ? control::Phase::Onboarding : phase;
+    zoom.update(velocity, dt, zoomPhase, st.phaseElapsed, g.tune);
 
     focusFrac += (st.calibDisplayTarget - focusFrac) * config::kCalibDisplayEma;
     animT += dt;
@@ -1925,8 +2424,36 @@ void frame(render::Renderer& r, double dt) {
     history.append(st, zoom.targetFocus(), zoom.currentFocus(), zoom.locked());
 
     const auto cf = zoom.crossfade();
-    const bool showLanding = g.landingVisible.load(std::memory_order_relaxed);
     const bool showCard = !showLanding && (phase == control::Phase::Onboarding);
+
+    // --- schermo di proiezione: il partecipante, solo se lo shell ne ha creato uno ---
+    // A differenza dello schermo dell'operatore (sotto, invariato: qui il
+    // pannello diagnostico e' gia' un riquadro compatto sopra l'immagine, non
+    // ha bisogno di una miniatura come in main.cpp/Windows), qui NON deve
+    // comparire altro che l'immagine, la scala, e - durante l'onboarding - la
+    // scheda di calibrazione, cosi' chi guida vede cio' che vede il
+    // partecipante mentre lo guida.
+    if (proj.renderer) {
+        render::Renderer& pr = *proj.renderer;
+        pr.begin(kBg);
+        if (proj.choosing) {
+            drawScreenPicker(pr, proj.candidate, *proj.displays);
+        } else if (!showLanding) {
+            pr.drawSprite(cf.activeIndex, static_cast<float>(cf.activeScale),
+                         static_cast<float>(cf.activeAlpha));
+            pr.drawSprite(cf.activeIndex + 1, static_cast<float>(cf.nextScale),
+                         static_cast<float>(cf.nextAlpha));
+            if (showCard) {
+                drawCalibrationCard(pr, st, focusFrac, animT);
+            } else {
+                drawProjectionScale(pr, cf);
+                if (st.adaptiveActive && !st.adaptiveReady) drawWarmupOverlay(pr, st);
+            }
+        }
+        // showLanding senza choosing: sfondo e basta, la pagina d'ingresso e'
+        // testo per l'operatore, il partecipante non ha ancora niente da vedere.
+        pr.end();
+    }
 
     r.begin(kBg);
     // La calibrazione e' a schermo intero apposta: la foto al microscopio
@@ -1958,6 +2485,10 @@ void frame(render::Renderer& r, double dt) {
 
     if (g.calibDebugVisible.load(std::memory_order_relaxed)) {
         drawCalibDebug(r, history, st);
+    }
+
+    if (proj.choosing) {
+        drawScreenPickerPanel(r, proj.candidate, *proj.displays);
     }
 
     r.end();

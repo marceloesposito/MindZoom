@@ -300,6 +300,16 @@ inline constexpr double kVelTauS       = 0.35;      // LIVE - a valle della legg
 inline constexpr double kVelRenderTauS = 0.12;      // TUNE - interpolazione 5.3 Hz -> 60 Hz
 inline constexpr double kVelStaleTauS  = 0.50;      // TUNE - decadimento a segnale assente
 
+// Smoothing elastico: uno stadio in PIU', a monte della legge di controllo,
+// applicato solo all'indice che guida lo zoom (non a quello che alimenta la
+// misura della banda adattiva/calibrazione, che deve restare fedele al
+// segnale vero). Tempo di risposta piu' lungo = un picco di concentrazione
+// isolato non muove piu' lo zoom, serve tenerla per davvero: e' quello che
+// rende facile restare fermi sul livello attuale. A due poli come
+// IndexSmoother, per lo stesso motivo (niente spigoli). Tasto E/MAIUSC+E,
+// LIVE come velTauS; 0 = disattivato (emaAlpha lo rende un passa-through).
+inline constexpr double kElasticTauS = 0.6;         // LIVE - vedi sopra
+
 // --- Rate control (INVARIATO rispetto al JS) ---
 inline constexpr double kZoomSpeedFactor = 0.003;
 inline constexpr double kFocusEasing     = 0.06;
@@ -396,13 +406,17 @@ inline constexpr double kOutroTargetFocus = 1.0;
 inline constexpr double kOutroEasing      = 0.012; // TUNE
 
 // --- Rendering ---
-inline constexpr int kTotalImages = 10;            // /images/1..10.webp
-// Misurati sulla barra di scala stampata in ogni foto (lunghezza in pixel
+inline constexpr int kTotalImages = 8;             // /images/<kScaleLabels[i]>.webp
+// Stesse foto di prima (stesso soggetto, stessa sequenza di ingrandimento),
+// solo colorate e ridotte da 10 a 8: le due tagliate erano i frame 7 e 8, gli
+// unici due con lo stesso identico ingrandimento (2441 e 2441, nessun
+// dettaglio in piu' fra i due). Percio' i valori restano quelli gia' misurati
+// sulla barra di scala stampata nelle foto originali (lunghezza in pixel
 // della barra / larghezza dell'immagine, rispetto al valore in μm
-// dell'etichetta), non stimati: cosi' la scala che l'app disegna coincide con
-// quella vera della foto invece di essere solo plausibile.
+// dell'etichetta), non ristimati sulle nuove: e' la stessa scala vera di
+// prima, non una nuova plausibile.
 inline constexpr std::array<int, kTotalImages> kScaleLabels = {
-    19, 54, 111, 260, 605, 1302, 2441, 2441, 3125, 7129
+    19, 54, 111, 260, 605, 1302, 3125, 7129
 };
 
 // Larghezza di riferimento a cui si riferiscono gli ingrandimenti qui sopra.

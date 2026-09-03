@@ -47,7 +47,7 @@ copy /y build-release\MindZoom.exe "%DIST%\" >nul
 
 echo.
 echo [package] conversione degli asset in JPEG (niente codec WebP richiesto)...
-build-release\mz_convert.exe "..\images" "%DIST%\assets" 12
+build-release\mz_convert.exe "..\images" "%DIST%\assets"
 if errorlevel 1 (
     echo [package] conversione FALLITA: pacchetto non prodotto.
     exit /b 1

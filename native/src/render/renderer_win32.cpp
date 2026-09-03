@@ -104,12 +104,12 @@ void GraphicsCore::shutdown() {
 
 std::size_t GraphicsCore::spriteCount() const noexcept { return impl_->sources.size(); }
 
-bool GraphicsCore::loadSprites(const std::wstring& dir, int count) {
+bool GraphicsCore::loadSprites(const std::wstring& dir, const int* magnitudes, int count) {
     auto& d = *impl_;
     d.sources.clear();
     d.sources.reserve(static_cast<std::size_t>(count));
 
-    for (int i = 1; i <= count; ++i) {
+    for (int i = 0; i < count; ++i) {
         // Ordine di preferenza: JPEG per primo perché è l'unico che ogni Windows
         // sa decodificare senza componenti aggiuntivi (il codec WebP di WIC c'è
         // d'ufficio su 11 ma non su 10). WebP e PNG restano accettati, comodi in
@@ -117,7 +117,7 @@ bool GraphicsCore::loadSprites(const std::wstring& dir, int count) {
         winrt::com_ptr<IWICBitmapDecoder> decoder;
         bool opened = false;
         for (const wchar_t* ext : {L".jpg", L".webp", L".png"}) {
-            const std::wstring path = dir + L"\\" + std::to_wstring(i) + ext;
+            const std::wstring path = dir + L"\\" + std::to_wstring(magnitudes[i]) + ext;
             decoder = nullptr;
             if (SUCCEEDED(d.wic->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
                                                            WICDecodeMetadataCacheOnLoad,
@@ -333,6 +333,17 @@ void Renderer::fillRect(Rect r, Color color, float radius) {
     } else {
         d.target->FillRectangle(toD2D(r), d.brush.get());
     }
+}
+
+void Renderer::fillRects(const Rect* rects, int count, Color color) {
+    auto& d = *impl_;
+    if (!rects || count <= 0) return;
+    // Direct2D non ha un equivalente di CGContextFillRects, ma il costo che il
+    // raggruppamento evita su macOS - costruire un colore per ogni puntino -
+    // qui non c'e': il pennello si imposta una volta e i rettangoli vanno in
+    // fila.
+    d.brush->SetColor(toD2D(color));
+    for (int i = 0; i < count; ++i) d.target->FillRectangle(toD2D(rects[i]), d.brush.get());
 }
 
 void Renderer::drawRectOutline(Rect r, Color color, float stroke, float radius) {

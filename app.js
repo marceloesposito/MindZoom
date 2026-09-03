@@ -11,8 +11,12 @@
  * selezionabile via CONFIG.USE_ADAPTIVE_PIPELINE = false per confronto A/B.
  */
 
-const SCALE_LABELS = [1, 63, 127, 303, 704, 1473, 2759, 2759, 3564, 4421, 8274];
-const TOTAL_IMAGES = 11;
+// Stessi valori di native/src/config.hpp (kScaleLabels): misurati sulla barra
+// di scala stampata in ogni foto, non stimati. I file in images/ sono
+// nominati con questi ingrandimenti (es. images/19.webp), non con un indice
+// progressivo.
+const SCALE_LABELS = [19, 54, 111, 260, 605, 1302, 3125, 7129];
+const TOTAL_IMAGES = SCALE_LABELS.length;
 const IMAGE_EXTENSION = '.webp';
 const IMAGE_PATH = '/images/';
 
@@ -993,7 +997,7 @@ async function initPixiApp() {
     // Preload parallelo: la decodifica avviene off-thread, evita lo stutter
     // da decodifica texture al primo crossfade.
     const urls = [];
-    for (let i = 1; i <= TOTAL_IMAGES; i++) urls.push(`${IMAGE_PATH}${i}${IMAGE_EXTENSION}`);
+    for (let i = 0; i < TOTAL_IMAGES; i++) urls.push(`${IMAGE_PATH}${SCALE_LABELS[i]}${IMAGE_EXTENSION}`);
 
     try {
         const textures = await Promise.all(urls.map(u => PIXI.Assets.load(u)));

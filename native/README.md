@@ -15,6 +15,29 @@ native\package.bat    REM produce dist\MindZoom\ e dist\MindZoom.zip (2.8 MB)
 aggiunge `LEGGIMI.txt` (istruzioni per chi riceve l'app) e crea l'archivio. Se il self-test
 fallisce non produce nulla.
 
+C'e' anche un ramo macOS, portato con la stessa architettura (vedi
+`src/app/experience.cpp`/`experience.hpp` per la logica portabile, `src/app/shell_macos.mm`
+per la finestra Cocoa) ma non ancora unificato con `main.cpp`:
+
+```bash
+cmake -S native -B native/build-macos && cmake --build native/build-macos --target mz_app mz_tests -j 8
+ctest --test-dir native/build-macos --output-on-failure
+
+native/package-macos.sh    # produce dist/MindZoom-macOS/ e dist/MindZoom-macOS.zip
+```
+
+`package-macos.sh` e' l'equivalente di `package.bat`: compila in Release, lancia i test,
+conserva le registrazioni gia' presenti in un pacchetto precedente e crea l'archivio. In piu'
+mette nella cartella distribuita `Avvia MindZoom.command`, un launcher a doppio clic pensato per
+girare da una chiavetta USB senza installazione: toglie da solo il flag di quarantena che macOS
+mette ai file copiati da un'altra macchina (altrimenti Gatekeeper mostra "sviluppatore non
+identificato"), poi chiede se avviare direttamente dalla chiavetta o installare in
+`/Applications`. `LEGGIMI-macos.txt` accompagna il pacchetto con le istruzioni per chi lo
+riceve. Il bundle e' firmato ad-hoc dal POST_BUILD di CMake (necessario perche' TCC attribuisca
+`NSBluetoothAlwaysUsageDescription` al processo, vedi il commento in `CMakeLists.txt`); nessuna
+delle due modalita' del launcher invalida quella firma per l'eseguibile principale, verificato
+lanciando l'app da un percorso di test dopo aver tolto tutti gli xattr.
+
 Eseguibili prodotti:
 
 | Binario | A cosa serve |

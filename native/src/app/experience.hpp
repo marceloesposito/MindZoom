@@ -13,6 +13,7 @@
 // partecipante coincidono). La proiezione a due schermi - drawScreenPicker,
 // placeProjection - resta solo nel ramo Windows.
 
+#include "app/displays.hpp"
 #include "app/shared_state.hpp"
 #include "app/telemetry.hpp"
 #include "control/tunables.hpp"
@@ -20,10 +21,11 @@
 #include "render/renderer.hpp"
 
 #include <string>
+#include <vector>
 
 namespace mz::app::experience {
 
-enum class Key { Escape, Enter, Up, Down, Left, Right, S, ShiftS, L, R, H, Q, D, B, C, X, V, M, K };
+enum class Key { Escape, Enter, Up, Down, Left, Right, S, ShiftS, L, R, H, Q, D, B, C, X, V, M, K, E, ShiftE, RHold };
 
 struct StartOptions {
     std::wstring assetsDir;      // cartella con 1..N.webp/.jpg/.png
@@ -58,9 +60,24 @@ void handleKey(Key key);
 bool wantsQuit();
 
 /**
- * Un giro di render: avanza lo zoom/la telemetria di `dt` secondi e disegna
- * tutto nella finestra unica.
+ * Schermo di proiezione (il partecipante), quando lo shell ne ha creato uno
+ * secondo. Lo stato di scelta (`displays`/`choosing`/`candidate`) resta di
+ * proprieta' dello shell - e' gestione di finestre, non logica dell'esperienza
+ * - esattamente come in main.cpp (Windows); qui arriva solo per disegnare.
  */
-void frame(render::Renderer& r, double dt);
+struct ProjectionState {
+    render::Renderer*          renderer  = nullptr;   // nullptr = schermo singolo
+    bool                       choosing  = false;      // schermata di scelta in corso
+    int                        candidate = -1;         // schermo evidenziato durante la scelta
+    const std::vector<Display>* displays = nullptr;    // valido solo se choosing
+};
+
+/**
+ * Un giro di render: avanza lo zoom/la telemetria di `dt` secondi e disegna
+ * nella finestra dell'operatore, e in quella di proiezione se `proj.renderer`
+ * non e' nullptr. Un solo avanzamento di stato per entrambe: chiamarla due
+ * volte farebbe avanzare lo zoom due volte in un frame.
+ */
+void frame(render::Renderer& r, double dt, const ProjectionState& proj = {});
 
 } // namespace mz::app::experience

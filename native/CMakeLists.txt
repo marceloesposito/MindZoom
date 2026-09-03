@@ -3,6 +3,16 @@ project(MindZoomNative LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Senza un tipo di build CMake non passa NESSUN flag di ottimizzazione: si
+# compila a -O0 anche facendo "cmake --build" senza dire altro, ed e' esattamente
+# quello che stava succedendo. Non e' un dettaglio da poco per questo programma -
+# lo sciame della pagina d'ingresso e' decine di migliaia di particelle simulate
+# a ogni fotogramma, e fra -O0 e -O3 ci passa un fattore vicino al dieci.
+# Chi vuole i simboli di debug puo' sempre chiedere -DCMAKE_BUILD_TYPE=Debug.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Tipo di build" FORCE)
+endif()
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Runtime CRT statico: l'obiettivo è un .exe che giri su un laptop Windows
@@ -92,7 +102,9 @@ elseif(APPLE)
     add_library(mz_render STATIC src/render/renderer_macos.mm)
     target_link_libraries(mz_render PUBLIC mz_core
         "-framework Cocoa" "-framework CoreGraphics"
-        "-framework CoreText" "-framework ImageIO")
+        "-framework CoreText" "-framework ImageIO"
+        # La foto la compone la GPU su CALayer, vedi renderer_macos.mm.
+        "-framework QuartzCore")
 endif()
 
 # L'applicazione. WIN32 = sottosistema grafico, niente finestra di console.
@@ -141,7 +153,7 @@ elseif(APPLE)
         src/app/shell_macos.mm
     )
     target_link_libraries(mz_app PRIVATE mz_ble mz_render mz_platform
-        "-framework Cocoa")
+        "-framework Cocoa" "-framework CoreVideo")
     set_target_properties(mz_app PROPERTIES
         OUTPUT_NAME "MindZoom"
         MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/macos/Info.plist")
@@ -168,10 +180,28 @@ elseif(APPLE)
     # attribuire NSBluetoothAlwaysUsageDescription al processo e la richiesta
     # di autorizzazione Bluetooth resta bloccata a meta' invece di comparire -
     # osservato sul campo: CoreBluetooth logga "TCC ... req 1 complete 0" e
-    # li' si ferma. Risigillare l'intero bundle ad-hoc dopo che e' completo
-    # risolve: e' lo stesso comando che servira' per l'impacchettamento verso
-    # un secondo Mac, solo eseguito ad ogni build invece che una volta sola.
+    # li' si ferma. Risigillare l'intero bundle dopo che e' completo risolve:
+    # e' lo stesso comando che serve per l'impacchettamento verso un secondo
+    # Mac, solo eseguito ad ogni build invece che una volta sola.
+    #
+    # Identita': ad-hoc (-) di default, cosi' chiunque clona il repo (o
+    # package-macos.sh per l'impacchettamento) continua a compilare senza
+    # bisogno di certificati locali - ed e' quello che va distribuito, visto
+    # che un certificato self-signed non e' fidato su un altro Mac piu' di
+    # quanto lo sia l'ad-hoc, con lo svantaggio di richiedere di importarlo
+    # li' apposta. Il problema dell'ad-hoc e' solo in sviluppo: firma ogni
+    # build con un hash diverso, e macOS tratta ogni hash come un'app diversa
+    # ai fini di TCC - il permesso Bluetooth va riconcesso a ogni rebuild.
+    # Impostando MZ_CODESIGN_IDENTITY (cache var, es.
+    # -DMZ_CODESIGN_IDENTITY="MindZoom Local Dev") su un certificato locale
+    # stabile importato nel Keychain (Chiave Accesso -> Assistente Certificati
+    # -> Crea un certificato -> tipo "Firma del codice", poi fidati per
+    # "Firma del codice" nelle sue proprieta'), il permesso sopravvive ai
+    # rebuild su QUESTA macchina. Resta una comodita' locale, non va
+    # committata come default.
+    set(MZ_CODESIGN_IDENTITY "-" CACHE STRING
+        "Identita' di firma del bundle macOS (- = ad-hoc, il default per chiunque)")
     add_custom_command(TARGET mz_app POST_BUILD
-        COMMAND codesign --force --deep --sign - "$<TARGET_BUNDLE_DIR:mz_app>"
-        COMMENT "Firma ad-hoc del bundle (Info.plist e risorse sigillati)")
+        COMMAND codesign --force --deep --sign "${MZ_CODESIGN_IDENTITY}" "$<TARGET_BUNDLE_DIR:mz_app>"
+        COMMENT "Firma del bundle con ${MZ_CODESIGN_IDENTITY} (Info.plist e risorse sigillati)")
 endif()

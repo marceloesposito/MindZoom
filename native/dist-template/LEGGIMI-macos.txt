@@ -1,0 +1,183 @@
+MIND ZOOM (macOS)
+Esplorazione al microscopio elettronico guidata dalle onde cerebrali
+
+
+COS'E'
+------
+Un'esperienza immersiva in cui lo zoom di un microscopio elettronico a scansione
+e' controllato dalla tua concentrazione, letta da una fascia EEG Muse.
+Concentrandoti scendi verso il livello atomico, rilassandoti risali.
+
+
+COSA SERVE
+----------
+- Mac con macOS 11 (Big Sur) o piu' recente
+- Bluetooth Low Energy funzionante
+- Una fascia EEG Muse, carica
+
+Non serve installare nulla: niente runtime, niente librerie aggiuntive.
+
+
+COME SI AVVIA DA UNA CHIAVETTA USB
+-----------------------------------
+1. Copia l'intera cartella "MindZoom-macOS" sulla chiavetta cosi' com'e'.
+   IMPORTANTE: "MindZoom.app" e "Avvia MindZoom.command" devono restare nella
+   stessa cartella.
+2. Accendi la fascia Muse e indossala.
+3. Doppio clic su "Avvia MindZoom.command". Si apre una finestra di Terminale
+   che chiede se avviare direttamente dalla chiavetta oppure installare in
+   Applicazioni:
+
+     A - avvia da li', nessuna installazione. Le registrazioni e il log di
+         diagnostica restano sulla chiavetta, dentro MindZoom.app.
+     I - copia l'app in /Applications (o nella cartella Applicazioni
+         dell'utente, se non hai i permessi su quella di sistema) e la apre
+         da li'. Utile se vuoi tenerla stabilmente su un Mac dopo averla
+         provata dalla chiavetta.
+
+   Puoi anche fare doppio clic direttamente su "MindZoom.app", senza passare
+   dal launcher: funziona lo stesso, ma il launcher toglie da solo il flag di
+   quarantena che macOS mette ai file arrivati da un'altra macchina (vedi
+   sotto "AL PRIMO AVVIO").
+
+Chiavetta formattata exFAT o Mac OS Extended (Journaled) vanno bene entrambe;
+Mac OS Extended o APFS sono piu' affidabili per i permessi di esecuzione.
+
+
+AL PRIMO AVVIO
+---------------
+L'app non e' firmata con un certificato Apple (firma "ad-hoc": vedi il
+commento in CMakeLists.txt se vuoi i dettagli tecnici). Copiata da un'altra
+macchina, macOS puo' mostrare "Apple non puo' verificare che MindZoom non
+contenga malware" o "sviluppatore non identificato".
+
+Se hai usato "Avvia MindZoom.command", di solito non compare: il launcher
+toglie il flag di quarantena da solo. Se compare comunque, o se hai aperto
+MindZoom.app direttamente:
+
+  Tasto destro (o Ctrl+clic) su MindZoom.app -> Apri -> Apri, invece del
+  doppio clic normale. Va fatto una volta sola.
+
+Alla prima connessione alla fascia, macOS chiede il permesso per il
+Bluetooth: va concesso, altrimenti l'app non trova la Muse.
+
+
+UNA SESSIONE, DALL'INIZIO ALLA FINE
+-------------------------------------
+1. Metti in carica la fascia la sera prima. Quasi tutti i problemi di
+   collegamento sono batteria in esaurimento.
+
+2. Accendi la fascia e indossala PRIMA di aprire il programma. Sposta i capelli
+   sotto la fascia sulla fronte e inumidisci leggermente i due contatti dietro
+   le orecchie.
+
+3. Apri MindZoom (vedi sopra). Premi INVIO per iniziare.
+
+4. Premi H per il pannello diagnostico. In basso trovi sempre i tasti attivi:
+
+     H pannello   B bluetooth   K ricalibra   V debug calibrazione   ESC/Q esce
+
+5. Il programma entra subito nell'esperienza: non c'e' piu' una calibrazione
+   separata da aspettare, gli estremi della banda si adattano da soli mentre
+   usi lo zoom (vedi COMANDI piu' sotto per il tasto K se vuoi rifare la
+   misura da capo).
+
+6. ESC per uscire. La sessione e' gia' salvata in "registrazioni", dentro
+   MindZoom.app/Contents/MacOS/.
+
+
+COMANDI
+-------
+INVIO        avvia (o ritenta se e' fallita)
+H            mostra o nasconde il pannello diagnostico
+B            modale di connessione Bluetooth (C riconnette, X disconnette)
+K            torna alla calibrazione da qualunque punto - utile se la banda
+             misurata non rappresenta piu' la persona che sta indossando la
+             fascia adesso
+V            overlay di debug della calibrazione (grafici)
+M            solo dopo una calibrazione fallita: usa una banda generica al
+             posto di quella personale
+D            segnale sintetico al posto della fascia, per provare l'app senza
+             indossarla (solo se la fascia non e' gia' collegata)
+P            riapre la scelta dello schermo di proiezione (solo con due
+             schermi collegati - vedi DUE SCHERMI piu' sotto)
+ESC / Q      esce (ESC chiude prima la modale Bluetooth, se aperta)
+
+Taratura dal vivo, a programma aperto (i valori si leggono nel pannello H):
+
+  FRECCE SU / GIU'      sensibilita': quanto e' veloce lo zoom
+  FRECCE SIN / DES      tolleranza: quanto e' facile far partire il movimento
+  S / MAIUSC+S          smoothing: piu' alto = piu' fluido ma piu' lento
+  E / MAIUSC+E          elastico: smoothing in piu' solo sullo zoom, piu' alto
+                        = piu' facile restare fermi, serve concentrazione piu'
+                        sostenuta per far scendere lo zoom
+  L                     accende e spegne l'aggancio ai livelli (diagnostico)
+  R                     riporta tutto ai valori di partenza (tienilo premuto
+                        quasi un secondo: riavvio completo, torna alla pagina
+                        d'ingresso e ributta via banda/calibrazione)
+
+Da riga di comando (facoltativo, l'uso normale e' col launcher):
+
+  MindZoom.app/Contents/MacOS/MindZoom --senza-log     non registrare la sessione
+  MindZoom.app/Contents/MacOS/MindZoom --calibrazione  ripristina la vecchia
+                                                        calibrazione a due fasi
+                                                        (per confronto)
+  MindZoom.app/Contents/MacOS/MindZoom --riproduci <file.mzr>
+                                                        rilegge una sessione
+                                                        registrata invece della
+                                                        fascia
+  MindZoom.app/Contents/MacOS/MindZoom --schermi       elenca i monitor
+                                                        rilevati ed esce, senza
+                                                        aprire niente
+  MindZoom.app/Contents/MacOS/MindZoom --schermo-singolo
+                                                        ignora il secondo
+                                                        schermo anche se c'e'
+
+
+DUE SCHERMI
+-----------
+Con almeno due monitor collegati ALL'AVVIO, il programma apre una seconda
+finestra senza bordo sul secondo schermo: il partecipante vede solo
+l'immagine a tutto schermo (con l'ingrandimento e la barra di scala), tu
+tieni pannello diagnostico e comandi sul primo. La prima volta (o se il
+layout dei monitor e' cambiato) chiede su quale schermo proiettare: frecce o
+cifre per scegliere, INVIO per confermare - un numero gigante compare
+fisicamente sullo schermo evidenziato, cosi' la scelta si conferma guardando.
+La scelta viene ricordata (in ~/Library/Application Support/MindZoom/) e non
+richiesta piu', a meno che il numero o la disposizione dei monitor cambi.
+Il tasto P riapre la scelta in qualunque momento, senza riavviare.
+
+IMPORTANTE: il secondo schermo va collegato PRIMA di aprire l'app. Se lo
+colleghi a programma gia' avviato con un solo monitor, non compare da solo -
+serve chiudere e riaprire. Scollegarlo invece, o cambiarne la disposizione,
+la app se ne accorge da sola (rientra a un solo schermo, o richiede la
+scelta se il monitor sostituito e' ambiguo).
+
+
+SE QUALCOSA NON VA
+-------------------
+"MindZoom.app e' danneggiato e non puo' essere aperto"
+  Flag di quarantena. Tasto destro -> Apri -> Apri, oppure rilancia da
+  "Avvia MindZoom.command" che lo toglie da solo.
+
+"Muse: RICERCA" che non cambia mai
+  La fascia e' spenta, scarica, o gia' collegata a un altro dispositivo.
+  Chiudi eventuali app Muse sul telefono. Tieni il Mac vicino alla fascia.
+
+Il pannello Bluetooth (tasto B) non mostra il dispositivo
+  Preferenze di Sistema -> Privacy e sicurezza -> Bluetooth: controlla che
+  Mind Zoom abbia il permesso concesso. Se non compare nella lista, riprova
+  a connetterti (tasto C nella modale): la richiesta di permesso compare alla
+  prima vera connessione.
+
+La fascia si scollega dopo poco
+  Quasi sempre e' la batteria in esaurimento. Mettila in carica.
+  Il programma prova comunque a riagganciarsi da solo.
+
+
+LE SESSIONI SI REGISTRANO DA SOLE
+------------------------------------
+Ogni volta che usi il programma, i dati grezzi della fascia vengono salvati in
+MindZoom.app/Contents/MacOS/registrazioni, con la data e l'ora nel nome. Se hai
+installato in Applicazioni tramite il launcher, quella cartella - e le
+registrazioni gia' fatte sulla chiavetta - si spostano insieme all'app.
