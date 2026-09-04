@@ -42,6 +42,10 @@ struct StartOptions {
     // dell'indice (control/adaptive_band.hpp). E' il motivo per cui esiste
     // questo ramo; false ripristina la calibrazione classica, per confronto.
     bool adaptiveBand = true;
+
+    // Pannello diagnostico nascosto all'avvio (tasto H per rimostrarlo). Per
+    // le demo a chi non deve vedere cifre e tasti: la vista e' solo la foto.
+    bool hudHidden = false;
 };
 
 /**

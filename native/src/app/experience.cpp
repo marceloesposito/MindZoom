@@ -2223,6 +2223,7 @@ std::string start(const StartOptions& opt) {
     g.landingVisible.store(true, std::memory_order_relaxed);
     // Va scritto PRIMA che parta il thread DSP, che lo legge una volta sola.
     g.adaptiveBand.store(opt.adaptiveBand, std::memory_order_relaxed);
+    g.hudVisible.store(!opt.hudHidden, std::memory_order_relaxed);
 
     g.openDebugLog(opt.debugDir);
 

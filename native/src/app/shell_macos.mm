@@ -44,6 +44,7 @@ struct Options {
     bool         adaptiveBand = true;
     bool         singleScreen = false;   // --schermo-singolo: ignora il secondo monitor
     bool         listScreens  = false;   // --schermi: elenca i monitor e esce
+    bool         hudHidden    = false;   // --senza-pannello: parte senza il pannello H
 };
 
 Options parseOptions(int argc, char** argv) {
@@ -60,6 +61,8 @@ Options parseOptions(int argc, char** argv) {
             o.singleScreen = true;
         } else if (a == "--schermi") {
             o.listScreens = true;
+        } else if (a == "--senza-pannello") {
+            o.hudHidden = true;
         }
     }
     if (!o.replayPath.empty()) o.record = false;
@@ -531,6 +534,7 @@ NSScreen* screenForDisplay(const mz::app::Display& d) {
     startOpt.replayPath    = _opt.replayPath;
     startOpt.debugDir      = debugDir;
     startOpt.adaptiveBand  = _opt.adaptiveBand;
+    startOpt.hudHidden     = _opt.hudHidden;
 
     const std::string err = mz::app::experience::start(startOpt);
     if (!err.empty()) {

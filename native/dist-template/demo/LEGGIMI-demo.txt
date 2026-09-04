@@ -1,0 +1,33 @@
+MIND ZOOM - DEMO
+Esplorazione di una fotografia al microscopio guidata dalle onde cerebrali
+
+Questa demo NON ha bisogno della fascia EEG: rilegge una sessione registrata
+(registrazione-demo.mzr) al posto del segnale dal vivo, cosi' si vede
+l'esperienza completa - la foto che si ingrandisce con la concentrazione e
+torna indietro con il rilassamento - esattamente com'e' andata quel giorno.
+
+Serve un Mac con macOS 11 (Big Sur) o piu' recente, Apple Silicon (M1 o
+successivi).
+
+
+COME SI AVVIA
+-------------
+1. Tieni i tre file in questa stessa cartella:
+     MindZoom.app, registrazione-demo.mzr, "Avvia Demo.command"
+2. Doppio clic su "Avvia Demo.command".
+   (Non su MindZoom.app direttamente: il launcher toglie da solo il blocco
+   che macOS mette alle app arrivate da un'altra macchina.)
+3. Nella finestra che si apre, premi INVIO per iniziare.
+
+Se macOS chiede conferma per aprire "Avvia Demo.command": tasto destro
+(o Ctrl+clic) sul file -> Apri -> Apri. Va fatto una volta sola.
+
+
+TASTI
+-----
+INVIO     inizia l'esperienza
+H         mostra o nasconde il pannello diagnostico (parte nascosto)
+ESC / Q   esce
+
+La registrazione dura circa 3 minuti e mezzo; alla fine la foto si ferma.
+Per rivederla, chiudi e rilancia "Avvia Demo.command".
