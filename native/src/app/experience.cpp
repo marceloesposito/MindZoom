@@ -1410,9 +1410,21 @@ private:
 
 // Pagina d'ingresso: molte piu' particelle degli altri due sciami, e piu'
 // piccole. Deve coprire tutto lo schermo, e su quella superficie il conteggio
-// del disco di calibrazione si leggerebbe come una spruzzata rada. I valori
-// sono stati scelti guardando la schermata, non a intuito.
-constexpr int   kLandingDots     = 15000;
+// del disco di calibrazione si leggerebbe come una spruzzata rada.
+//
+// Il numero e' MISURATO, non scelto a occhio: lo sciame e' l'unica cosa che
+// tenga la pagina d'ingresso sotto i 60 fps - senza, e' inchiodata al tetto
+// del vsync, e titolo, testo e pulsante col gradiente animato non costano
+// nulla. Sweep in finestra 1280x800 su schermo retina, cioe' 4,1 megapixel
+// per fotogramma, circa il doppio del carico di un proiettore 1080p:
+//
+//     puntini   15000   12000   9000   6000   3000
+//     fps        53-56   57-61    60     60     60
+//
+// 9000 e' il piu' alto che tenga i 60 senza un solo calo, ed e' risultato
+// indistinguibile da 15000 in un confronto a pixel nativi. Se in mostra il
+// proiettore mostrasse margine si puo' risalire.
+constexpr int   kLandingDots     = 9000;
 constexpr float kLandingDotScale = 0.48f;
 
 CausticSwarm gBreathSwarm;
