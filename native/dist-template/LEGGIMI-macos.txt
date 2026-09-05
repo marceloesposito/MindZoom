@@ -105,6 +105,8 @@ D            segnale sintetico al posto della fascia, per provare l'app senza
              indossarla (solo se la fascia non e' gia' collegata)
 P            riapre la scelta dello schermo di proiezione (solo con due
              schermi collegati - vedi DUE SCHERMI piu' sotto)
+F            manda a tutto schermo la proiezione in finestra (serve solo con
+             --proiezione-finestra: vedi SE IL DOPPIO SCHERMO NON PARTE)
 ESC / Q      esce (ESC chiude prima la modale Bluetooth, se aperta)
 
 Taratura dal vivo, a programma aperto (i valori si leggono nel pannello H):
@@ -137,11 +139,10 @@ Da riga di comando (facoltativo, l'uso normale e' col launcher):
                                                         ignora il secondo
                                                         schermo anche se c'e'
   MindZoom.app/Contents/MacOS/MindZoom --proiezione-finestra
-                                                        prova la modalita' a
-                                                        due schermi con la
                                                         proiezione in una
-                                                        finestra sullo stesso
-                                                        monitor
+                                                        finestra normale, da
+                                                        posizionare a mano
+                                                        (ripiego: vedi sotto)
   MindZoom.app/Contents/MacOS/MindZoom --pannello      parte col pannello
                                                         operatore gia' visibile
                                                         (--pannello-esperto:
@@ -245,6 +246,26 @@ colleghi a programma gia' avviato con un solo monitor, non compare da solo -
 serve chiudere e riaprire. Scollegarlo invece, o cambiarne la disposizione,
 la app se ne accorge da sola (rientra a un solo schermo, o richiede la
 scelta se il monitor sostituito e' ambiguo).
+
+
+SE IL DOPPIO SCHERMO NON PARTE (ripiego manuale)
+------------------------------------------------
+Se il posizionamento automatico non funziona - proiettore non riconosciuto,
+finestra sullo schermo sbagliato, scelta che non si conferma - c'e' una via
+manuale che non dipende da nessun rilevamento:
+
+  1. Chiudi l'app e riaprila da Terminale con:
+       MindZoom.app/Contents/MacOS/MindZoom --proiezione-finestra
+     La proiezione compare come finestra NORMALE, con la sua barra del
+     titolo, sullo stesso schermo.
+  2. Trascina quella finestra sul proiettore.
+  3. Premi F (o il pulsante verde della finestra): va a tutto schermo sul
+     monitor dove si trova. F di nuovo per tornare indietro.
+  4. La finestra dell'operatore resta sull'altro schermo con pannello e
+     grafici. I tasti funzionano da entrambe le finestre.
+
+Funziona anche con un solo monitor, per provare la configurazione prima
+della mostra.
 
 
 SE QUALCOSA NON VA

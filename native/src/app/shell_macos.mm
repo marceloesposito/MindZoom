@@ -191,6 +191,9 @@ static const NSTimeInterval kRHoldSeconds = 0.9;
 /** Tasto P: riapre la scelta senza riavviare, solo se la proiezione esiste gia'. */
 - (void)reopenPicker;
 
+/** Tasto F: la proiezione in finestra (--proiezione-finestra) a tutto schermo. */
+- (void)toggleProjectionFullScreen;
+
 /** Avvia (o riavvia) il CVDisplayLink agganciato al refresh dello schermo dato. */
 - (void)startDisplayLinkForScreen:(NSScreen*)screen;
 
@@ -300,6 +303,11 @@ static const NSTimeInterval kRHoldSeconds = 0.9;
             // fa parte di Key. Su Windows e' D; qui D e' gia' preso (dati
             // sintetici), quindi P - "proiezione".
             [self.controller reopenPicker];
+            return;
+        case 'f':
+            // Anche questa e' gestione di finestre: manda a tutto schermo la
+            // proiezione in finestra (--proiezione-finestra).
+            [self.controller toggleProjectionFullScreen];
             return;
         default: return;
     }
@@ -430,6 +438,20 @@ NSScreen* screenForDisplay(const mz::app::Display& d) {
     [self placeProjection:(_projIndex >= 0 ? _projIndex : 1)];
 }
 
+- (void)toggleProjectionFullScreen {
+    // Solo per la proiezione in finestra: quella vera e' gia' senza bordo e
+    // grande quanto lo schermo, e toggleFullScreen su una borderless non e'
+    // supportato da AppKit.
+    if (!_projWindow || !_opt.projWindowed) return;
+    // A tutto schermo la proiezione finisce su una Space propria e diventa la
+    // finestra attiva: i tasti li riceve lei. Non si riporta il fuoco
+    // sull'operatore (a schermo singolo lo si perderebbe di vista) - entrambe
+    // le viste hanno lo stesso gestore, quindi i comandi funzionano da
+    // qualunque delle due sia attiva.
+    [_projWindow toggleFullScreen:nil];
+    [_projWindow makeFirstResponder:_projView];
+}
+
 - (BOOL)handlePickerKeyCode:(unsigned short)keyCode chars:(NSString*)chars {
     if (!_choosing) return NO;
     const int n = static_cast<int>(_displays.size());
@@ -496,6 +518,10 @@ NSScreen* screenForDisplay(const mz::app::Display& d) {
 
     _view = [[MZView alloc] initWithFrame:frame];
     _view.controller = self;
+    // Senza questo la vista NON segue la finestra quando cambia dimensione:
+    // entrando a tutto schermo resta grande com'era e il disegno finisce
+    // confinato in un angolo (visto a schermo). Vale per entrambe le finestre.
+    _view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     _window.contentView = _view;
 
     // --- schermi ---
@@ -513,8 +539,10 @@ NSScreen* screenForDisplay(const mz::app::Display& d) {
         // A differenza della proiezione vera (borderless, mai key) questa
         // finestra puo' prendere il focus: i tasti devono funzionare lo stesso.
         _projView.controller = self;
+        _projView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
         _projWindow.contentView = _projView;
         [_projWindow orderFront:nil];
+        [_projWindow makeFirstResponder:_projView];
     } else if (wantDual) {
         // Senza bordo, senza titolo: canBecomeKeyWindow torna NO di default per
         // una finestra borderless (vedi NSWindow), quindi non ruba mai il focus
@@ -529,6 +557,7 @@ NSScreen* screenForDisplay(const mz::app::Display& d) {
         _projWindow.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces |
                                          NSWindowCollectionBehaviorStationary;
         _projView = [[MZView alloc] initWithFrame:NSMakeRect(0, 0, 640, 480)];
+        _projView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
         _projWindow.contentView = _projView;
     }
 
