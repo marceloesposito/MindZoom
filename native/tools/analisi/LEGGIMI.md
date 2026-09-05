@@ -106,3 +106,25 @@ corta/rumorosa per fidarsene) prima di fidarsi del resto dei numeri.
 Fonti: [Pope, Bogart & Bartolome 1995, NASA NTRS 19970003078](https://ntrs.nasa.gov/citations/19970003078) ·
 [Van Son et al. 2020, Appl Psychophysiol Biofeedback 45(3):195-210](https://pmc.ncbi.nlm.nih.gov/articles/PMC7391399/) ·
 [Raufi & Longo, arXiv:2202.12937 - alpha/theta ratios come indice di carico mentale](https://arxiv.org/abs/2202.12937)
+
+## Una sessione sana, da confrontare (05/09/2026)
+
+`riferimento/sessione-sana-20260905.log` e' il log di diagnostica di una sessione
+reale con la fascia, andata bene dall'inizio alla fine. Serve da termine di paragone
+quando in mostra qualcosa non torna: si apre il log della sessione storta accanto a
+questo e si guarda dove le due divergono.
+
+Cosa deve assomigliare a questo:
+
+- la sequenza dei codici: `MZ-B02` (ricerca) → `MZ-B03` (connessione) → `MZ-I03`
+  (pagina d'ingresso) → `MZ-I02` (adattamento, ~20 s) → `MZ-00` (tutto regolare);
+- le righe `adattiva:` che passano da `pronta=0 riscaldamento=0%` a `pronta=1
+  riscaldamento=100%` con una banda sensata (qui `[0.63 .. 1.42] M=0.89`);
+- nelle righe `[stato]`: `fresh=1 fault=0 contact=1`, `fps` a 60, e i pacchetti che
+  crescono con una resa di circa due terzi (qui 2861 validi su 4023 grezzi);
+- l'ultima riga `=== fine sessione (chiusura regolare) ===`. Se manca, il programma
+  non e' stato chiuso con ESC/Q: o e' caduto (allora c'e' `[MZ-X01]` col suo stack)
+  o e' stato interrotto dall'esterno.
+
+Comparse di `MZ-S07` (movimento) sparse durante l'esperienza sono normali: sono i
+momenti in cui la persona si e' mossa, e passano da soli.
