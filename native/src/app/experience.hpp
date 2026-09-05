@@ -43,10 +43,14 @@ struct StartOptions {
     // questo ramo; false ripristina la calibrazione classica, per confronto.
     bool adaptiveBand = true;
 
-    // Pannello diagnostico nascosto all'avvio (tasto H per rimostrarlo). Per
-    // le demo a chi non deve vedere cifre e tasti: la vista e' solo la foto.
-    bool hudHidden = false;
+    // Livello del pannello operatore all'avvio: 0 nascosto (default: in mostra
+    // il pubblico vede solo l'immagine), 1 base (stato, diagnosi, FPS), 2
+    // esperto (tutte le letture numeriche e la taratura). Il tasto H cicla.
+    int hudLevel = 0;
 };
+
+/** Percorso del log di diagnostica della sessione corrente (vuoto se non attivo). */
+std::string debugLogPath();
 
 /**
  * Avvia BLE (o la riproduzione da file) e il thread DSP.

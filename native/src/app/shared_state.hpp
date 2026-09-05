@@ -4,9 +4,26 @@
 // (consumatore). Deve restare banalmente copiabile: viene pubblicato con un
 // double buffer atomico, quindi niente std::string e niente puntatori.
 
+#include "config.hpp"
+
 #include <cstdint>
 
 namespace mz::app {
+
+/**
+ * Ultimo secondo di segnale, in ordine di tempo, per i grafici del pannello
+ * operatore: i quattro canali fisici con la sola DC rimossa ("grezzo"), il
+ * canale bipolare filtrato in banda ("processato", e' quello su cui si
+ * calcola l'indice) e il suo spettro. Pubblicato dal thread DSP a ogni frame
+ * (~5 Hz) con lo stesso double buffer dello stato: ~6 KB copiati, niente
+ * allocazioni, nessun costo che si veda.
+ */
+struct WaveSnapshot {
+    float raw[config::kChannels][config::kStftWindow]{};
+    float processed[config::kStftWindow]{};
+    float spectrum[config::kStftBins]{};
+    std::uint64_t frame = 0;   // 0 = mai pubblicato
+};
 
 /** Comandi dalla UI al thread DSP. Uno alla volta, via atomica. */
 enum class Command : int {

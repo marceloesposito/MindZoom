@@ -82,9 +82,8 @@ public:
      * non la supporta (solo macOS per ora), drawText ripiega sul font di
      * sistema: mai fatale.
      *
-     * Oggi non serve: i due caratteri in uso (Iowan Old Style per gli accenti,
-     * Helvetica Neue per il corpo) sono entrambi di sistema. Resta per quando
-     * servisse di nuovo un font non presente su ogni macchina.
+     * Serve al font di corpo, Manrope (<dir>/Manrope-Variable.ttf), che non e'
+     * di sistema; l'accento (Iowan Old Style) lo e'.
      */
     bool loadFonts(const std::wstring& dir);
 
@@ -149,7 +148,7 @@ public:
 
     // drawText/drawTextCentered disegnano nel font d'accento (Iowan Old Style):
     // intestazioni, cifre, etichette dei pulsanti. drawTextBody e la sua
-    // variante centrata usano invece un sans neutro (Helvetica Neue) per il
+    // variante centrata usano invece un sans neutro (Manrope) per il
     // corpo del testo - stessa idea dell'accoppiamento titolo/corpo dello
     // stile svizzero, due famiglie con un ruolo ciascuna invece di una sola
     // ovunque.
@@ -169,6 +168,27 @@ public:
     /** Come fillRect, ma con un'ombra morbida dietro (blur gaussiano, offset in coordinate finestra). */
     void fillRectShadow(Rect r, Color color, float radius, Color shadowColor, float shadowBlur,
                         Point shadowOffset);
+
+    /**
+     * Rettangolo arrotondato riempito e poi sfocato per intero (bordi
+     * compresi), come il "layer blur" di Figma; `sigma` e' la deviazione
+     * standard della gaussiana, in pixel logici.
+     */
+    void fillRectBlurred(Rect r, Color color, float radius, float sigma);
+
+    /**
+     * Ombra interna senza offset: un bagliore del colore dato lungo il bordo
+     * interno, pieno per `spread` pixel e poi sfumato con `sigma`.
+     */
+    void fillInnerGlow(Rect r, Color color, float radius, float sigma, float spread = 0.0f);
+
+    /**
+     * Contorno con sfumatura lineare lungo il tratto. `positions` in [0,1];
+     * `from`/`to` in coordinate finestra sono i punti dove la sfumatura vale 0 e 1
+     * (oltre, si prolunga col colore estremo).
+     */
+    void drawRectOutlineGradient(Rect r, const Color* stops, const float* positions, int count,
+                                 Point from, Point to, float stroke, float radius);
 
     void fillCircle(Point center, float radius, Color color);
 

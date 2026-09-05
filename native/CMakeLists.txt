@@ -150,6 +150,7 @@ elseif(APPLE)
     add_executable(mz_app MACOSX_BUNDLE
         src/app/experience.cpp
         src/app/telemetry.cpp
+        src/app/crash_posix.cpp
         src/app/shell_macos.mm
     )
     target_link_libraries(mz_app PRIVATE mz_ble mz_render mz_platform
@@ -167,11 +168,17 @@ elseif(APPLE)
                 "$<TARGET_FILE_DIR:mz_app>/assets"
         COMMENT "Copia delle immagini in assets/")
 
-    # Nessun font da impacchettare: l'accento e' Iowan Old Style e il corpo
-    # Helvetica Neue, entrambi di sistema su macOS. La copia della cartella
-    # assets/fonts serviva a Space Grotesk (e poi a Newsreader), che non si
-    # usano piu'; GraphicsCore::loadFonts resta al suo posto per quando
-    # servisse di nuovo un carattere non presente su ogni Mac.
+    # Il font di corpo (Manrope) non e' di sistema: viaggia nel bundle, in
+    # <bundle>/Contents/MacOS/fonts, dove lo shell lo registra con
+    # GraphicsCore::loadFonts. L'accento (Iowan Old Style) e' di sistema e non
+    # va impacchettato. Si copia il solo file che serve, non la cartella:
+    # assets/fonts contiene ancora i vecchi Space Grotesk e Newsreader.
+    add_custom_command(TARGET mz_app POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:mz_app>/fonts"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/Manrope-Variable.ttf"
+                "$<TARGET_FILE_DIR:mz_app>/fonts/Manrope-Variable.ttf"
+        COMMENT "Copia di Manrope in fonts/")
 
     # La firma che il linker mette da solo (adhoc,linker-signed) copre solo
     # l'eseguibile nudo, PRIMA che gli step qui sopra riempiano il bundle: non

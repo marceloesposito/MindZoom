@@ -37,6 +37,7 @@
 #include <algorithm>
 #include <codecvt>
 #include <locale>
+#include <cstdint>
 #include <vector>
 
 namespace mz::render {
@@ -102,16 +103,42 @@ CTFontRef cachedTextFont(CGFloat size, CGFloat weight) {
 }
 
 /**
- * Helvetica Neue: la controparte umanistica di Segoe UI, presente su ogni
- * macOS - e il font da cui e' nato lo stile svizzero (Akzidenz-Grotesk prima,
- * Helvetica poi). Fa da corpo neutro sotto le intestazioni in Iowan Old Style:
- * l'accoppiata serif per i titoli e sans per il corpo e' la stessa
- * dell'impaginato editoriale, e mantiene leggibili le righe piccole di
- * diagnostica, dove le grazie a 12px si impasterebbero.
+ * Manrope: il sans geometrico dell'identita' grafica (vedi il pulsante
+ * d'ingresso in experience.cpp), al posto di Helvetica Neue. Fa da corpo
+ * neutro sotto le intestazioni in Iowan Old Style: l'accoppiata serif per i
+ * titoli e sans per il corpo e' la stessa dell'impaginato editoriale.
+ *
+ * NON e' di sistema: viaggia nel bundle (assets/fonts, registrato da
+ * GraphicsCore::loadFonts). E' un font a variazione con il solo asse 'wght'
+ * (200..800) e l'istanza di default e' la Light, quindi il peso va chiesto
+ * esplicitamente via kCTFontVariationAttribute: 400 per il corpo, 600 per il
+ * "grassetto". Se il file manca, CoreText ripiega sul font di sistema.
  */
 CTFontRef createBodyFont(CGFloat size, bool bold) {
-    return CTFontCreateWithName(bold ? CFSTR("HelveticaNeue-Medium") : CFSTR("HelveticaNeue"),
-                                size, nullptr);
+    const std::int64_t wghtTag    = 0x77676874;   // 'wght'
+    const double       wghtValue  = bold ? 600.0 : 400.0;
+    CFNumberRef tag = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt64Type, &wghtTag);
+    CFNumberRef val = CFNumberCreate(kCFAllocatorDefault, kCFNumberDoubleType, &wghtValue);
+    const void* axisKeys[] = {tag};
+    const void* axisVals[] = {val};
+    CFDictionaryRef variation = CFDictionaryCreate(kCFAllocatorDefault, axisKeys, axisVals, 1,
+                                                   &kCFTypeDictionaryKeyCallBacks,
+                                                   &kCFTypeDictionaryValueCallBacks);
+    CFRelease(tag);
+    CFRelease(val);
+
+    const void* keys[] = {kCTFontNameAttribute, kCTFontVariationAttribute};
+    const void* vals[] = {CFSTR("ManropeVariable-Light"), variation};
+    CFDictionaryRef attrs = CFDictionaryCreate(kCFAllocatorDefault, keys, vals, 2,
+                                               &kCFTypeDictionaryKeyCallBacks,
+                                               &kCFTypeDictionaryValueCallBacks);
+    CFRelease(variation);
+
+    CTFontDescriptorRef desc = CTFontDescriptorCreateWithAttributes(attrs);
+    CFRelease(attrs);
+    CTFontRef font = CTFontCreateWithFontDescriptor(desc, size, nullptr);
+    CFRelease(desc);
+    return font;
 }
 
 /** Stessa cache di cachedTextFont, per il font di corpo. */
@@ -313,13 +340,12 @@ bool GraphicsCore::loadSprites(const std::wstring& dir, const int* magnitudes, i
 }
 
 bool GraphicsCore::loadFonts(const std::wstring& dir) {
-    // Oggi non serve a niente: sia il font d'accento (Iowan Old Style) sia
-    // quello di corpo (Helvetica Neue) sono di sistema, e la cartella non
-    // esiste nemmeno nel bundle. Resta perche' e' l'unico punto in cui
-    // impacchettare un font tornerebbe utile - per esempio se si volesse un
-    // carattere non presente su ogni Mac - e perche' il valore di ritorno non
-    // e' mai stato fatale: chi chiama disegna comunque, col font di sistema.
-    const std::wstring path = dir + L"/Accent.ttf";
+    // Il font di corpo (Manrope, vedi createBodyFont) non e' di sistema:
+    // il CMakeLists lo copia in <bundle>/Contents/MacOS/fonts e qui si
+    // registra per il processo. L'accento (Iowan Old Style) resta di sistema.
+    // Il valore di ritorno non e' fatale: senza registrazione chi chiama
+    // disegna comunque, col font di sistema.
+    const std::wstring path = dir + L"/Manrope-Variable.ttf";
     CFStringRef cfPath = toCFString(path);
     if (!cfPath) return false;
 
@@ -694,6 +720,107 @@ void Renderer::fillRectShadow(Rect r, Color color, float radius, Color shadowCol
     } else {
         CGContextFillRect(d.ctx, toCG(r));
     }
+    CGContextRestoreGState(d.ctx);
+}
+
+// Funzione di ripartizione della normale standard: quanta parte di un bordo
+// sfocato con sigma 1 e' "coperta" alla distanza x (positiva verso l'interno).
+inline float gaussCdf(float x) noexcept {
+    return 0.5f * (1.0f + std::erf(x / std::sqrt(2.0f)));
+}
+
+// Le due primitive "sfocate" non usano il blur di Core Graphics: l'unico
+// disponibile e' quello delle ombre, e il trucco classico (disegnare la forma
+// fuori dal ritaglio con un'ombra che ricade dentro) qui non funzionava -
+// con la forma spostata fuori dalla finestra Core Graphics non disegnava
+// nemmeno l'ombra. Si costruisce invece il profilo gaussiano a gradini, con
+// forme concentriche: per un bordo sfocato a queste dimensioni (sigma di
+// qualche pixel) i gradini non si vedono.
+
+void Renderer::fillRectBlurred(Rect r, Color color, float radius, float sigma) {
+    auto& d = *impl_;
+    if (!d.ctx) return;
+    if (sigma <= 0.05f) { fillRect(r, color, radius); return; }
+
+    // Pillole annidate da -2 sigma (fuori) a +2 sigma (dentro); l'opacita' di
+    // ciascuna e' quella che, composta sulle precedenti, riproduce la CDF
+    // gaussiana. L'ultima e' piena: da +2 sigma in dentro il colore e' intero.
+    constexpr int kSteps = 10;
+    float covered = 0.0f;
+    for (int k = 0; k < kSteps; ++k) {
+        const float inset  = (-2.0f + 4.0f * (static_cast<float>(k) + 0.5f) / kSteps) * sigma;
+        const float target = (k == kSteps - 1) ? 1.0f : gaussCdf(inset / sigma);
+        const float alpha  = (target - covered) / std::max(1.0f - covered, 1e-4f);
+        covered            = target;
+        const Rect ring = rect(r.left + inset, r.top + inset, r.right - inset, r.bottom - inset);
+        if (ring.width() <= 0.0f || ring.height() <= 0.0f) break;
+        fillRect(ring, {color.r, color.g, color.b, color.a * std::clamp(alpha, 0.0f, 1.0f)},
+                 std::max(0.0f, radius - inset));
+    }
+}
+
+void Renderer::fillInnerGlow(Rect r, Color color, float radius, float sigma, float spread) {
+    auto& d = *impl_;
+    if (!d.ctx || sigma <= 0.05f) return;
+
+    CGContextSaveGState(d.ctx);
+    if (radius > 0.0f) addRoundedRect(d.ctx, toCG(r), radius);
+    else               CGContextAddRect(d.ctx, toCG(r));
+    CGContextClip(d.ctx);
+
+    // La parte piena (spread) e' un anello solo; poi fasce concentriche
+    // disgiunte fino a 3 sigma: l'ombra interna vale 1 - CDF(x/sigma) alla
+    // profondita' x oltre lo spread, e ogni fascia prende il valore al suo
+    // centro. Non si sovrappongono, quindi niente composizione da compensare.
+    if (spread > 0.0f) {
+        const float half = spread * 0.5f;
+        drawRectOutline(rect(r.left + half, r.top + half, r.right - half, r.bottom - half), color,
+                        spread, std::max(0.0f, radius - half));
+    }
+    constexpr int kBands = 8;
+    const float   w      = 3.0f * sigma / kBands;
+    for (int k = 0; k < kBands; ++k) {
+        const float soft  = (static_cast<float>(k) + 0.5f) * w;
+        const float depth = spread + soft;
+        const float alpha = 1.0f - gaussCdf(soft / sigma);
+        if (alpha < 0.004f) break;
+        const Rect band = rect(r.left + depth, r.top + depth, r.right - depth, r.bottom - depth);
+        drawRectOutline(band, {color.r, color.g, color.b, color.a * alpha}, w,
+                        std::max(0.0f, radius - depth));
+    }
+    CGContextRestoreGState(d.ctx);
+}
+
+void Renderer::drawRectOutlineGradient(Rect r, const Color* stops, const float* positions,
+                                       int count, Point from, Point to, float stroke,
+                                       float radius) {
+    auto& d = *impl_;
+    if (!d.ctx || !stops || !positions || count < 2) return;
+
+    CGContextSaveGState(d.ctx);
+    CGContextSetLineWidth(d.ctx, stroke);
+    if (radius > 0.0f) addRoundedRect(d.ctx, toCG(r), radius);
+    else               CGContextAddRect(d.ctx, toCG(r));
+    CGContextReplacePathWithStrokedPath(d.ctx);
+    CGContextClip(d.ctx);
+
+    std::vector<CGFloat> comps(static_cast<std::size_t>(count) * 4);
+    std::vector<CGFloat> locs(static_cast<std::size_t>(count));
+    for (int i = 0; i < count; ++i) {
+        comps[i * 4 + 0] = stops[i].r;
+        comps[i * 4 + 1] = stops[i].g;
+        comps[i * 4 + 2] = stops[i].b;
+        comps[i * 4 + 3] = stops[i].a;
+        locs[i]          = positions[i];
+    }
+    CGColorSpaceRef cs   = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGGradientRef   grad = CGGradientCreateWithColorComponents(cs, comps.data(), locs.data(),
+                                                               static_cast<std::size_t>(count));
+    CGContextDrawLinearGradient(d.ctx, grad, CGPointMake(from.x, from.y), CGPointMake(to.x, to.y),
+                                kCGGradientDrawsBeforeStartLocation |
+                                    kCGGradientDrawsAfterEndLocation);
+    CGGradientRelease(grad);
+    CGColorSpaceRelease(cs);
     CGContextRestoreGState(d.ctx);
 }
 

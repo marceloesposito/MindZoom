@@ -1,5 +1,7 @@
 #include "app/experience.hpp"
 
+#include "app/crash.hpp"
+#include "app/diagnostics.hpp"
 #include "app/platform.hpp"
 #include "ble/muse.hpp"
 #include "ble/recording.hpp"
@@ -40,15 +42,17 @@ using namespace mz;
 // fasi attive disegnano l'elemento centrato sullo schermo intero, senza
 // pannello attorno (vedi drawCalibrationCard).
 
-constexpr render::Color kBg        {0.02f, 0.02f, 0.03f, 1.0f};
-constexpr render::Color kInk       {0.92f, 0.94f, 0.98f, 1.0f};
-constexpr render::Color kMuted     {0.62f, 0.66f, 0.73f, 1.0f};
-constexpr render::Color kAccent    {0.24f, 0.76f, 0.95f, 1.0f};   // ciano: fase di concentrazione
-constexpr render::Color kAccent2   {0.40f, 0.80f, 0.38f, 1.0f};   // verde: fase di rilassamento
-constexpr render::Color kOk        {0.30f, 0.85f, 0.55f, 1.0f};
+// Tavolozza: blu notte, ciano e verde acido - la stessa identita' del
+// pulsante d'ingresso (drawEntryButton), che viene dal disegno Figma.
+constexpr render::Color kBg        {0.012f, 0.020f, 0.075f, 1.0f};   // #030513 blu notte
+constexpr render::Color kInk       {0.95f, 0.97f, 1.0f, 1.0f};
+constexpr render::Color kMuted     {0.60f, 0.67f, 0.82f, 1.0f};
+constexpr render::Color kAccent    {0.0f, 0.75f, 1.0f, 1.0f};        // #00BFFF ciano: fase di concentrazione
+constexpr render::Color kAccent2   {0.576f, 1.0f, 0.463f, 1.0f};     // #93FF76 verde: fase di rilassamento
+constexpr render::Color kOk        {0.50f, 0.93f, 0.46f, 1.0f};
 constexpr render::Color kWarn      {0.96f, 0.62f, 0.26f, 1.0f};
 constexpr render::Color kBad       {0.94f, 0.36f, 0.36f, 1.0f};
-constexpr render::Color kPanel     {0.075f, 0.08f, 0.115f, 0.95f};   // base dei pannelli a sfumatura
+constexpr render::Color kPanel     {0.055f, 0.10f, 0.30f, 0.95f};    // #0E1A4D base dei pannelli a sfumatura
 constexpr render::Color kShadow    {0.0f, 0.0f, 0.0f, 0.5f};
 
 /**
@@ -64,8 +68,8 @@ constexpr render::Color darken(render::Color c, float amount) noexcept {
 // Tavolozza per l'effetto caustico/particellare dei cerchi animati della
 // calibrazione (drawCausticSphere, usata da drawBreathingCircles e
 // drawFocusTarget): verde-blu invece della sfumatura "alla Siri" di prima.
-constexpr render::Color kSiriBlue {0.25f, 0.55f, 1.00f, 1.0f};
-constexpr render::Color kSiriGreen{0.35f, 0.90f, 0.50f, 1.0f};
+constexpr render::Color kSiriBlue {0.10f, 0.33f, 0.95f, 1.0f};
+constexpr render::Color kSiriGreen{0.576f, 1.0f, 0.463f, 1.0f};
 
 /** Pallino numerato (badge) per i due passaggi della calibrazione: cerchio pieno + cifra. */
 void drawStepBadge(render::Renderer& r, render::Point c, float radius, int number, bool active,
@@ -93,6 +97,106 @@ void drawPillButton(render::Renderer& r, render::Rect box, const std::wstring& l
 }
 
 /**
+ * Pulsante d'ingresso: e' il gruppo Figma 5:6 (620x130) riprodotto livello
+ * per livello, coi valori letti dal file; tutto e' in proporzione all'altezza
+ * del box (s = 1 alla dimensione originale).
+ *
+ *   1. pillola base #1A3281 con ombra interna ciano #00BFFF (blur 7.8);
+ *   2. sopra, una pillola piu' piccola (rientro 8x6) #0B1F61 con layer blur
+ *      26.4: e' lei a fare l'interno scuro che schiarisce verso il bordo;
+ *   3. contorno 2px INTERNO a sfumatura lineare verde -> blu -> magenta,
+ *      con layer blur 5.6;
+ *   4. etichetta Manrope Regular 40, bianca.
+ *
+ * Il contorno sfocato e' l'unico pezzo approssimato: una sfumatura non passa
+ * per il trucco dell'ombra (che ha un colore solo), quindi si sommano quattro
+ * tratti concentrici di larghezza crescente e opacita' decrescente che
+ * ricalcano il profilo gaussiano misurato sul render di Figma (sigma ~2px,
+ * picco ~45%).
+ */
+void drawEntryButton(render::Renderer& r, render::Rect box, const std::wstring& label,
+                     double animT) {
+    constexpr render::Color kBase  {0.101f, 0.196f, 0.507f, 1.0f};   // #1A3281
+    constexpr render::Color kInner {0.042f, 0.121f, 0.379f, 1.0f};   // #0B1F61
+    constexpr render::Color kRim   {0.049f, 0.168f, 0.558f, 1.0f};   // #0D2B8E
+    constexpr render::Color kGlow  {0.0f,   0.75f,  1.0f,   1.0f};   // #00BFFF
+
+    const float radius = box.height() * 0.5f;
+    const float s      = box.height() / 130.0f;
+
+    r.fillRect(box, kBase, radius);
+
+    const render::Rect inner = render::rect(box.left + 8.0f * s, box.top + 6.0f * s,
+                                            box.right - 8.0f * s, box.bottom - 6.0f * s);
+    // I "blur" di Figma sono raggi, non sigma: misurato sul render del bordo
+    // (blur 5.6 -> sigma ~2), il rapporto e' circa 2.8.
+    constexpr float kFigmaBlurToSigma = 1.0f / 2.8f;
+    r.fillRectBlurred(inner, kInner, radius - 6.0f * s, 26.4f * kFigmaBlurToSigma * s);
+    // Ombra interna del livello scuro (#0D2B8E, blur 29.5, spread 8): e' lei a
+    // tenere chiara la fascia vicino al bordo prima che l'interno scurisca.
+    r.fillInnerGlow(inner, kRim, radius - 6.0f * s, 29.5f * kFigmaBlurToSigma * s, 8.0f * s);
+
+    r.fillInnerGlow(box, kGlow, radius, 7.8f * kFigmaBlurToSigma * s);
+
+    // Sfumatura di Figma: u = a*x/W + b*y/H + tx in coordinate normalizzate
+    // del nodo, verde a u=0, blu a 0.53, magenta a u=1. Per animarla la si
+    // rende periodica - la rampa e poi la stessa a specchio, periodo 2 - e la
+    // si fa scorrere lungo il proprio asse: i colori viaggiano da sinistra a
+    // destra e ogni punto del bordo passa verde -> blu -> magenta -> blu ->
+    // verde, senza mai un salto. Nel fotogramma con fase 0 e' esattamente il
+    // disegno statico.
+    constexpr float a = 1.6368624f, b = 0.13640025f, tx = -0.38663131f;
+    const float gx = a / box.width(), gy = b / box.height();
+    const float g2 = gx * gx + gy * gy;
+    constexpr double kGradientPeriodS = 6.0;
+    const float phase = static_cast<float>(std::fmod(animT / kGradientPeriodS, 1.0)) * 2.0f;
+    // Il bordo visibile copre u in [-0.39, 1.39]; con la fase fino a 2 serve
+    // il motivo da u=-3 a u=2 (mappato su [0,1] con posizioni /5).
+    constexpr float kU0 = -3.0f, kU1 = 2.0f;
+    const auto at = [&](float u) {
+        const float uu = u + phase;
+        return render::Point{box.left + uu * gx / g2 - tx * gx / g2,
+                             box.top + uu * gy / g2 - tx * gy / g2};
+    };
+    const render::Point from = at(kU0), to = at(kU1);
+    constexpr render::Color kGreen  {0.578f, 1.0f,  0.461f, 1.0f};   // #93FF76
+    constexpr render::Color kBlue   {0.0f,   0.35f, 1.0f,   1.0f};   // #0059FF
+    constexpr render::Color kMagenta{0.95f,  0.0f,  1.0f,   1.0f};   // #F200FF
+    constexpr float kMid = 0.5288461f;
+    constexpr int   kStopCount = 11;
+    constexpr render::Color kStopBase[kStopCount] = {
+        kGreen, kBlue, kMagenta, kBlue, kGreen, kBlue, kMagenta, kBlue, kGreen, kBlue, kMagenta};
+    constexpr float kStopU[kStopCount] = {
+        -3.0f, -3.0f + kMid, -2.0f, -1.0f - kMid, -1.0f, -1.0f + kMid, 0.0f, 1.0f - kMid,
+        1.0f, 1.0f + kMid, 2.0f};
+    float stopPos[kStopCount];
+    for (int i = 0; i < kStopCount; ++i) stopPos[i] = (kStopU[i] - kU0) / (kU1 - kU0);
+
+    // Tratto 2px interno: il suo centro sta 1px dentro il bordo.
+    const render::Rect edge =
+        render::rect(box.left + s, box.top + s, box.right - s, box.bottom - s);
+    constexpr float kSigma = 1.8f;
+    // Larghezze (in sigma) e opacita' composte in sequenza dal piu' largo al
+    // piu' stretto: il profilo risultante e' la gaussiana a gradini, picco
+    // ~55%. (Col picco al 45% misurato sul render il bordo usciva piu' fioco
+    // del riferimento messo a confronto: la resa su schermo non e' la stessa.)
+    constexpr float kRingHalfW[4] = {2.75f, 2.0f, 1.25f, 0.5f};
+    constexpr float kRingAlpha[4] = {0.014f, 0.070f, 0.210f, 0.320f};
+    for (int k = 0; k < 4; ++k) {
+        render::Color stops[kStopCount];
+        for (int i = 0; i < kStopCount; ++i) {
+            stops[i]   = kStopBase[i];
+            stops[i].a = kRingAlpha[k];
+        }
+        r.drawRectOutlineGradient(edge, stops, stopPos, kStopCount, from, to,
+                                  2.0f * kRingHalfW[k] * kSigma * s, radius - s);
+    }
+
+    r.drawTextBodyCentered(label, {(box.left + box.right) * 0.5f, (box.top + box.bottom) * 0.5f},
+                           40.0f * s, {1.0f, 1.0f, 1.0f, 1.0f});
+}
+
+/**
  * Una notifica Bluetooth cosi' com'e' arrivata. Dimensione fissa per non
  * allocare nel callback GATT, che non deve mai bloccarsi.
  */
@@ -105,6 +209,7 @@ struct Shared {
     util::SpscRing<ble::Sample, 16384> ring;
     util::SpscRing<RawPacket, 2048>    rawRing;
     util::DoubleBuffer<app::ControlState> state;
+    util::DoubleBuffer<app::WaveSnapshot> wave;
 
     control::Tunables                     tune;
     util::DoubleBuffer<control::Tunables> tunables;
@@ -114,7 +219,8 @@ struct Shared {
     std::atomic<int>           command{static_cast<int>(app::Command::None)};
     std::atomic<bool>          running{true};
     std::atomic<std::uint64_t> dropped{0};
-    std::atomic<bool>          hudVisible{true};
+    // 0 nascosto, 1 base, 2 esperto: vedi StartOptions::hudLevel.
+    std::atomic<int>           hudLevel{0};
     std::atomic<bool>          quitRequested{false};
     // Pagina d'ingresso: la prima cosa che si vede all'avvio, prima ancora
     // della calibrazione. Non e' uno stato della calibrazione - riguarda
@@ -149,6 +255,7 @@ struct Shared {
     // crash che serve di piu'.
     std::mutex    debugLogMutex;
     std::ofstream debugLog;
+    std::string   debugLogPath;
 
     void openDebugLog(const std::wstring& dir) {
         if (dir.empty()) return;
@@ -166,11 +273,21 @@ struct Shared {
         std::lock_guard<std::mutex> lock(debugLogMutex);
         debugLog.open(path, std::ios::out | std::ios::trunc);
         if (debugLog.is_open()) {
+            debugLogPath = path;
+            // Il log deve leggersi da solo, senza il programma accanto: la
+            // legenda dei codici sta in testa, e ogni riga [MZ-...] porta
+            // comunque il proprio testo in chiaro.
             debugLog << "=== Mind Zoom - log di diagnostica (macOS) ===\n"
                      << "build: " << __DATE__ << " " << __TIME__ << "\n"
                      << "kLocalTolerance=" << config::kLocalTolerance
                      << " kSampleRate=" << config::kSampleRate
-                     << " kChannels=" << config::kChannels << "\n";
+                     << " kChannels=" << config::kChannels << "\n"
+                     << "Come leggerlo: le righe [MZ-xNN] sono lo stato del sistema in linguaggio\n"
+                     << "naturale (B = Bluetooth/fascia, S = segnale EEG, C = calibrazione,\n"
+                     << "R = grafica/prestazioni, A = avvio, I = informativo, X = crash).\n"
+                     << "Ogni 10 s una riga [stato] riassume fps, fase e codice corrente:\n"
+                     << "se il file finisce senza '=== fine sessione ===' e senza '[MZ-X01]',\n"
+                     << "il programma e' stato interrotto dall'esterno (chiuso a forza o spento).\n";
             debugLog.flush();
         }
     }
@@ -313,7 +430,7 @@ std::string startReplayInternal(const std::wstring& path) {
  */
 void startSyntheticInternal() {
     constexpr double kSyntheticSeconds = 600.0;   // 10 minuti: non si esaurisce a meta' prova
-    beginReplay(L"dati simulati", ble::synthetic::generate(kSyntheticSeconds));
+    beginReplay(L"segnale simulato", ble::synthetic::generate(kSyntheticSeconds));
 }
 
 /**
@@ -497,6 +614,25 @@ void dspThread() {
             st.spreadCounts  = quality.spreadCounts;
             st.mainsFraction = quality.mainsFraction;
             signalPlausible = (quality.fault == dsp::SignalFault::None);
+
+            // Forme d'onda per il pannello operatore: i ring dell'STFT
+            // srotolati in ordine di tempo. Static per non azzerare 6 KB a
+            // ogni frame; il thread DSP e' uno solo.
+            static app::WaveSnapshot wave;
+            constexpr int kN = dsp::SlidingStft::kN;
+            for (int ch = 0; ch < config::kChannels; ++ch) {
+                const float* src = stft.dcFree(ch);
+                const int    w   = stft.writeIndex(ch);
+                for (int i = 0; i < kN; ++i) wave.raw[ch][i] = src[(w + 1 + i) % kN];
+            }
+            {
+                const float* src = stft.filtered(config::kBipolar);
+                const int    w   = stft.writeIndex(config::kBipolar);
+                for (int i = 0; i < kN; ++i) wave.processed[i] = src[(w + 1 + i) % kN];
+                std::memcpy(wave.spectrum, stft.mags(config::kBipolar), sizeof wave.spectrum);
+            }
+            wave.frame = st.frames;
+            g.wave.publish(wave);
         }
 
         const auto now = std::chrono::steady_clock::now();
@@ -701,7 +837,9 @@ inline render::Color swarmTint(float u) noexcept {
         {0.20f, 0.88f, 0.62f, 1.0f},   // smeraldo
         {0.15f, 0.82f, 0.78f, 1.0f},   // turchese
         {0.18f, 0.72f, 0.92f, 1.0f},   // ciano
-        kSiriBlue,                     // blu, estremo opposto
+        kSiriBlue,                     // blu
+        {0.55f, 0.18f, 1.00f, 1.0f},   // viola, di passaggio
+        {0.95f, 0.00f, 1.00f, 1.0f},   // fucsia #F200FF, lo stesso del bordo del pulsante
     };
     constexpr int kCount = static_cast<int>(sizeof(kStops) / sizeof(kStops[0]));
 
@@ -1170,10 +1308,10 @@ private:
             // forma conta piu' del movimento.
             const float vivacita = kDynamism * (1.0f - 0.60f * g);
             const float seed = causticHash(h + 5u);
-            ax += (std::sin(py_[si] * 3.1f + t * 0.28f + seed * kTau) * 0.45f +
-                   std::sin(py_[si] * 9.7f - t * 0.95f + seed * kTau * 2.1f) * 0.12f) * vivacita;
-            ay += (std::cos(px_[si] * 2.7f + t * 0.24f + seed * kTau * 1.3f) * 0.45f +
-                   std::cos(px_[si] * 8.3f - t * 0.85f + seed * kTau * 0.7f) * 0.12f) * vivacita;
+            ax += (std::sin(py_[si] * 3.1f + t * 0.42f + seed * kTau) * 0.45f +
+                   std::sin(py_[si] * 9.7f - t * 1.40f + seed * kTau * 2.1f) * 0.12f) * vivacita;
+            ay += (std::cos(px_[si] * 2.7f + t * 0.36f + seed * kTau * 1.3f) * 0.45f +
+                   std::cos(px_[si] * 8.3f - t * 1.30f + seed * kTau * 0.7f) * 0.12f) * vivacita;
 
             const float rr  = std::sqrt(px_[si] * px_[si] + py_[si] * py_[si]);
             const float lim = limitAt(px_[si], py_[si], bx, by, g);
@@ -1240,7 +1378,9 @@ private:
     // Quanto e' vivo il moto. E' il campo ondoso a dare il dinamismo, e la
     // velocita' di regime gli e' proporzionale a smorzamento fissato: questo
     // fattore moltiplica quindi, in pratica, la velocita' delle particelle.
-    static constexpr float kDynamism = 1.6f;
+    // Era 1.6 (con le frequenze del campo a 0.28/0.95/0.24/0.85): alzato di
+    // ~1.75x, e le frequenze di 1.5x, per un moto piu' rapido.
+    static constexpr float kDynamism = 2.8f;
     // Raggio minimo, in punti. Con l'antialiasing spento (vedi
     // Renderer::fillRects) un rettangolo piu' stretto di un pixel del
     // dispositivo puo' arrotondarsi a niente e il puntino sparisce a
@@ -1423,27 +1563,31 @@ void drawLandingPage(render::Renderer& r, const app::ControlState& st, double an
     // non solo l'esistenza di un legame fra attenzione e zoom: e' la lacuna
     // segnalata dai test con altre persone, che non sapevano su cosa
     // concentrarsi ne' come.
-    r.drawTextBody(L"Un viaggio dentro una fotografia al microscopio,\n"
-                   L"guidato dalla tua attenzione.\n"
-                   L"Concentrati su un dettaglio della foto e lo zoom cresce;\n"
-                   L"lascia andare lo sguardo, rilassati, e torna indietro.",
-                  render::rect(cx - 420.0f, cy - 148.0f, cx + 420.0f, cy + 20.0f), 19.0f, kMuted);
+    r.drawTextBody(L"Una fotografia al microscopio elettronico.\n"
+                   L"Una fascia legge la tua attività cerebrale e guida lo zoom:\n"
+                   L"concentrati per avvicinarti, rilassati per allontanarti.",
+                  render::rect(cx - 420.0f, cy - 140.0f, cx + 420.0f, cy + 20.0f), 19.0f, kMuted);
 
-    const render::Rect cta = render::rect(cx - 170.0f, cy + 240.0f, cx + 170.0f, cy + 300.0f);
-    drawPillButton(r, cta, L"Premi INVIO per iniziare", kAccent);
+    // Il pulsante non si clicca (l'app va a tastiera), quindi il tasto va detto
+    // a parte, sotto, invece che dentro l'etichetta come prima.
+    const render::Rect cta = render::rect(cx - 200.0f, cy + 226.0f, cx + 200.0f, cy + 310.0f);
+    drawEntryButton(r, cta, L"Inizia l’esperienza", animT);
+    r.drawTextBody(L"Premi INVIO", render::rect(cx - 200.0f, cy + 318.0f, cx + 200.0f, cy + 338.0f),
+                   13.0f, {kMuted.r, kMuted.g, kMuted.b, 0.75f});
 
     // Stato della fascia: qui e' un'informazione utile prima di cominciare, non
     // un dettaglio diagnostico - se non e' collegata conviene saperlo adesso,
-    // non a calibrazione avviata.
+    // non a calibrazione avviata. Il pubblico la legge: niente tasti, niente
+    // gergo; i tasti stanno nel pannello operatore (H).
     const wchar_t* stato =
-        st.replaying                      ? L"riproduzione da file in corso"
-        : st.bleState == 3                ? L"fascia collegata"
-        : st.bleState == 0                ? L"fascia non collegata - B per il pannello Bluetooth"
-                                          : L"ricerca della fascia in corso...";
+        st.replaying                      ? L"Sessione dimostrativa · segnale registrato"
+        : st.bleState == 3                ? L"Fascia EEG collegata · pronta"
+        : st.bleState == 0                ? L"Fascia EEG non collegata"
+                                          : L"Ricerca della fascia EEG in corso…";
     const render::Color colore = st.replaying ? kAccent
                                : st.bleState == 3 ? kOk
                                : st.bleState == 0 ? kBad : kWarn;
-    drawStatusHint(r, render::rect(cx - 400.0f, cy + 318.0f, cx + 400.0f, cy + 346.0f), stato,
+    drawStatusHint(r, render::rect(cx - 400.0f, cy + 346.0f, cx + 400.0f, cy + 374.0f), stato,
                   colore);
 }
 
@@ -1466,9 +1610,10 @@ void drawWarmupOverlay(render::Renderer& r, const app::ControlState& st) {
     const float cx  = win.width * 0.5f;
     const float cy  = win.height * 0.5f;
 
-    r.fillRect(render::rect(0, 0, win.width, win.height), {0.02f, 0.02f, 0.03f, 0.82f});
+    r.fillRect(render::rect(0, 0, win.width, win.height), {kBg.r, kBg.g, kBg.b, 0.82f});
 
-    r.drawText(L"Un momento", render::rect(cx - 400.0f, cy - 130.0f, cx + 400.0f, cy - 50.0f),
+    r.drawText(L"Ascolto del segnale",
+              render::rect(cx - 400.0f, cy - 130.0f, cx + 400.0f, cy - 50.0f),
               46.0f, kInk, render::TextAlign::Center, true);
     // Restava un promemoria passivo ("non devi fare niente: guarda la
     // fotografia") senza dire cosa sarebbe successo dopo: chi arrivava qui
@@ -1476,9 +1621,9 @@ void drawWarmupOverlay(render::Renderer& r, const app::ControlState& st) {
     // preavviso. Resta un'attesa passiva - nessun esercizio, vedi il commento
     // sopra la funzione - ma ora anticipa il meccanismo che sta per diventare
     // attivo.
-    r.drawTextBody(L"Sto imparando com'e' fatto il tuo segnale: non c'e' nulla da fare,\n"
-                   L"guarda pure la fotografia. Quando la barra si riempie, concentrarti\n"
-                   L"la ingrandira' e rilassarti la fara' tornare indietro.",
+    r.drawTextBody(L"La fascia sta leggendo la tua attività cerebrale\n"
+                   L"e il sistema si sta tarando su di te.\n"
+                   L"Tra pochi secondi la tua attenzione guiderà lo zoom.",
                   render::rect(cx - 420.0f, cy - 34.0f, cx + 420.0f, cy + 56.0f), 18.0f, kMuted);
 
     const float barW = 320.0f, barH = 6.0f, barY = cy + 92.0f;
@@ -1494,10 +1639,10 @@ void drawWarmupOverlay(render::Renderer& r, const app::ControlState& st) {
     // sembra che il programma sia bloccato.
     if (!st.signalFresh) {
         drawStatusHint(r, render::rect(cx - 400.0f, barY + 26.0f, cx + 400.0f, barY + 54.0f),
-                      L"In attesa del segnale dalla fascia.", kWarn);
+                      L"In attesa del segnale dalla fascia EEG.", kWarn);
     } else if (st.signalFault != 0 || !st.contactOk) {
         drawStatusHint(r, render::rect(cx - 400.0f, barY + 26.0f, cx + 400.0f, barY + 54.0f),
-                      L"Il segnale non e' utilizzabile: sistema la fascia.", kBad);
+                      L"Segnale non utilizzabile: verifica il contatto della fascia.", kBad);
     }
 }
 
@@ -1545,14 +1690,14 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
         // Il titolo sta sopra, il compito sotto, entrambi lontani
         // dall'elemento - si leggono una volta e poi si dimenticano.
         const render::Color stageColor = inConcentrate ? kAccent : kAccent2;
-        r.drawText(inConcentrate ? L"Concentrazione" : L"Relax",
+        r.drawText(inConcentrate ? L"Concentrazione" : L"Rilassamento",
                   render::rect(cx - 320.0f, win.height * 0.5f - 232.0f,
                               cx + 320.0f, win.height * 0.5f - 190.0f),
                   30.0f, stageColor, render::TextAlign::Center, true);
         r.drawTextBody(inConcentrate
-                           ? L"Fai crescere la sfera fino al bordo: conta all'indietro\n"
-                             L"da 300, di 7 in 7."
-                           : L"Respira insieme alla sfera. Non c'e' piu' niente da fare.",
+                           ? L"Fai crescere la sfera fino al bordo:\n"
+                             L"conta all’indietro da 300, sottraendo 7 ogni volta."
+                           : L"Respira seguendo la sfera.",
                       render::rect(cx - 340.0f, win.height * 0.5f + 178.0f,
                                   cx + 340.0f, win.height * 0.5f + 238.0f),
                       16.0f, kMuted);
@@ -1562,13 +1707,15 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
         const render::Rect avviso =
             render::rect(cx - 320.0f, win.height - 78.0f, cx + 320.0f, win.height - 46.0f);
         if (!st.signalFresh) {
-            drawStatusHint(r, avviso, L"In attesa del segnale dalla fascia: il conteggio non avanza.",
+            drawStatusHint(r, avviso,
+                          L"In attesa del segnale dalla fascia EEG: il conteggio è in pausa.",
                           kWarn);
         } else if (st.signalFault != 0) {
-            drawStatusHint(r, avviso, L"Il segnale non e' utilizzabile: questi momenti non contano.",
+            drawStatusHint(r, avviso,
+                          L"Segnale non utilizzabile: questi istanti non vengono conteggiati.",
                           kBad);
         } else if (!st.contactOk) {
-            drawStatusHint(r, avviso, L"Contatto assente: sistema la fascia.", kWarn);
+            drawStatusHint(r, avviso, L"Contatto assente: sistema la fascia sulla fronte.", kWarn);
         }
         return;
     }
@@ -1601,7 +1748,7 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
     if (stage == control::CalibStage::Intro) {
         r.drawText(L"Calibrazione", render::rect(panel.left, top + 42, panel.right, top + 92),
                   34.0f, kInk, render::TextAlign::Center, true);
-        r.drawTextBody(L"Due passaggi brevi, la durata si adatta al tuo segnale.",
+        r.drawTextBody(L"Due passaggi brevi: la durata si adatta al tuo segnale.",
                       render::rect(panel.left + 40, top + 100, panel.right - 40, top + 128), 16.0f,
                       kMuted);
 
@@ -1610,16 +1757,15 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
         const render::Point p2{cx + 150.0f, rowY};
         drawStepBadge(r, p1, 26.0f, 1, true, false, kAccent);
         drawStepBadge(r, p2, 26.0f, 2, true, false, kAccent2);
-        r.drawTextBody(L"Concentrazione\nfai crescere il cerchio",
+        r.drawTextBody(L"Concentrazione\nfai crescere la sfera",
                       render::rect(p1.x - 110.0f, p1.y + 38.0f, p1.x + 110.0f, p1.y + 90.0f), 15.0f,
                       kInk, render::TextAlign::Center);
-        r.drawTextBody(L"Relax\nrespira col cerchio",
+        r.drawTextBody(L"Rilassamento\nrespira con la sfera",
                       render::rect(p2.x - 110.0f, p2.y + 38.0f, p2.x + 110.0f, p2.y + 90.0f), 15.0f,
                       kInk, render::TextAlign::Center);
         r.drawLine({p1.x + 34.0f, p1.y}, {p2.x - 34.0f, p2.y}, {1, 1, 1, 0.14f}, 2.0f);
 
-        r.drawTextBody(L"Finisce da sola quando ha raccolto abbastanza misure:\n"
-                       L"se il segnale peggiora si ferma, quei momenti non contano.",
+        r.drawTextBody(L"Termina automaticamente quando le misure sono sufficienti.",
                       render::rect(panel.left + 48, rowY + 110.0f, panel.right - 48, rowY + 160.0f),
                       14.5f, kMuted);
 
@@ -1628,16 +1774,16 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
         drawPillButton(r, cta, L"Premi INVIO per iniziare", kAccent);
 
         drawStatusHint(r, render::rect(panel.left, panel.bottom - 46, panel.right, panel.bottom - 22),
-                      st.replaying ? L"riproduzione da file in corso"
-                                  : L"la fascia deve essere collegata",
+                      st.replaying ? L"Sessione dimostrativa · segnale registrato"
+                                  : L"La fascia EEG deve essere collegata",
                       kMuted);
         if (!st.signalFresh && !st.replaying) {
-            r.drawTextBody(L"Nessun dato dalla fascia: puoi iniziare lo stesso, il conteggio\n"
-                           L"partira' quando arriva il segnale.",
+            r.drawTextBody(L"Nessun dato dalla fascia: puoi iniziare comunque,\n"
+                           L"il conteggio partirà all’arrivo del segnale.",
                           render::rect(panel.left + 32, rowY + 160.0f, panel.right - 32,
                                       rowY + 205.0f),
                           13.5f, kWarn);
-            r.drawTextBody(L"Q per uscire   ·   D per procedere con dati simulati",
+            r.drawTextBody(L"Q per uscire   ·   D per procedere con segnale simulato",
                       render::rect(panel.left + 32, rowY + 208.0f, panel.right - 32, rowY + 232.0f),
                       13.5f, kMuted, render::TextAlign::Center);
         }
@@ -1653,18 +1799,18 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
         r.drawText(L"Secondo passaggio",
                   render::rect(panel.left, top + 42, panel.right, top + 92),
                   32.0f, kInk, render::TextAlign::Center, true);
-        r.drawTextBody(L"Hai finito con la concentrazione. Ora si misura l'opposto.",
+        r.drawTextBody(L"La fase di concentrazione è conclusa. Ora si misura l’opposto.",
                       render::rect(panel.left + 40, top + 100, panel.right - 40, top + 128), 16.0f,
                       kMuted);
 
         const float rowY = top + 190.0f;
         drawStepBadge(r, {cx, rowY}, 34.0f, 2, true, false, kAccent2);
-        r.drawText(L"Relax",
+        r.drawText(L"Rilassamento",
                   render::rect(panel.left, rowY + 54.0f, panel.right, rowY + 96.0f), 26.0f,
                   kAccent2, render::TextAlign::Center, true);
-        r.drawTextBody(L"Segui il cerchio che respira: inspira, trattieni, espira,\n"
-                       L"trattieni - quattro tempi da 4 secondi ciascuno.\n"
-                       L"Lascia andare lo sforzo di prima, non c'e' piu' niente da fare.",
+        r.drawTextBody(L"Segui la sfera che respira: inspira, trattieni, espira, trattieni —\n"
+                       L"quattro tempi da 4 secondi ciascuno.\n"
+                       L"Lascia andare lo sforzo di prima.",
                       render::rect(panel.left + 40, rowY + 104.0f, panel.right - 40, rowY + 180.0f),
                       15.5f, kMuted);
 
@@ -1679,7 +1825,7 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
                       kAccent2, barH * 0.5f);
         }
         drawStatusHint(r, render::rect(panel.left, barY + 22.0f, panel.right, barY + 46.0f),
-                      L"si parte da solo, non devi premere niente", kMuted);
+                      L"Parte automaticamente.", kMuted);
         return;
     }
 
@@ -1693,15 +1839,16 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
         r.drawLine({ic.x - 4.0f, ic.y + 13.0f}, {ic.x + 17.0f, ic.y - 12.0f},
                    {0.03f, 0.05f, 0.04f, 1.0f}, 4.0f);
 
-        r.drawText(st.calibUsingFallback ? L"Pronto (banda generica)" : L"Calibrazione completata",
+        r.drawText(st.calibUsingFallback ? L"Pronto · profilo generico"
+                                         : L"Calibrazione completata",
                   render::rect(panel.left, win.height * 0.5f - 30, panel.right,
                               win.height * 0.5f + 12),
                   28.0f, kInk, render::TextAlign::Center, true);
         r.drawTextBody(st.calibUsingFallback
-                           ? L"Concentrandoti aumenti lo zoom, rilassandoti torni indietro -\n"
-                             L"ma la banda non e' la tua: e' un valore generico, cosi' puoi\n"
-                             L"comunque provare l'esperienza."
-                           : L"Concentrandoti aumenti lo zoom, rilassandoti torni indietro.\n"
+                           ? L"Concentrandoti avvicini l’immagine, rilassandoti la allontani —\n"
+                             L"ma il profilo non è il tuo: è un valore generico,\n"
+                             L"che permette comunque di provare l’esperienza."
+                           : L"Concentrandoti avvicini l’immagine, rilassandoti la allontani.\n"
                              L"Buona esplorazione.",
                       render::rect(panel.left + 48, win.height * 0.5f + 26, panel.right - 48,
                                   win.height * 0.5f + 100),
@@ -1714,13 +1861,13 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
         const wchar_t* detail =
             reason == app::FailReason::NoSignal
                 ? L"Segnale assente durante la calibrazione.\n"
-                  L"Controlla che la fascia sia ben posizionata."
+                  L"Controlla che la fascia sia posizionata correttamente."
             : reason == app::FailReason::ImplausibleSignal
-                ? L"Quello che arriva dalla fascia non e' un segnale cerebrale.\n"
+                ? L"Il segnale ricevuto non è un’onda cerebrale.\n"
                   L"Spegni e riaccendi la fascia, poi riprova.\n"
-                  L"Se continua, e' un problema del programma, non tuo."
-                : L"Modulazione troppo debole: marca di piu' la differenza\n"
-                  L"fra concentrazione e rilassamento.";
+                  L"Se il problema persiste, dipende dal sistema: non da te."
+                : L"Variazione troppo debole: marca di più la differenza\n"
+                  L"tra concentrazione e rilassamento.";
 
         const render::Point ic{cx, win.height * 0.5f - 130.0f};
         r.fillCircle(ic, 34.0f, {kBad.r, kBad.g, kBad.b, 0.16f});
@@ -1743,7 +1890,7 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
         if (reason == app::FailReason::NoSignal) {
             drawStatusHint(
                 r, render::rect(panel.left + 32, panel.bottom - 30, panel.right - 32, panel.bottom - 6),
-                L"M per continuare comunque, con una banda generica non personale",
+                L"M per continuare comunque, con un profilo generico non personale",
                 kMuted);
         }
         return;
@@ -1836,40 +1983,138 @@ void drawProjectionScale(render::Renderer& r, const control::CrossfadeState& cf)
                        etichettaH, bianco, true);
 }
 
-void drawHud(render::Renderer& r, const app::ControlState& st, const control::ZoomController& zoom,
-             const control::CrossfadeState& cf, const control::Tunables& t) {
-    const float x = 24.0f;
-    float y = 20.0f;
-    // Il pannello diagnostico e' un elenco di letture, non un'intestazione:
-    // resta sul sans di corpo (Iowan Old Style e' per titoli e accenti).
-    const auto line = [&](const std::wstring& s, render::Color c, float size = 14.0f) {
-        r.drawTextBody(s, render::rect(x, y, x + 460, y + size + 8), size, c,
-                      render::TextAlign::Left);
-        y += size + 7.0f;
-    };
+std::wstring toWide(const char* s) {
+    std::wstring w;
+    for (; *s; ++s) w.push_back(static_cast<wchar_t>(static_cast<unsigned char>(*s)));
+    return w;
+}
 
-    if (st.replaying) {
-        line(L"RIPRODUZIONE (fascia non in uso)", kAccent, 15.0f);
-        if (!g.replayName.empty()) line(L"  " + g.replayName, kMuted, 12.0f);
-    } else {
-        const wchar_t* bleNames[] = {L"DISCONNESSO", L"RICERCA", L"CONNESSIONE", L"STREAMING"};
-        const int bs = std::clamp(st.bleState, 0, 3);
-        line(std::wstring(L"Muse: ") + bleNames[bs],
-             bs == 3 ? kOk : (bs == 0 ? kBad : kWarn), 15.0f);
+/** Fase corrente in parole, per chi presidia la postazione. */
+std::wstring phaseInWords(const app::ControlState& st, bool landing, bool locked) {
+    if (landing) return L"Pagina d’ingresso · in attesa del partecipante";
+    const auto phase = static_cast<control::Phase>(st.phase);
+    if (phase == control::Phase::Onboarding) {
+        switch (static_cast<control::CalibStage>(st.calibStage)) {
+            case control::CalibStage::Intro:       return L"Calibrazione · istruzioni";
+            case control::CalibStage::Concentrate: return L"Calibrazione · concentrazione";
+            case control::CalibStage::Prepare:     return L"Calibrazione · secondo passaggio";
+            case control::CalibStage::Relax:       return L"Calibrazione · rilassamento";
+            case control::CalibStage::Done:        return L"Calibrazione · completata";
+            case control::CalibStage::Failed:      return L"Calibrazione · non riuscita";
+        }
+    }
+    if (st.adaptiveActive && !st.adaptiveReady) {
+        return L"Adattamento al segnale · " + fixed(st.adaptiveWarmup * 100.0, 0) + L"%";
+    }
+    std::wstring s;
+    switch (phase) {
+        case control::Phase::Interactive: s = L"Esperienza in corso"; break;
+        case control::Phase::Hook:        s = L"Esperienza · avvio"; break;
+        case control::Phase::Handover:    s = L"Esperienza · passaggio di controllo"; break;
+        case control::Phase::Outro:       s = L"Esperienza · chiusura"; break;
+        case control::Phase::Done:        s = L"Esperienza conclusa"; break;
+        default:                          s = L"In attesa"; break;
+    }
+    if (locked) s += L" · zoom fermo (in attesa di un cambio netto)";
+    return s;
+}
+
+/**
+ * Pannello operatore, sopra l'immagine. Due livelli:
+ *   1 base:    quello che serve a chi presidia la postazione - sorgente,
+ *              diagnosi con codice e cosa fare, fase, ingrandimento, FPS, log,
+ *              i tasti d'emergenza. Niente numeri da interpretare.
+ *   2 esperto: in piu' tutte le letture numeriche (indice, banda, velocita',
+ *              bande spettrali, pacchetti) e la taratura dal vivo.
+ * Le righe si raccolgono prima e si disegnano dopo, cosi' lo sfondo scuro
+ * dietro puo' essere alto quanto il contenuto.
+ */
+float drawHud(render::Renderer& r, const app::ControlState& st, const control::ZoomController& zoom,
+              const control::CrossfadeState& cf, const control::Tunables& t, int level, double fps,
+              diag::Code code, bool landing) {
+    struct Row { std::wstring s; render::Color c; float size; float h; };
+    std::vector<Row> rows;
+    const float x = 24.0f, w = 600.0f;
+    const auto line = [&](const std::wstring& s, render::Color c, float size = 14.0f) {
+        rows.push_back({s, c, size, size + 7.0f});
+    };
+    // Riga che puo' andare a capo (le azioni consigliate sono lunghe).
+    const auto para = [&](const std::wstring& s, render::Color c, float size) {
+        const float lines = s.size() > 78 ? 2.0f : 1.0f;
+        rows.push_back({s, c, size, (size + 4.0f) * lines + 3.0f});
+    };
+    const render::Color kKeys{0.55f, 0.60f, 0.75f, 1.0f};
+
+    // --- intestazione: livello e FPS ---
+    {
+        render::Color fc = fps >= 50.0 ? kOk : (fps >= 30.0 ? kWarn : kBad);
+        line(std::wstring(L"PANNELLO OPERATORE · ") + (level >= 2 ? L"esperto" : L"base") +
+                 L"     " + fixed(fps, 0) + L" fps",
+             fps >= 50.0 ? kMuted : fc, 12.0f);
     }
 
-    const wchar_t* phaseNames[] = {L"IDLE",   L"ONBOARDING", L"HOOK", L"HANDOVER",
-                                   L"INTERACTIVE", L"OUTRO", L"DONE"};
-    std::wstring phaseLine = std::wstring(L"Fase: ") +
-                             phaseNames[std::clamp(st.phase, 0, 6)];
-    if (zoom.locked()) phaseLine += L" (HOLD)";
-    line(phaseLine, kInk);
+    // --- sorgente ---
+    if (st.replaying) {
+        line(L"Sorgente: sessione dimostrativa · " + g.replayName, kAccent, 15.0f);
+    } else {
+        const wchar_t* bleNames[] = {L"Fascia EEG scollegata", L"Ricerca della fascia in corso…",
+                                     L"Connessione alla fascia in corso…",
+                                     L"Fascia EEG collegata · dati in arrivo"};
+        const int bs = std::clamp(st.bleState, 0, 3);
+        line(std::wstring(L"Sorgente: ") + bleNames[bs], bs == 3 ? kOk : (bs == 0 ? kBad : kWarn),
+             15.0f);
+    }
+
+    // --- diagnosi: un codice, cosa succede, cosa fare ---
+    {
+        const auto& d = diag::info(code);
+        const render::Color c = d.severity == diag::Severity::Error ? kBad
+                              : d.severity == diag::Severity::Warn  ? kWarn
+                              : d.severity == diag::Severity::Info  ? kAccent
+                                                                    : kOk;
+        line(L"[" + toWide(d.code) + L"]  " + d.title, c, 15.0f);
+        if (d.action[0]) para(std::wstring(L"→ ") + d.action, kInk, 12.5f);
+    }
+
+    line(L"Fase: " + phaseInWords(st, landing, zoom.locked()), kInk);
+    line(L"Ingrandimento: " + std::to_wstring(cf.magnification) + L"×", kAccent, 15.0f);
+
+    if (st.recording) {
+        const double secs = static_cast<double>(st.recordedSamples) / config::kSampleRate;
+        line(L"Registrazione: " + fileNameOf(g.recorder.path()) + L"  (" + fixed(secs, 0) + L" s)",
+             kOk, 12.0f);
+    }
+    if (!g.debugLogPath.empty()) {
+        line(L"Log: debug/" + fileNameOf(toWide(g.debugLogPath.c_str())), kMuted, 12.0f);
+    }
+
+    line(L"H livello pannello   B Bluetooth   R tenuto premuto: riavvio completo   ESC/Q esci",
+         kKeys, 12.0f);
+
+    if (level < 2) {
+        // --- disegno (solo base) ---
+        float h = 16.0f;
+        for (const auto& row : rows) h += row.h;
+        r.fillRect(render::rect(x - 12.0f, 12.0f, x + w + 12.0f, 12.0f + h),
+                   {kBg.r, kBg.g, kBg.b, 0.72f}, 10.0f);
+        float y = 20.0f;
+        for (const auto& row : rows) {
+            r.drawTextBody(row.s, render::rect(x, y, x + w, y + row.h + 2.0f), row.size, row.c,
+                          render::TextAlign::Left);
+            y += row.h;
+        }
+        return 12.0f + h;
+    }
+
+    // --- livello esperto: le letture numeriche, com'erano prima ---
+    line(L"", kMuted, 4.0f);
+    line(L"LETTURE (livello esperto)", kKeys, 11.0f);
 
     if (st.signalFault != 0) {
         const wchar_t* faults[] = {L"OK", L"RETE 50 Hz", L"SATURO", L"PIATTO",
                                    L"NON E' UN SEGNALE"};
         const int fi = std::clamp(st.signalFault, 0, 4);
-        line(std::wstring(L"Segnale: ") + faults[fi], kBad, 15.0f);
+        line(std::wstring(L"Segnale: ") + faults[fi], kBad, 14.0f);
 
         if (fi == static_cast<int>(dsp::SignalFault::Mains)) {
             line(L"  " + fixed(st.mainsFraction * 100.0, 0) +
@@ -1892,6 +2137,13 @@ void drawHud(render::Renderer& r, const app::ControlState& st, const control::Zo
 
     if (st.stalled) line(L"Flusso fermo: ripresa in corso", kBad);
 
+    const wchar_t* phaseNames[] = {L"IDLE",   L"ONBOARDING", L"HOOK", L"HANDOVER",
+                                   L"INTERACTIVE", L"OUTRO", L"DONE"};
+    std::wstring phaseLine = std::wstring(L"Fase interna: ") +
+                             phaseNames[std::clamp(st.phase, 0, 6)];
+    if (zoom.locked()) phaseLine += L" (HOLD)";
+    line(phaseLine, kMuted);
+
     line(L"Indice: " + fixed(st.rawIndex, 3) + L"   c: " + fixed(st.smoothedIndex, 3), kMuted);
 
     if (st.calibValid) {
@@ -1905,31 +2157,14 @@ void drawHud(render::Renderer& r, const app::ControlState& st, const control::Zo
     line(L"Velocita': " + fixed(st.velocity, 3) + L"  (cruda " + fixed(st.velocityRaw, 3) + L")",
          st.velocity > 0 ? kOk : (st.velocity < 0 ? kWarn : kMuted));
 
-    if (st.calibValid && st.absMax > st.absMin) {
-        const float bw = 460.0f, bh = 22.0f, by = y;
-        const auto toX = [&](double v) {
-            const double f = (v - st.absMin) / (st.absMax - st.absMin);
-            return x + static_cast<float>(std::clamp(f, 0.0, 1.0)) * bw;
-        };
-
-        r.fillRect(render::rect(x, by, x + bw, by + bh), {1, 1, 1, 0.06f}, 4.0f);
-        r.fillRect(render::rect(toX(st.localMin), by, toX(st.localMax), by + bh),
-                   {1, 1, 1, 0.07f}, 4.0f);
-
-        const double tolUp = t.localTolerance * (st.absMax - st.neutral);
-        const double tolDn = t.localTolerance * (st.neutral - st.absMin);
-        r.fillRect(render::rect(toX(st.localMax - tolUp), by, toX(st.localMax), by + bh),
-                   {kOk.r, kOk.g, kOk.b, 0.24f}, 4.0f);
-        r.fillRect(render::rect(toX(st.localMin), by, toX(st.localMin + tolDn), by + bh),
-                   {kWarn.r, kWarn.g, kWarn.b, 0.24f}, 4.0f);
-
-        const float nx = toX(st.neutral);
-        r.fillRect(render::rect(nx - 1.0f, by, nx + 1.0f, by + bh), kMuted);
-
-        const float px = toX(st.smoothedIndex);
-        r.fillRect(render::rect(px - 2.0f, by - 3.0f, px + 2.0f, by + bh + 3.0f), kAccent, 2.0f);
-
-        y += bh + 7.0f;
+    // La barra di attivazione si disegna dopo le righe: qui si riserva solo
+    // lo spazio e ci si segna a che riga va.
+    const bool  showBar = st.calibValid && st.absMax > st.absMin;
+    const float bh      = 22.0f;
+    std::size_t barRow  = 0;
+    if (showBar) {
+        barRow = rows.size();
+        rows.push_back({L"", kMuted, 0.0f, bh + 7.0f});
         line(L"Gate: " + fixed(st.gate, 2) + L"   Ampiezza: " + fixed(st.magnitude, 2),
              st.gate > 0.05 ? kOk : kMuted, 13.0f);
     }
@@ -1950,34 +2185,226 @@ void drawHud(render::Renderer& r, const app::ControlState& st, const control::Zo
         line(counts, c);
     }
 
-    line(L"Ingrandimento: " + std::to_wstring(cf.magnification) + L"x", kAccent, 15.0f);
-
     const auto logLines = g.bleLogSnapshot();
     if (!logLines.empty()) {
-        y += 8.0f;
-        line(L"Bluetooth:", {0.45f, 0.48f, 0.55f, 1.0f}, 12.0f);
+        line(L"", kMuted, 1.0f);
+        line(L"Ultime righe del log:", kKeys, 12.0f);
         for (const auto& l : logLines) line(L"  " + l, kMuted, 12.0f);
     }
 
-    if (st.recording) {
-        const double secs = static_cast<double>(st.recordedSamples) / config::kSampleRate;
-        line(L"Registrazione: " + fileNameOf(g.recorder.path()) + L"  (" +
-                 fixed(secs, 0) + L"s)", kOk, 12.0f);
-    }
-
-    y += 8.0f;
+    line(L"", kMuted, 1.0f);
     line(L"Sensibilita': " + fixed(t.sensitivity, 1) + L"x    Tolleranza: " +
              fixed(t.localTolerance, 2) + L"    Smoothing: " + fixed(t.velTauS, 2) + L"s" +
              L"    Elastico: " + fixed(t.elasticTauS, 2) + L"s",
          kAccent, 12.0f);
     if (!t.holdEnabled) line(L"Hold/detent SPENTO (diagnostica)", kWarn, 12.0f);
 
-    y += 6.0f;
     line(L"su/giu sensibilita'   sin/des tolleranza   S smoothing   E elastico   L hold   "
-         L"R reset (tienilo premuto: riavvia tutto)",
-         {0.45f, 0.48f, 0.55f, 1.0f}, 12.0f);
-    line(L"H pannello   B bluetooth   K ricalibra   V debug calibrazione   ESC/Q esce",
-         {0.45f, 0.48f, 0.55f, 1.0f}, 12.0f);
+         L"R tap: reset manopole",
+         kKeys, 12.0f);
+    line(L"K ricalibra   V grafici calibrazione   D segnale simulato   C fascia reale", kKeys,
+         12.0f);
+
+    // --- disegno (livello esperto) ---
+    float h = 16.0f;
+    for (const auto& row : rows) h += row.h;
+    r.fillRect(render::rect(x - 12.0f, 12.0f, x + w + 12.0f, 12.0f + h),
+               {kBg.r, kBg.g, kBg.b, 0.72f}, 10.0f);
+    float y = 20.0f;
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        const auto& row = rows[i];
+        if (showBar && i == barRow) {
+            const float bw = 460.0f, by = y;
+            const auto toX = [&](double v) {
+                const double f = (v - st.absMin) / (st.absMax - st.absMin);
+                return x + static_cast<float>(std::clamp(f, 0.0, 1.0)) * bw;
+            };
+            r.fillRect(render::rect(x, by, x + bw, by + bh), {1, 1, 1, 0.06f}, 4.0f);
+            r.fillRect(render::rect(toX(st.localMin), by, toX(st.localMax), by + bh),
+                       {1, 1, 1, 0.07f}, 4.0f);
+            const double tolUp = t.localTolerance * (st.absMax - st.neutral);
+            const double tolDn = t.localTolerance * (st.neutral - st.absMin);
+            r.fillRect(render::rect(toX(st.localMax - tolUp), by, toX(st.localMax), by + bh),
+                       {kOk.r, kOk.g, kOk.b, 0.24f}, 4.0f);
+            r.fillRect(render::rect(toX(st.localMin), by, toX(st.localMin + tolDn), by + bh),
+                       {kWarn.r, kWarn.g, kWarn.b, 0.24f}, 4.0f);
+            const float nx = toX(st.neutral);
+            r.fillRect(render::rect(nx - 1.0f, by, nx + 1.0f, by + bh), kMuted);
+            const float px = toX(st.smoothedIndex);
+            r.fillRect(render::rect(px - 2.0f, by - 3.0f, px + 2.0f, by + bh + 3.0f), kAccent,
+                       2.0f);
+        } else if (!row.s.empty()) {
+            r.drawTextBody(row.s, render::rect(x, y, x + w, y + row.h + 2.0f), row.size, row.c,
+                          render::TextAlign::Left);
+        }
+        y += row.h;
+    }
+    return 12.0f + h;
+}
+
+// ---------------------------------------------------------------------------
+// Schermo dell'operatore in modalita' a due schermi: NON l'esperienza (quella
+// sta tutta sulla proiezione) ma la sua sala di controllo - il pannello
+// esperto per intero, i grafici, e uno spazio per il testo di sala.
+// ---------------------------------------------------------------------------
+
+// Testo di sala mostrato nel riquadro in basso a sinistra dello schermo
+// operatore: presentazione della fotografia, dell'esperienza, del processo.
+// VUOTO DI PROPOSITO: e' l'operatore a scriverlo (righe separate da \n).
+constexpr const wchar_t* kOperatorCopy = L"";
+
+void drawCopyPanel(render::Renderer& r, render::Rect box) {
+    if (box.height() < 40.0f) return;
+    r.fillRect(box, {kBg.r, kBg.g, kBg.b, 0.72f}, 10.0f);
+    r.drawRectOutline(box, {1, 1, 1, 0.10f}, 1.0f, 10.0f);
+    if (kOperatorCopy[0] == L'\0') {
+        r.drawTextBody(L"Spazio riservato al testo di sala — da compilare\n"
+                       L"(kOperatorCopy in src/app/experience.cpp)",
+                      render::rect(box.left + 16, (box.top + box.bottom) * 0.5f - 22.0f,
+                                  box.right - 16, (box.top + box.bottom) * 0.5f + 22.0f),
+                      13.0f, {kMuted.r, kMuted.g, kMuted.b, 0.45f});
+        return;
+    }
+    r.drawTextBody(kOperatorCopy, render::rect(box.left + 20, box.top + 18, box.right - 20,
+                                               box.bottom - 18),
+                  15.0f, kInk, render::TextAlign::Left);
+}
+
+/** Cornice di un grafico dello schermo operatore, con titolo. */
+void plotFrame(render::Renderer& r, render::Rect box, const wchar_t* title) {
+    r.fillRect(box, {kBg.r, kBg.g, kBg.b, 0.72f}, 6.0f);
+    r.drawRectOutline(box, {1, 1, 1, 0.10f}, 1.0f, 6.0f);
+    r.drawTextBody(title, render::rect(box.left + 8, box.top + 4, box.right - 8, box.top + 22),
+                  12.0f, kMuted, render::TextAlign::Left);
+}
+
+/**
+ * Le forme d'onda dell'ultimo secondo: quattro canali grezzi (DC rimossa),
+ * il bipolare filtrato, lo spettro del bipolare con le tre bande evidenziate.
+ * Una polilinea per traccia e i rettangolini dello spettro in una chiamata:
+ * a 60 fps il costo e' dello stesso ordine di una riga di testo.
+ */
+void drawWaveforms(render::Renderer& r, const app::WaveSnapshot& w, render::Rect rawBox,
+                   render::Rect procBox, render::Rect specBox) {
+    constexpr int kN = config::kStftWindow;
+    static std::vector<render::Point> pts;
+    pts.resize(kN);
+
+    const auto trace = [&](const float* data, render::Rect box, float scale, render::Color c) {
+        const float midY = (box.top + box.bottom) * 0.5f;
+        const float half = box.height() * 0.5f - 2.0f;
+        for (int i = 0; i < kN; ++i) {
+            const float t = static_cast<float>(i) / (kN - 1);
+            const float v = std::clamp(data[i] / scale, -1.0f, 1.0f);
+            pts[static_cast<std::size_t>(i)] = {box.left + t * box.width(), midY - v * half};
+        }
+        r.drawPolyline(pts.data(), pts.size(), c, 1.2f);
+    };
+    const auto maxAbs = [&](const float* data) {
+        float m = 0.0f;
+        for (int i = 0; i < kN; ++i) m = std::max(m, std::fabs(data[i]));
+        return m;
+    };
+
+    // --- grezzo: quattro corsie ---
+    plotFrame(r, rawBox, L"Segnale grezzo (DC rimossa) · ultimo secondo · µV");
+    if (w.frame == 0) return;
+    static const wchar_t* kChannelNames[] = {L"TP9", L"AF7", L"AF8", L"TP10"};
+    const float laneTop = rawBox.top + 24.0f;
+    const float laneH   = (rawBox.bottom - laneTop - 6.0f) / config::kChannels;
+    r.pushClip(rawBox);
+    for (int ch = 0; ch < config::kChannels; ++ch) {
+        const render::Rect lane = render::rect(rawBox.left + 44.0f, laneTop + ch * laneH,
+                                               rawBox.right - 8.0f, laneTop + (ch + 1) * laneH);
+        const float mid = (lane.top + lane.bottom) * 0.5f;
+        r.drawLine({lane.left, mid}, {lane.right, mid}, {1, 1, 1, 0.06f}, 1.0f);
+        const float scale = std::max(20.0f, maxAbs(w.raw[ch]) * 1.1f);
+        r.drawTextBody(kChannelNames[ch], render::rect(rawBox.left + 8, mid - 9.0f,
+                                                       rawBox.left + 44.0f, mid + 9.0f),
+                      11.0f, kMuted, render::TextAlign::Left);
+        r.drawTextBody(L"±" + fixed(scale, 0), render::rect(lane.right - 60.0f, lane.top,
+                                                              lane.right, lane.top + 14.0f),
+                      10.0f, {kMuted.r, kMuted.g, kMuted.b, 0.6f}, render::TextAlign::Left);
+        trace(w.raw[ch], lane, scale, {kInk.r, kInk.g, kInk.b, 0.85f});
+    }
+    r.popClip();
+
+    // --- processato: bipolare filtrato ---
+    plotFrame(r, procBox, L"Segnale processato (bipolare AF7−AF8, filtrato 1–40 Hz) · µV");
+    {
+        const render::Rect lane = render::rect(procBox.left + 8.0f, procBox.top + 24.0f,
+                                               procBox.right - 8.0f, procBox.bottom - 6.0f);
+        const float mid = (lane.top + lane.bottom) * 0.5f;
+        r.pushClip(procBox);
+        r.drawLine({lane.left, mid}, {lane.right, mid}, {1, 1, 1, 0.06f}, 1.0f);
+        const float scale = std::max(10.0f, maxAbs(w.processed) * 1.1f);
+        r.drawTextBody(L"±" + fixed(scale, 0), render::rect(lane.right - 60.0f, lane.top,
+                                                              lane.right, lane.top + 14.0f),
+                      10.0f, {kMuted.r, kMuted.g, kMuted.b, 0.6f}, render::TextAlign::Left);
+        trace(w.processed, lane, scale, kAccent);
+        r.popClip();
+    }
+
+    // --- spettro: 1..40 Hz, bande theta/alpha/beta ---
+    plotFrame(r, specBox, L"Spettro del bipolare · 1–40 Hz · theta 4–8, alpha 8–13, beta 13–30");
+    {
+        constexpr int   kHzMax = 40;
+        const render::Rect area = render::rect(specBox.left + 8.0f, specBox.top + 24.0f,
+                                               specBox.right - 8.0f, specBox.bottom - 16.0f);
+        const float binW = area.width() / kHzMax;
+        float peak = 1e-6f;
+        for (int b = 1; b <= kHzMax; ++b) peak = std::max(peak, w.spectrum[b]);
+        static std::vector<render::Rect> bars[3];
+        for (auto& v : bars) v.clear();
+        for (int b = 1; b <= kHzMax; ++b) {
+            const float h  = std::clamp(w.spectrum[b] / peak, 0.0f, 1.0f) * area.height();
+            const float x0 = area.left + (b - 1) * binW + 1.0f;
+            const int   grp = (b >= 4 && b < 8) ? 1 : (b >= 8 && b < 13) ? 2 : (b >= 13 && b < 30) ? 0 : -1;
+            const render::Rect bar = render::rect(x0, area.bottom - h, x0 + binW - 2.0f, area.bottom);
+            if (grp < 0) r.fillRect(bar, {kMuted.r, kMuted.g, kMuted.b, 0.35f});
+            else         bars[grp].push_back(bar);
+        }
+        r.fillRects(bars[0].data(), static_cast<int>(bars[0].size()), {kInk.r, kInk.g, kInk.b, 0.55f});
+        r.fillRects(bars[1].data(), static_cast<int>(bars[1].size()), kAccent2);
+        r.fillRects(bars[2].data(), static_cast<int>(bars[2].size()), kAccent);
+        for (const int hz : {10, 20, 30, 40}) {
+            r.drawTextBody(std::to_wstring(hz), render::rect(area.left + (hz - 1) * binW - 10.0f,
+                                                             area.bottom + 1.0f,
+                                                             area.left + (hz - 1) * binW + 14.0f,
+                                                             area.bottom + 14.0f),
+                          10.0f, {kMuted.r, kMuted.g, kMuted.b, 0.6f}, render::TextAlign::Left);
+        }
+    }
+}
+
+void drawOperatorDashboard(render::Renderer& r, const app::ControlState& st,
+                           const control::ZoomController& zoom, const control::CrossfadeState& cf,
+                           const control::Tunables& t, const app::TelemetryHistory& history,
+                           double fps, diag::Code code, bool landing) {
+    const auto  win   = r.size();
+    const float leftW = 624.0f;
+    const float hudBottom = drawHud(r, st, zoom, cf, t, 2, fps, code, landing);
+    drawCopyPanel(r, render::rect(12.0f, hudBottom + 12.0f, 12.0f + leftW, win.height - 12.0f));
+
+    const float gx = 12.0f + leftW + 16.0f;
+    const float gr = win.width - 12.0f;
+    if (gr - gx < 200.0f) return;
+    const float H   = win.height - 24.0f;
+    const float gap = 10.0f;
+    float y = 12.0f;
+    const auto next = [&](float frac) {
+        const render::Rect box = render::rect(gx, y, gr, y + H * frac - gap);
+        y += H * frac;
+        return box;
+    };
+    const render::Rect rawBox  = next(0.26f);
+    const render::Rect procBox = next(0.13f);
+    const render::Rect specBox = next(0.15f);
+    drawWaveforms(r, g.wave.read(), rawBox, procBox, specBox);
+
+    const app::PlotTheme theme{kInk, kMuted, kAccent, kOk, kWarn, kBad,
+                               {1.0f, 1.0f, 1.0f, 0.10f}, {kBg.r, kBg.g, kBg.b, 0.72f}};
+    app::drawTelemetry(r, render::rect(gx, y, gr, win.height - 12.0f), history, st, t, theme);
 }
 
 /**
@@ -2091,12 +2518,13 @@ void drawBleModal(render::Renderer& r, const app::ControlState& st) {
     y += 46.0f;
 
     if (st.replaying) {
-        r.drawTextBodyCentered(L"Sorgente: dati simulati/riproduzione", {cx, y}, 16.0f, kAccent);
+        r.drawTextBodyCentered(L"Sorgente: sessione dimostrativa (segnale registrato)", {cx, y},
+                              16.0f, kAccent);
         y += 26.0f;
-        r.drawTextBodyCentered(L"C torna alla fascia reale", {cx, y}, 13.0f, kMuted);
+        r.drawTextBodyCentered(L"C · torna alla fascia EEG", {cx, y}, 13.0f, kMuted);
     } else {
-        const wchar_t* bleNames[] = {L"Disconnesso", L"Ricerca in corso", L"Connessione in corso",
-                                     L"Streaming"};
+        const wchar_t* bleNames[] = {L"Scollegata", L"Ricerca in corso", L"Connessione in corso",
+                                     L"Collegata · dati in arrivo"};
         const int bs = std::clamp(st.bleState, 0, 3);
         const render::Color stColor = (bs == 3) ? kOk : (bs == 0 ? kBad : kWarn);
         r.drawTextBodyCentered(std::wstring(L"Stato: ") + bleNames[bs], {cx, y}, 17.0f, stColor,
@@ -2112,9 +2540,10 @@ void drawBleModal(render::Renderer& r, const app::ControlState& st) {
     }
 
     y = box.bottom - 70.0f;
-    r.drawTextBodyCentered(L"C connetti/riconnetti      X disconnetti", {cx, y}, 15.0f, kInk);
+    r.drawTextBodyCentered(L"C · collega o ricollega        X · scollega", {cx, y}, 15.0f,
+                          kInk);
     y += 26.0f;
-    r.drawTextBodyCentered(L"ESC chiude", {cx, y}, 12.0f, kMuted);
+    r.drawTextBodyCentered(L"ESC · chiudi", {cx, y}, 12.0f, kMuted);
 }
 
 // ---------------------------------------------------------------------------
@@ -2143,13 +2572,13 @@ void drawScreenPicker(render::Renderer& r, int candidate, const std::vector<Disp
 
     std::wstring caption = L"Questo schermo";
     if (candidate >= 0 && candidate < static_cast<int>(displays.size())) {
-        caption += L"  -  " + displays[static_cast<std::size_t>(candidate)].describe();
+        caption += L"  ·  " + displays[static_cast<std::size_t>(candidate)].describe();
     }
     r.drawText(caption,
                render::rect(0, win.height * 0.5f + 70.0f, win.width, win.height * 0.5f + 110.0f),
                22.0f, kInk, render::TextAlign::Center);
 
-    r.drawText(L"Frecce per cambiare schermo   -   INVIO per confermare",
+    r.drawText(L"Frecce per cambiare schermo   ·   INVIO per confermare",
                render::rect(0, win.height * 0.5f + 130.0f, win.width, win.height * 0.5f + 170.0f),
                18.0f, kMuted, render::TextAlign::Center);
 }
@@ -2176,8 +2605,8 @@ void drawScreenPickerPanel(render::Renderer& r, int candidate, const std::vector
                render::TextAlign::Center, true);
     y += 56.0f;
 
-    r.drawText(L"Il partecipante vedra' solo l'immagine, a schermo intero.\n"
-               L"Qui restano la telemetria e i comandi.",
+    r.drawText(L"Il partecipante vedrà solo l’immagine, a schermo intero.\n"
+               L"Qui restano il pannello operatore e i comandi.",
                render::rect(panel.left + 36, y, panel.right - 36, y + 60.0f), 16.0f, kMuted);
     y += 76.0f;
 
@@ -2195,7 +2624,7 @@ void drawScreenPickerPanel(render::Renderer& r, int candidate, const std::vector
     }
 
     y += 14.0f;
-    r.drawText(L"Frecce per cambiare   -   INVIO per confermare",
+    r.drawText(L"Frecce per cambiare   ·   INVIO per confermare",
                render::rect(panel.left, y, panel.right, y + 30.0f), 17.0f, kAccent,
                render::TextAlign::Center, true);
     y += 34.0f;
@@ -2213,7 +2642,69 @@ app::TelemetryHistory history;
 std::chrono::steady_clock::time_point lastFrameTime;
 bool          initialized = false;
 
+// --- FPS e diagnosi, solo thread di render ---
+// FPS contati su finestre di mezzo secondo: piu' stabili di 1/dt e abbastanza
+// pronti da vedere un calo quando avviene. Il calo conta come condizione
+// (MZ-R01) solo se dura: un fotogramma lungo isolato non e' un problema.
+double     fpsWindowT   = 0.0;
+int        fpsWindowN   = 0;
+double     fps          = 60.0;
+double     lowFpsFor    = 0.0;
+constexpr double kLowFpsThreshold = 30.0;
+constexpr double kLowFpsHoldS     = 2.0;
+diag::Code lastCode     = diag::Code::Landing;
+bool       lastCodeSet  = false;
+// Una condizione deve durare un po' prima di diventare "la" diagnosi: gli
+// artefatti di movimento e i buchi di un frame vanno e vengono in un secondo,
+// e ogni cambio finirebbe nel log e farebbe lampeggiare il pannello.
+diag::Code pendingCode  = diag::Code::Landing;
+double     pendingFor   = 0.0;
+constexpr double kCodeDebounceS = 1.5;
+double     sinceHeartbeat = 0.0;
+constexpr double kHeartbeatS = 10.0;
+
+/** wchar_t (UTF-32 su macOS) -> UTF-8, per scrivere nel log i testi con gli accenti. */
+std::string narrow(const wchar_t* w) {
+    std::string s;
+    for (; *w; ++w) {
+        const auto c = static_cast<std::uint32_t>(*w);
+        if (c < 0x80) {
+            s.push_back(static_cast<char>(c));
+        } else if (c < 0x800) {
+            s.push_back(static_cast<char>(0xC0 | (c >> 6)));
+            s.push_back(static_cast<char>(0x80 | (c & 0x3F)));
+        } else if (c < 0x10000) {
+            s.push_back(static_cast<char>(0xE0 | (c >> 12)));
+            s.push_back(static_cast<char>(0x80 | ((c >> 6) & 0x3F)));
+            s.push_back(static_cast<char>(0x80 | (c & 0x3F)));
+        } else {
+            s.push_back(static_cast<char>(0xF0 | (c >> 18)));
+            s.push_back(static_cast<char>(0x80 | ((c >> 12) & 0x3F)));
+            s.push_back(static_cast<char>(0x80 | ((c >> 6) & 0x3F)));
+            s.push_back(static_cast<char>(0x80 | (c & 0x3F)));
+        }
+    }
+    return s;
+}
+
+/** Riga di stato compatta: va nel log ogni 10 s e nello snapshot per il crash. */
+std::string statusLine(const app::ControlState& st, diag::Code code, bool landing) {
+    char buf[400];
+    std::snprintf(buf, sizeof buf,
+                  "[stato] %s | fps=%.0f | %s | ble=%d pkt=%llu/%llu frames=%llu fresh=%d "
+                  "fault=%d contact=%d | indice=%.3f vel=%.3f | %s",
+                  diag::info(code).code, fps, narrow(phaseInWords(st, landing, zoom.locked()).c_str()).c_str(),
+                  st.bleState, static_cast<unsigned long long>(st.rawPackets),
+                  static_cast<unsigned long long>(st.validPackets),
+                  static_cast<unsigned long long>(st.frames), st.signalFresh ? 1 : 0,
+                  st.signalFault, st.contactOk ? 1 : 0, st.smoothedIndex, st.velocity,
+                  st.replaying ? "riproduzione" : "fascia");
+    return buf;
+}
+
 } // namespace
+
+std::string debugLogPath() { return g.debugLogPath; }
 
 std::string start(const StartOptions& opt) {
     g.running.store(true, std::memory_order_release);
@@ -2223,9 +2714,14 @@ std::string start(const StartOptions& opt) {
     g.landingVisible.store(true, std::memory_order_relaxed);
     // Va scritto PRIMA che parta il thread DSP, che lo legge una volta sola.
     g.adaptiveBand.store(opt.adaptiveBand, std::memory_order_relaxed);
-    g.hudVisible.store(!opt.hudHidden, std::memory_order_relaxed);
+    g.hudLevel.store(std::clamp(opt.hudLevel, 0, 2), std::memory_order_relaxed);
 
     g.openDebugLog(opt.debugDir);
+    // Da qui in poi un crash lascia in coda al log il codice MZ-X01 con
+    // l'ultimo stato noto (vedi crash.hpp).
+    crash::install(g.debugLogPath);
+    fpsWindowT = 0.0; fpsWindowN = 0; fps = 60.0; lowFpsFor = 0.0;
+    lastCodeSet = false; sinceHeartbeat = kHeartbeatS;
 
     if (opt.record) {
         g.recorder.arm(newRecordingPath(opt.recordingsDir));
@@ -2269,7 +2765,8 @@ void stop() {
     stopReplayInternal();
 
     const auto st = g.state.read();
-    g.closeDebugLog("fine sessione: bleState=" + std::to_string(st.bleState) +
+    g.writeDebugLog(statusLine(st, lastCode, g.landingVisible.load(std::memory_order_relaxed)));
+    g.closeDebugLog("fine sessione (chiusura regolare): bleState=" + std::to_string(st.bleState) +
                     " rawPackets=" + std::to_string(st.rawPackets) +
                     " validPackets=" + std::to_string(st.validPackets) +
                     " packetLen=" + std::to_string(st.packetLen) +
@@ -2388,8 +2885,9 @@ void handleKey(Key key) {
             g.pushBleLog("riavvio completo richiesto (R tenuto premuto)");
             return;
         case Key::H:
-            g.hudVisible.store(!g.hudVisible.load(std::memory_order_relaxed),
-                               std::memory_order_relaxed);
+            // nascosto -> base -> esperto -> nascosto
+            g.hudLevel.store((g.hudLevel.load(std::memory_order_relaxed) + 1) % 3,
+                             std::memory_order_relaxed);
             return;
     }
 }
@@ -2416,6 +2914,37 @@ void frame(render::Renderer& r, double dt, const ProjectionState& proj) {
     focusFrac += (st.calibDisplayTarget - focusFrac) * config::kCalibDisplayEma;
     animT += dt;
 
+    // --- FPS ---
+    fpsWindowT += dt;
+    ++fpsWindowN;
+    if (fpsWindowT >= 0.5) {
+        fps = fpsWindowN / fpsWindowT;
+        fpsWindowT = 0.0;
+        fpsWindowN = 0;
+    }
+    lowFpsFor = fps < kLowFpsThreshold ? lowFpsFor + dt : 0.0;
+
+    // --- diagnosi: nel log quando cambia, e un battito ogni 10 s ---
+    const diag::Code now = diag::primary(st, showLanding, lowFpsFor >= kLowFpsHoldS);
+    if (now != pendingCode) { pendingCode = now; pendingFor = 0.0; }
+    else                    { pendingFor += dt; }
+    if (!lastCodeSet || (pendingCode != lastCode && pendingFor >= kCodeDebounceS)) {
+        lastCode    = pendingCode;
+        lastCodeSet = true;
+        const auto& d = diag::info(lastCode);
+        std::string msg = std::string("[") + d.code + "] " + narrow(d.title);
+        if (d.action[0]) msg += " | cosa fare: " + narrow(d.action);
+        g.writeDebugLog(msg);
+    }
+    const diag::Code code = lastCode;
+    sinceHeartbeat += dt;
+    if (sinceHeartbeat >= kHeartbeatS) {
+        sinceHeartbeat = 0.0;
+        const std::string s = statusLine(st, code, showLanding);
+        g.writeDebugLog(s);
+        crash::updateSnapshot(s.c_str());
+    }
+
     if (g.resetHistory.exchange(false, std::memory_order_acq_rel)) {
         history.clear();
         zoom.reset();
@@ -2427,57 +2956,52 @@ void frame(render::Renderer& r, double dt, const ProjectionState& proj) {
     const auto cf = zoom.crossfade();
     const bool showCard = !showLanding && (phase == control::Phase::Onboarding);
 
-    // --- schermo di proiezione: il partecipante, solo se lo shell ne ha creato uno ---
-    // A differenza dello schermo dell'operatore (sotto, invariato: qui il
-    // pannello diagnostico e' gia' un riquadro compatto sopra l'immagine, non
-    // ha bisogno di una miniatura come in main.cpp/Windows), qui NON deve
-    // comparire altro che l'immagine, la scala, e - durante l'onboarding - la
-    // scheda di calibrazione, cosi' chi guida vede cio' che vede il
-    // partecipante mentre lo guida.
+    // L'esperienza cosi' come la vede il partecipante: pagina d'ingresso,
+    // scheda di calibrazione (a schermo intero apposta: la foto dietro
+    // distrarrebbe proprio nella fase che chiede piu' attenzione), altrimenti
+    // la foto con la scala e - con la banda adattiva - il velo di ascolto
+    // sopra, non una schermata al posto.
+    const auto drawExperience = [&](render::Renderer& er) {
+        if (showLanding) {
+            drawLandingPage(er, st, animT);
+        } else if (!showCard) {
+            er.drawSprite(cf.activeIndex, static_cast<float>(cf.activeScale),
+                         static_cast<float>(cf.activeAlpha));
+            er.drawSprite(cf.activeIndex + 1, static_cast<float>(cf.nextScale),
+                         static_cast<float>(cf.nextAlpha));
+            drawProjectionScale(er, cf);
+            if (st.adaptiveActive && !st.adaptiveReady) drawWarmupOverlay(er, st);
+        } else {
+            drawCalibrationCard(er, st, focusFrac, animT);
+        }
+    };
+
     if (proj.renderer) {
+        // --- due schermi: la proiezione e' SOLO l'esperienza, lo schermo
+        // dell'operatore e' SOLO la sala di controllo (nessuna foto: chi
+        // guida vede i dati, il partecipante vede l'immagine). ---
         render::Renderer& pr = *proj.renderer;
         pr.begin(kBg);
-        if (proj.choosing) {
-            drawScreenPicker(pr, proj.candidate, *proj.displays);
-        } else if (!showLanding) {
-            pr.drawSprite(cf.activeIndex, static_cast<float>(cf.activeScale),
-                         static_cast<float>(cf.activeAlpha));
-            pr.drawSprite(cf.activeIndex + 1, static_cast<float>(cf.nextScale),
-                         static_cast<float>(cf.nextAlpha));
-            if (showCard) {
-                drawCalibrationCard(pr, st, focusFrac, animT);
-            } else {
-                drawProjectionScale(pr, cf);
-                if (st.adaptiveActive && !st.adaptiveReady) drawWarmupOverlay(pr, st);
-            }
-        }
-        // showLanding senza choosing: sfondo e basta, la pagina d'ingresso e'
-        // testo per l'operatore, il partecipante non ha ancora niente da vedere.
+        if (proj.choosing) drawScreenPicker(pr, proj.candidate, *proj.displays);
+        else               drawExperience(pr);
         pr.end();
-    }
 
-    r.begin(kBg);
-    // La calibrazione e' a schermo intero apposta: la foto al microscopio
-    // dietro distrarrebbe proprio nella fase che chiede piu' attenzione, quindi
-    // durante l'onboarding non si disegna ne' lei ne' la scala di proiezione.
-    // Lo stesso vale, a maggior ragione, per la pagina d'ingresso.
-    if (showLanding) {
-        drawLandingPage(r, st, animT);
-    } else if (!showCard) {
-        r.drawSprite(cf.activeIndex, static_cast<float>(cf.activeScale),
-                    static_cast<float>(cf.activeAlpha));
-        r.drawSprite(cf.activeIndex + 1, static_cast<float>(cf.nextScale),
-                    static_cast<float>(cf.nextAlpha));
-        drawProjectionScale(r, cf);
-        // Con la banda adattiva la foto e' gia' viva mentre la banda si forma:
-        // il riscaldamento e' un velo sopra, non una schermata al posto.
-        if (st.adaptiveActive && !st.adaptiveReady) drawWarmupOverlay(r, st);
+        // La sala di controllo si ridisegna a un terzo del refresh (~20 Hz):
+        // i dati che mostra cambiano a 5 Hz, e le sue ~50 righe di testo a
+        // 60 Hz costavano meta' del fotogramma - la proiezione, che e' quella
+        // che il pubblico guarda, deve restare a refresh pieno. Saltando
+        // begin()/end() il layer della finestra tiene l'ultima immagine.
+        static unsigned dashboardTick = 0;
+        if (++dashboardTick % 3 != 0) return;
+        r.begin(kBg);
+        drawOperatorDashboard(r, st, zoom, cf, g.tune, history, fps, code, showLanding);
     } else {
-        drawCalibrationCard(r, st, focusFrac, animT);
-    }
-
-    if (g.hudVisible.load(std::memory_order_relaxed)) {
-        drawHud(r, st, zoom, cf, g.tune);
+        // --- schermo unico: esperienza con il pannello operatore sopra ---
+        r.begin(kBg);
+        drawExperience(r);
+        if (const int level = g.hudLevel.load(std::memory_order_relaxed); level > 0) {
+            drawHud(r, st, zoom, cf, g.tune, level, fps, code, showLanding);
+        }
     }
 
     if (g.bleModalVisible.load(std::memory_order_relaxed)) {

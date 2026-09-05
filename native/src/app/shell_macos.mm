@@ -11,6 +11,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 #import <CoreVideo/CoreVideo.h>
 
+#include "app/diagnostics.hpp"
 #include "app/displays.hpp"
 #include "app/experience.hpp"
 #include "app/platform.hpp"
@@ -20,6 +21,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <ctime>
 #include <string>
 #include <vector>
 
@@ -43,8 +45,14 @@ struct Options {
     // stessa giornata e sulla stessa testa.
     bool         adaptiveBand = true;
     bool         singleScreen = false;   // --schermo-singolo: ignora il secondo monitor
+    // --proiezione-finestra: la proiezione in una finestra normale sullo
+    // STESSO schermo, per provare la modalita' a due schermi senza un secondo
+    // monitor (sviluppo e prove; in mostra non serve).
+    bool         projWindowed = false;
     bool         listScreens  = false;   // --schermi: elenca i monitor e esce
-    bool         hudHidden    = false;   // --senza-pannello: parte senza il pannello H
+    // Pannello operatore all'avvio: 0 nascosto (default, per la mostra),
+    // --pannello = 1 (base), --pannello-esperto = 2. Il tasto H cicla comunque.
+    int          hudLevel     = 0;
 };
 
 Options parseOptions(int argc, char** argv) {
@@ -61,18 +69,47 @@ Options parseOptions(int argc, char** argv) {
             o.singleScreen = true;
         } else if (a == "--schermi") {
             o.listScreens = true;
-        } else if (a == "--senza-pannello") {
-            o.hudHidden = true;
+        } else if (a == "--proiezione-finestra") {
+            o.projWindowed = true;
+        } else if (a == "--pannello") {
+            o.hudLevel = 1;
+        } else if (a == "--pannello-esperto") {
+            o.hudLevel = 2;
         }
     }
     if (!o.replayPath.empty()) o.record = false;
     return o;
 }
 
-void fatal(NSString* text) {
+/**
+ * Errore che impedisce di partire: finestra con codice, spiegazione e cosa
+ * fare, e la stessa riga appesa a debug/mindzoom-avvio.log - il log di
+ * sessione a questo punto non esiste ancora, e un errore d'avvio che non
+ * lascia traccia e' il piu' difficile da raccontare al telefono.
+ */
+void fatal(mz::app::diag::Code code, NSString* detail, const std::wstring& debugDir) {
+    const auto& d = mz::app::diag::info(code);
+    NSString* title  = [NSString stringWithFormat:@"[%s] %ls", d.code, d.title];
+    NSString* action = [NSString stringWithFormat:@"Cosa fare: %ls", d.action];
+    NSString* body   = detail.length ? [NSString stringWithFormat:@"%@\n\n%@", detail, action]
+                                     : action;
+
+    if (!debugDir.empty()) {
+        mz::app::platform::ensureDirectory(debugDir);
+        const std::string path = std::string(debugDir.begin(), debugDir.end()) +
+                                 "/mindzoom-avvio.log";
+        if (FILE* f = std::fopen(path.c_str(), "a")) {
+            const std::time_t t = std::time(nullptr);
+            char when[32]{};
+            std::strftime(when, sizeof when, "%Y-%m-%d %H:%M:%S", std::localtime(&t));
+            std::fprintf(f, "%s %s\n  %s\n", when, title.UTF8String, body.UTF8String);
+            std::fclose(f);
+        }
+    }
+
     NSAlert* alert = [[NSAlert alloc] init];
-    alert.messageText = @"Mind Zoom";
-    alert.informativeText = text;
+    alert.messageText = title;
+    alert.informativeText = body;
     alert.alertStyle = NSAlertStyleCritical;
     [alert runModal];
 }
@@ -465,7 +502,20 @@ NSScreen* screenForDisplay(const mz::app::Display& d) {
     _displays = mz::app::enumerateDisplays();
     const bool wantDual = !_opt.singleScreen && _displays.size() >= 2;
 
-    if (wantDual) {
+    if (_opt.projWindowed) {
+        _projWindow = [[NSWindow alloc]
+            initWithContentRect:NSMakeRect(640, 0, 800, 500)
+                      styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskResizable
+                        backing:NSBackingStoreBuffered
+                          defer:NO];
+        _projWindow.title = @"Mind Zoom · proiezione (simulata)";
+        _projView = [[MZView alloc] initWithFrame:NSMakeRect(0, 0, 800, 500)];
+        // A differenza della proiezione vera (borderless, mai key) questa
+        // finestra puo' prendere il focus: i tasti devono funzionare lo stesso.
+        _projView.controller = self;
+        _projWindow.contentView = _projView;
+        [_projWindow orderFront:nil];
+    } else if (wantDual) {
         // Senza bordo, senza titolo: canBecomeKeyWindow torna NO di default per
         // una finestra borderless (vedi NSWindow), quindi non ruba mai il focus
         // da sola - i tasti restano tutti alla finestra dell'operatore.
@@ -496,11 +546,13 @@ NSScreen* screenForDisplay(const mz::app::Display& d) {
             if (i > 0) [nomi appendString:@", "];
             [nomi appendFormat:@"%d", mz::config::kScaleLabels[i]];
         }
-        fatal([NSString stringWithFormat:
-                  @"Immagini non caricate da:\n%s\n\nServono %d immagini in .webp, .jpg o "
-                  @".png, chiamate con l'ingrandimento: %@.",
+        fatal(mz::app::diag::Code::ImagesMissing,
+              [NSString stringWithFormat:
+                  @"Cercate in:\n%s\n\nServono %d immagini in .webp, .jpg o .png, "
+                  @"chiamate con l'ingrandimento: %@.",
                   std::string(assetsDir.begin(), assetsDir.end()).c_str(),
-                  mz::config::kTotalImages, nomi]);
+                  mz::config::kTotalImages, nomi],
+              debugDir);
         [NSApp terminate:nil];
         return;
     }
@@ -514,7 +566,8 @@ NSScreen* screenForDisplay(const mz::app::Display& d) {
     [_view.window makeFirstResponder:_view];
 
     if (!_renderer.init(_graphics, (__bridge void*)_view)) {
-        fatal(@"Inizializzazione del rendering (Core Graphics) fallita.");
+        fatal(mz::app::diag::Code::RenderInit,
+              @"Inizializzazione del rendering (Core Graphics) fallita.", debugDir);
         [NSApp terminate:nil];
         return;
     }
@@ -534,17 +587,18 @@ NSScreen* screenForDisplay(const mz::app::Display& d) {
     startOpt.replayPath    = _opt.replayPath;
     startOpt.debugDir      = debugDir;
     startOpt.adaptiveBand  = _opt.adaptiveBand;
-    startOpt.hudHidden     = _opt.hudHidden;
+    startOpt.hudLevel      = _opt.hudLevel;
 
     const std::string err = mz::app::experience::start(startOpt);
     if (!err.empty()) {
-        fatal([NSString stringWithFormat:@"Impossibile avviare: %s", err.c_str()]);
+        fatal(mz::app::diag::Code::StartFailed,
+              [NSString stringWithFormat:@"Dettaglio: %s", err.c_str()], debugDir);
         [NSApp terminate:nil];
         return;
     }
 
     // --- scelta dello schermo di proiezione ---
-    if (_projWindow) {
+    if (_projWindow && !_opt.projWindowed) {
         const int stored = mz::app::matchStoredChoice(_displays);
         if (stored >= 0) {
             [self confirmProjection:stored];

@@ -89,7 +89,11 @@ UNA SESSIONE, DALL'INIZIO ALLA FINE
 COMANDI
 -------
 INVIO        avvia (o ritenta se e' fallita)
-H            mostra o nasconde il pannello diagnostico
+H            pannello operatore: nascosto -> base -> esperto -> nascosto.
+             All'avvio e' NASCOSTO (il pubblico vede solo l'immagine). Il
+             livello base mostra sorgente, diagnosi con codice e cosa fare,
+             fase, ingrandimento, FPS e nome del log; il livello esperto
+             aggiunge tutte le letture numeriche e la taratura dal vivo.
 B            modale di connessione Bluetooth (C riconnette, X disconnette)
 K            torna alla calibrazione da qualunque punto - utile se la banda
              misurata non rappresenta piu' la persona che sta indossando la
@@ -132,6 +136,95 @@ Da riga di comando (facoltativo, l'uso normale e' col launcher):
   MindZoom.app/Contents/MacOS/MindZoom --schermo-singolo
                                                         ignora il secondo
                                                         schermo anche se c'e'
+  MindZoom.app/Contents/MacOS/MindZoom --proiezione-finestra
+                                                        prova la modalita' a
+                                                        due schermi con la
+                                                        proiezione in una
+                                                        finestra sullo stesso
+                                                        monitor
+  MindZoom.app/Contents/MacOS/MindZoom --pannello      parte col pannello
+                                                        operatore gia' visibile
+                                                        (--pannello-esperto:
+                                                        livello esperto)
+
+
+CODICI DI STATO: COSA VUOL DIRE E COSA FARE
+-------------------------------------------
+Il pannello operatore (H) e il log di diagnostica usano gli stessi codici.
+Ogni codice compare sempre insieme al suo testo in chiaro e a cosa fare, quindi
+non serve impararli: servono a dirsi al telefono "mi dice B04" senza
+descrivere lo schermo. La lettera dice l'area:
+
+  B  Bluetooth / collegamento con la fascia
+  S  qualita' del segnale EEG
+  C  calibrazione (solo con --calibrazione)
+  R  grafica / prestazioni / file mancanti
+  A  avvio
+  I  informativo, non e' un problema
+  X  crash del programma (solo nel log)
+
+  MZ-00   Tutto regolare.
+
+  MZ-B01  Fascia EEG non collegata.
+          Accendi la fascia, poi B e C.
+  MZ-B02  Ricerca della fascia in corso.
+          Attendi. Oltre 30 s: fascia accesa e carica? Bluetooth del Mac attivo?
+  MZ-B03  Connessione in corso. Attendi qualche secondo.
+  MZ-B04  Fascia collegata ma nessun dato in arrivo.
+          Spegni e riaccendi la fascia, poi B e C.
+  MZ-B05  Dati in arrivo ma non riconosciuti come EEG.
+          B, X (scollega), C (ricollega). Se persiste: fascia non supportata.
+  MZ-B06  Flusso di dati interrotto, ripristino automatico in corso.
+          Attendi 5 s; se si ripete avvicina la fascia al computer.
+
+  MZ-S01  Nessun dato recente dalla fascia. Controlla il collegamento (B).
+  MZ-S02  Contatto degli elettrodi assente.
+          Sistema la fascia sulla fronte, inumidisci i contatti dietro le orecchie.
+  MZ-S03  Interferenza di rete a 50 Hz: un elettrodo non tocca la pelle.
+          Scosta i capelli, sposta la fascia di qualche millimetro, inumidisci.
+  MZ-S04  Amplificatore saturo. Fascia troppo stretta o elettrodo che sfrega:
+          risistemala e attendi 3 s.
+  MZ-S05  Canale piatto: elettrodo staccato. Controlla i contatti; se la
+          fascia e' scarica, in carica.
+  MZ-S06  Il segnale ricevuto non e' un'onda cerebrale.
+          Spegni e riaccendi la fascia; se persiste, R tenuto premuto.
+  MZ-S07  Movimento rilevato, lettura sospesa per qualche secondo. Passa da solo.
+
+  MZ-C01  Calibrazione non riuscita: segnale assente. Sistema la fascia, INVIO.
+  MZ-C02  Calibrazione non riuscita: il segnale non e' un'onda cerebrale.
+  MZ-C03  Calibrazione non riuscita: variazione troppo debole.
+
+  MZ-R01  Frequenza di aggiornamento bassa (sotto 30 fps per piu' di 2 s).
+          Chiudi gli altri programmi, collega l'alimentazione.
+  MZ-R02  Immagini non trovate accanto al programma: ricopia l'app dalla chiavetta.
+  MZ-R03  Impossibile inizializzare la grafica: riavvia il Mac.
+
+  MZ-A01  Avvio non riuscito: il dettaglio e' nella finestra e in
+          debug/mindzoom-avvio.log.
+
+  MZ-I01  Sessione dimostrativa: segnale registrato, fascia non in uso.
+  MZ-I02  Adattamento al segnale in corso (circa 20 s, nessuna azione).
+  MZ-I03  Pagina d'ingresso, in attesa del partecipante.
+
+  MZ-X01  Il programma si e' chiuso per un errore interno. Riavvialo dal
+          launcher; se si ripete conserva il log.
+
+
+IL LOG, SE QUALCOSA E' ANDATO STORTO
+------------------------------------
+Ogni sessione scrive MindZoom.app/Contents/MacOS/debug/mindzoom-debug-<data>.log,
+riga per riga, quindi il file e' completo anche se il programma cade. Il nome
+del file di oggi e' scritto nel pannello H. Dentro trovi:
+
+  [MZ-xNN] ...        ogni volta che lo stato cambia, col testo e cosa fare
+  [stato] ...         ogni 10 secondi: fps, fase, codice, contatori
+  === fine sessione (chiusura regolare) ===   se e' stato chiuso con ESC/Q
+  === [MZ-X01] CRASH ... ===                  se e' caduto: ultimo stato noto
+                                              e stack, in coda al file
+
+Se il file finisce senza nessuna delle due righe finali, il programma e' stato
+interrotto dall'esterno (chiuso a forza, Mac spento). Gli errori che impediscono
+l'avvio finiscono invece in debug/mindzoom-avvio.log.
 
 
 DUE SCHERMI
