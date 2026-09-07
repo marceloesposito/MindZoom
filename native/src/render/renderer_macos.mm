@@ -58,22 +58,16 @@ CGRect toCG(Rect r) {
 
 /**
  * Iowan Old Style: serif old-style, caldo e solido, scelto dopo un provino a
- * confronto (dodici candidati renderizzati con questo stesso codice).
+ * confronto (dodici candidati renderizzati con questo stesso codice). Con
+ * l'identita' Biodetails resta dov'era - cifre, etichette dei pulsanti, righe
+ * di servizio - perche' cambia solo il lettering delle INTESTAZIONI, che ha
+ * una funzione sua (createDisplayFont).
  *
- * Ha preso il posto di Space Grotesk, che era un grottesco geometrico -
- * tecnico, squadrato, giusto per un pannello di strumentazione ma in
- * contraddizione con una schermata che chiede di rilassarsi. Un serif porta le
- * grazie e il ritmo della pagina stampata: si legge come un libro invece che
- * come un cruscotto.
- *
- * DIFFERENZA rispetto ai font a variazione usati prima qui: Iowan e' una
- * famiglia STATICA, con facce separate per peso. Non ha l'asse 'wght', quindi
- * chiedere una variazione non avrebbe effetto e si otterrebbe sempre il
- * Roman: la faccia si sceglie per nome. La soglia a 550 sta in mezzo fra i due
+ * E' una famiglia STATICA, con facce separate per peso: non ha l'asse 'wght',
+ * quindi la faccia si sceglie per nome. La soglia a 550 sta in mezzo fra i due
  * soli pesi che l'applicazione chiede (400 per il corpo, 640 per i titoli).
  *
- * E' un font di SISTEMA, presente su macOS - per questo non viene impacchettato
- * come si faceva con Space Grotesk. CTFontCreateWithName non fallisce mai se il
+ * E' un font di SISTEMA su macOS. CTFontCreateWithName non fallisce mai se il
  * nome non risolve (ripiega sul font di sistema), quindi anche su un Mac che
  * non lo avesse il testo esce comunque.
  */
@@ -103,10 +97,9 @@ CTFontRef cachedTextFont(CGFloat size, CGFloat weight) {
 }
 
 /**
- * Manrope: il sans geometrico dell'identita' grafica (vedi il pulsante
- * d'ingresso in experience.cpp), al posto di Helvetica Neue. Fa da corpo
- * neutro sotto le intestazioni in Iowan Old Style: l'accoppiata serif per i
- * titoli e sans per il corpo e' la stessa dell'impaginato editoriale.
+ * Manrope: il sans geometrico del corpo del testo. Resta il font di tutto cio'
+ * che si legge - paragrafi, elenchi, etichette - anche con l'identita'
+ * Biodetails, che tocca solo il lettering delle intestazioni.
  *
  * NON e' di sistema: viaggia nel bundle (assets/fonts, registrato da
  * GraphicsCore::loadFonts). E' un font a variazione con il solo asse 'wght'
@@ -138,6 +131,57 @@ CTFontRef createBodyFont(CGFloat size, bool bold) {
     CFRelease(attrs);
     CTFontRef font = CTFontCreateWithFontDescriptor(desc, size, nullptr);
     CFRelease(desc);
+    return font;
+}
+
+/**
+ * Il lettering dei titoli: League Gothic, il sostituto misurato del lettering
+ * "BIODETAILS" del poster (scarto medio 0.064 sulle larghezze di otto
+ * lettere; la seconda scelta stava a 0.245). E' un font a variazione con il
+ * solo asse 'wdth' (75..100): la larghezza 75, la piu' stretta, e' quella
+ * che replica le proporzioni del poster (O larga 0.27 dell'altezza delle
+ * maiuscole contro 0.28 misurato).
+ *
+ * NON e' di sistema: viaggia nel bundle (assets/fonts, registrato da
+ * GraphicsCore::loadFonts). Se il file manca, CoreText ripiega sul font di
+ * sistema - si vede subito, perche' il titolo esce largo il doppio.
+ */
+CTFontRef createDisplayFont(CGFloat size) {
+    const std::int64_t wdthTag   = 0x77647468;   // 'wdth'
+    const double       wdthValue = 75.0;
+    CFNumberRef tag = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt64Type, &wdthTag);
+    CFNumberRef val = CFNumberCreate(kCFAllocatorDefault, kCFNumberDoubleType, &wdthValue);
+    const void* axisKeys[] = {tag};
+    const void* axisVals[] = {val};
+    CFDictionaryRef variation = CFDictionaryCreate(kCFAllocatorDefault, axisKeys, axisVals, 1,
+                                                   &kCFTypeDictionaryKeyCallBacks,
+                                                   &kCFTypeDictionaryValueCallBacks);
+    CFRelease(tag);
+    CFRelease(val);
+
+    const void* keys[] = {kCTFontNameAttribute, kCTFontVariationAttribute};
+    const void* vals[] = {CFSTR("LeagueGothic-Regular"), variation};
+    CFDictionaryRef attrs = CFDictionaryCreate(kCFAllocatorDefault, keys, vals, 2,
+                                               &kCFTypeDictionaryKeyCallBacks,
+                                               &kCFTypeDictionaryValueCallBacks);
+    CFRelease(variation);
+
+    CTFontDescriptorRef desc = CTFontDescriptorCreateWithAttributes(attrs);
+    CFRelease(attrs);
+    CTFontRef font = CTFontCreateWithFontDescriptor(desc, size, nullptr);
+    CFRelease(desc);
+    return font;
+}
+
+/** Stessa cache di cachedTextFont, per il lettering. */
+CTFontRef cachedDisplayFont(CGFloat size) {
+    struct Entry { CGFloat size; CTFontRef font; };
+    static std::vector<Entry> cache;
+    for (const auto& e : cache) {
+        if (e.size == size) return e.font;
+    }
+    CTFontRef font = createDisplayFont(size);
+    cache.push_back({size, font});
     return font;
 }
 
@@ -340,24 +384,28 @@ bool GraphicsCore::loadSprites(const std::wstring& dir, const int* magnitudes, i
 }
 
 bool GraphicsCore::loadFonts(const std::wstring& dir) {
-    // Il font di corpo (Manrope, vedi createBodyFont) non e' di sistema:
-    // il CMakeLists lo copia in <bundle>/Contents/MacOS/fonts e qui si
-    // registra per il processo. L'accento (Iowan Old Style) resta di sistema.
-    // Il valore di ritorno non e' fatale: senza registrazione chi chiama
-    // disegna comunque, col font di sistema.
-    const std::wstring path = dir + L"/Manrope-Variable.ttf";
-    CFStringRef cfPath = toCFString(path);
-    if (!cfPath) return false;
+    // Due font non di sistema viaggiano nel bundle, in
+    // <bundle>/Contents/MacOS/fonts (ce li mette il CMakeLists), e qui si
+    // registrano per il processo: Manrope per il corpo del testo e League
+    // Gothic per il lettering delle intestazioni. L'accento (Iowan Old Style)
+    // e' di sistema e non va registrato. Il valore di ritorno non e' fatale:
+    // senza registrazione chi chiama disegna comunque, col font di sistema.
+    const wchar_t* const files[] = {L"/Manrope-Variable.ttf", L"/LeagueGothic-Variable.ttf"};
+    bool ok = true;
+    for (const wchar_t* file : files) {
+        CFStringRef cfPath = toCFString(dir + file);
+        if (!cfPath) { ok = false; continue; }
 
-    CFURLRef url = CFURLCreateWithFileSystemPath(kCFAllocatorDefault, cfPath,
-                                                  kCFURLPOSIXPathStyle, false);
-    CFRelease(cfPath);
-    if (!url) return false;
+        CFURLRef url = CFURLCreateWithFileSystemPath(kCFAllocatorDefault, cfPath,
+                                                      kCFURLPOSIXPathStyle, false);
+        CFRelease(cfPath);
+        if (!url) { ok = false; continue; }
 
-    CFErrorRef error = nullptr;
-    const bool ok = CTFontManagerRegisterFontsForURL(url, kCTFontManagerScopeProcess, &error);
-    if (error) CFRelease(error);
-    CFRelease(url);
+        CFErrorRef error = nullptr;
+        ok = CTFontManagerRegisterFontsForURL(url, kCTFontManagerScopeProcess, &error) && ok;
+        if (error) CFRelease(error);
+        CFRelease(url);
+    }
     return ok;
 }
 
@@ -961,7 +1009,7 @@ namespace {
 
 /** Corpo comune di drawText/drawTextBody: il font arriva gia' fatto, non lo possiede. */
 void drawFramedText(CGContextRef ctx, const std::wstring& text, Rect box, Color color,
-                    TextAlign align, CTFontRef font) {
+                    TextAlign align, CTFontRef font, float tracking = 0.0f) {
     if (!ctx || text.empty()) return;
 
     CFStringRef cf = toCFString(text);
@@ -976,13 +1024,19 @@ void drawFramedText(CGContextRef ctx, const std::wstring& text, Rect box, Color 
     };
     CTParagraphStyleRef para = CTParagraphStyleCreate(settings, 1);
 
+    // La spaziatura (kCTKernAttributeName, in punti) va nel dizionario solo se
+    // richiesta: con la chiave presente a 0 CoreText spegne la crenatura
+    // del font, che invece per il testo normale deve restare.
+    const double kern = tracking;
+    CFNumberRef kernRef = CFNumberCreate(kCFAllocatorDefault, kCFNumberDoubleType, &kern);
     CFStringRef keys[]   = {kCTFontAttributeName, kCTForegroundColorAttributeName,
-                            kCTParagraphStyleAttributeName};
-    CFTypeRef   values[] = {font, cgColor, para};
+                            kCTParagraphStyleAttributeName, kCTKernAttributeName};
+    CFTypeRef   values[] = {font, cgColor, para, kernRef};
     CFDictionaryRef attrs = CFDictionaryCreate(
         kCFAllocatorDefault, reinterpret_cast<const void**>(keys),
-        reinterpret_cast<const void**>(values), 3,
+        reinterpret_cast<const void**>(values), tracking != 0.0f ? 4 : 3,
         &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFRelease(kernRef);
 
     CFAttributedStringRef attributed = CFAttributedStringCreate(kCFAllocatorDefault, cf, attrs);
     CTFramesetterRef      setter     = CTFramesetterCreateWithAttributedString(attributed);
@@ -1011,7 +1065,7 @@ void drawFramedText(CGContextRef ctx, const std::wstring& text, Rect box, Color 
 
 /** Corpo comune di drawTextCentered/drawTextBodyCentered: stessa idea, font non posseduto. */
 void drawCenteredText(CGContextRef ctx, const std::wstring& text, Point center, Color color,
-                      CTFontRef font) {
+                      CTFontRef font, float tracking = 0.0f) {
     if (!ctx || text.empty()) return;
 
     CFStringRef cf = toCFString(text);
@@ -1019,12 +1073,16 @@ void drawCenteredText(CGContextRef ctx, const std::wstring& text, Point center, 
 
     CGColorRef cgColor = CGColorCreateGenericRGB(color.r, color.g, color.b, color.a);
 
-    CFStringRef keys[]   = {kCTFontAttributeName, kCTForegroundColorAttributeName};
-    CFTypeRef   values[] = {font, cgColor};
+    const double kern = tracking;
+    CFNumberRef kernRef = CFNumberCreate(kCFAllocatorDefault, kCFNumberDoubleType, &kern);
+    CFStringRef keys[]   = {kCTFontAttributeName, kCTForegroundColorAttributeName,
+                            kCTKernAttributeName};
+    CFTypeRef   values[] = {font, cgColor, kernRef};
     CFDictionaryRef attrs = CFDictionaryCreate(
         kCFAllocatorDefault, reinterpret_cast<const void**>(keys),
-        reinterpret_cast<const void**>(values), 2,
+        reinterpret_cast<const void**>(values), tracking != 0.0f ? 3 : 2,
         &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFRelease(kernRef);
 
     CFAttributedStringRef attributed = CFAttributedStringCreate(kCFAllocatorDefault, cf, attrs);
     CTLineRef              line      = CTLineCreateWithAttributedString(attributed);
@@ -1170,6 +1228,146 @@ void Renderer::drawParagraph(const std::wstring& text, Rect box, float fontSize,
     CFRelease(para);
     CGColorRelease(cgColor);
     CFRelease(cf);
+}
+
+void Renderer::drawTextDisplay(const std::wstring& text, Rect box, float fontSize, Color color,
+                               TextAlign align, float tracking) {
+    if (!impl_->ctx) return;
+    drawFramedText(impl_->ctx, text, box, color, align, cachedDisplayFont(fontSize), tracking);
+}
+
+void Renderer::drawTextDisplayCentered(const std::wstring& text, Point center, float fontSize,
+                                       Color color, float tracking) {
+    if (!impl_->ctx) return;
+    drawCenteredText(impl_->ctx, text, center, color, cachedDisplayFont(fontSize), tracking);
+}
+
+Size Renderer::measureTextDisplay(const std::wstring& text, float fontSize,
+                                  float tracking) const {
+    if (text.empty()) return {0.0f, 0.0f};
+
+    CFStringRef cf = toCFString(text);
+    if (!cf) return {0.0f, 0.0f};
+
+    CTFontRef   font = cachedDisplayFont(fontSize);
+    const double kern = tracking;
+    CFNumberRef kernRef = CFNumberCreate(kCFAllocatorDefault, kCFNumberDoubleType, &kern);
+    CFStringRef keys[] = {kCTFontAttributeName, kCTKernAttributeName};
+    CFTypeRef   vals[] = {font, kernRef};
+    CFDictionaryRef attrs = CFDictionaryCreate(
+        kCFAllocatorDefault, reinterpret_cast<const void**>(keys),
+        reinterpret_cast<const void**>(vals), tracking != 0.0f ? 2 : 1,
+        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFRelease(kernRef);
+
+    CFAttributedStringRef attributed = CFAttributedStringCreate(kCFAllocatorDefault, cf, attrs);
+    CTLineRef line = CTLineCreateWithAttributedString(attributed);
+    CGFloat ascent = 0, descent = 0, leading = 0;
+    const double width = CTLineGetTypographicBounds(line, &ascent, &descent, &leading);
+    CFRelease(line);
+    CFRelease(attributed);
+    CFRelease(attrs);
+    CFRelease(cf);
+    return {static_cast<float>(std::ceil(width)),
+            static_cast<float>(std::ceil(ascent + descent + leading))};
+}
+
+namespace {
+
+/** Costruisce la path cubica di fillCubicPath/pushClipCubicPath; chi chiama la rilascia. */
+CGMutablePathRef cubicPath(const Point* pts, int count) {
+    if (!pts || count < 4) return nullptr;
+    CGMutablePathRef path = CGPathCreateMutable();
+    CGPathMoveToPoint(path, nullptr, pts[0].x, pts[0].y);
+    for (int i = 1; i + 2 < count; i += 3) {
+        CGPathAddCurveToPoint(path, nullptr, pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y,
+                              pts[i + 2].x, pts[i + 2].y);
+    }
+    CGPathCloseSubpath(path);
+    return path;
+}
+
+} // namespace
+
+void Renderer::fillCubicPath(const Point* pts, int count, Color color) {
+    auto& d = *impl_;
+    if (!d.ctx) return;
+    CGMutablePathRef path = cubicPath(pts, count);
+    if (!path) return;
+    setColor(d.ctx, color, true);
+    CGContextBeginPath(d.ctx);
+    CGContextAddPath(d.ctx, path);
+    CGContextFillPath(d.ctx);
+    CGPathRelease(path);
+}
+
+namespace {
+
+/** Costruisce la path dei poligoni di fillPolygons/pushClipPolygons; chi chiama la rilascia. */
+CGMutablePathRef polygonPath(const Point* pts, const int* lengths, int shapes) {
+    if (!pts || !lengths || shapes <= 0) return nullptr;
+    CGMutablePathRef path = CGPathCreateMutable();
+    int base = 0;
+    for (int s = 0; s < shapes; ++s) {
+        const int n = lengths[s];
+        if (n >= 3) {
+            CGPathMoveToPoint(path, nullptr, pts[base].x, pts[base].y);
+            for (int i = 1; i < n; ++i) {
+                CGPathAddLineToPoint(path, nullptr, pts[base + i].x, pts[base + i].y);
+            }
+            CGPathCloseSubpath(path);
+        }
+        base += n;
+    }
+    return path;
+}
+
+} // namespace
+
+void Renderer::fillPolygons(const Point* pts, const int* lengths, int shapes, Color color) {
+    auto& d = *impl_;
+    if (!d.ctx) return;
+    CGMutablePathRef path = polygonPath(pts, lengths, shapes);
+    if (!path) return;
+    setColor(d.ctx, color, true);
+    CGContextBeginPath(d.ctx);
+    CGContextAddPath(d.ctx, path);
+    // Non-zero e non even-odd: i contorni sono tutti nello stesso verso, e i
+    // bordi in comune fra due pezzi adiacenti devono sparire, non bucare.
+    CGContextFillPath(d.ctx);
+    CGPathRelease(path);
+}
+
+void Renderer::pushClipPolygons(const Point* pts, const int* lengths, int shapes) {
+    auto& d = *impl_;
+    if (!d.ctx) return;
+    CGContextSaveGState(d.ctx);
+    CGMutablePathRef path = polygonPath(pts, lengths, shapes);
+    if (!path) {
+        CGContextClipToRect(d.ctx, CGRectZero);
+        return;
+    }
+    CGContextBeginPath(d.ctx);
+    CGContextAddPath(d.ctx, path);
+    CGContextClip(d.ctx);
+    CGPathRelease(path);
+}
+
+void Renderer::pushClipCubicPath(const Point* pts, int count) {
+    auto& d = *impl_;
+    if (!d.ctx) return;
+    // Sempre in coppia con popClip, anche se la path non e' valida: chi
+    // chiama non deve contare i casi.
+    CGContextSaveGState(d.ctx);
+    CGMutablePathRef path = cubicPath(pts, count);
+    if (!path) {
+        CGContextClipToRect(d.ctx, CGRectZero);
+        return;
+    }
+    CGContextBeginPath(d.ctx);
+    CGContextAddPath(d.ctx, path);
+    CGContextClip(d.ctx);
+    CGPathRelease(path);
 }
 
 } // namespace mz::render

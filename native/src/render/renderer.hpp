@@ -147,11 +147,11 @@ public:
                           bool bold = false);
 
     // drawText/drawTextCentered disegnano nel font d'accento (Iowan Old Style):
-    // intestazioni, cifre, etichette dei pulsanti. drawTextBody e la sua
-    // variante centrata usano invece un sans neutro (Manrope) per il
-    // corpo del testo - stessa idea dell'accoppiamento titolo/corpo dello
-    // stile svizzero, due famiglie con un ruolo ciascuna invece di una sola
-    // ovunque.
+    // cifre, etichette dei pulsanti, righe di servizio. drawTextBody e la sua
+    // variante centrata usano invece un sans neutro (Manrope) per il corpo del
+    // testo. Restano tutte e due com'erano: con l'identita' Biodetails cambia
+    // solo il LETTERING DELLE INTESTAZIONI, che ha una terza voce sua
+    // (drawTextDisplay, piu' sotto).
     void drawTextBody(const std::wstring& text, Rect box, float fontSize, Color color,
                       TextAlign align = TextAlign::Center, bool bold = false);
     void drawTextBodyCentered(const std::wstring& text, Point center, float fontSize, Color color,
@@ -183,6 +183,46 @@ public:
      */
     void drawParagraph(const std::wstring& text, Rect box, float fontSize, Color color,
                        TextAlign align = TextAlign::Center, float lineHeight = 1.45f);
+
+    // --- Identita' Biodetails (vedi design/biodetails/IDENTITA-VISIVA.md) ---
+    //
+    // Il lettering dei titoli e' un grottesco ultracompresso tutto maiuscolo
+    // (League Gothic a larghezza 75, il sostituto misurato del lettering del
+    // poster). E' una voce a parte rispetto a drawText: si usa SOLO per il
+    // titolo di una schermata, mai per il testo che va letto. `tracking` e'
+    // in punti (negativo = lettere piu' vicine); il poster le tiene quasi a
+    // toccarsi.
+    void drawTextDisplay(const std::wstring& text, Rect box, float fontSize, Color color,
+                         TextAlign align = TextAlign::Center, float tracking = 0.0f);
+    void drawTextDisplayCentered(const std::wstring& text, Point center, float fontSize,
+                                 Color color, float tracking = 0.0f);
+    Size measureTextDisplay(const std::wstring& text, float fontSize,
+                            float tracking = 0.0f) const;
+
+    /**
+     * Forma chiusa di curve cubiche: `pts` e' [partenza, c1, c2, fine, c1, c2,
+     * fine, ...] in coordinate finestra, quindi count = 1 + 3*segmenti. Serve
+     * alla macchia del poster (biodetails_blob.hpp), che non e' ne' un cerchio
+     * ne' un rettangolo. La variante clip la usa come maschera, da chiudere
+     * con popClip(): e' il dispositivo "il titolo cambia colore dentro la
+     * macchia".
+     */
+    void fillCubicPath(const Point* pts, int count, Color color);
+    void pushClipCubicPath(const Point* pts, int count);
+
+    /**
+     * Insieme di poligoni chiusi come UN'unica forma (riempimento non-zero):
+     * `lengths[i]` punti consecutivi per ciascuno degli `shapes` contorni.
+     *
+     * Serve al campo di metaball della pagina d'ingresso, che a ogni
+     * fotogramma produce qualche centinaio di pezzetti di contorno: disegnarli
+     * uno per uno lascerebbe le cuciture visibili fra un pezzo e l'altro
+     * (l'antialiasing di due bordi adiacenti non si somma a 1), mentre in una
+     * path sola i bordi interni si annullano e la macchia esce piena.
+     * La variante clip la usa come maschera, da chiudere con popClip().
+     */
+    void fillPolygons(const Point* pts, const int* lengths, int shapes, Color color);
+    void pushClipPolygons(const Point* pts, const int* lengths, int shapes);
 
     /** Riempimento con sfumatura verticale (top -> bottom), stesso arrotondamento di fillRect. */
     void fillRectGradient(Rect r, Color top, Color bottom, float radius = 0.0f);

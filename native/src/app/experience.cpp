@@ -1,4 +1,5 @@
 #include "app/experience.hpp"
+#include "app/biodetails_blob.hpp"
 
 #include "app/crash.hpp"
 #include "app/diagnostics.hpp"
@@ -42,52 +43,76 @@ using namespace mz;
 // fasi attive disegnano l'elemento centrato sullo schermo intero, senza
 // pannello attorno (vedi drawCalibrationCard).
 
-// Tavolozza: blu notte, ciano e verde acido - la stessa identita' del
-// pulsante d'ingresso (drawEntryButton), che viene dal disegno Figma.
-constexpr render::Color kBg        {0.012f, 0.020f, 0.075f, 1.0f};   // #030513 blu notte
-constexpr render::Color kInk       {0.95f, 0.97f, 1.0f, 1.0f};
-constexpr render::Color kMuted     {0.60f, 0.67f, 0.82f, 1.0f};
-constexpr render::Color kAccent    {0.0f, 0.75f, 1.0f, 1.0f};        // #00BFFF ciano: fase di concentrazione
-constexpr render::Color kAccent2   {0.576f, 1.0f, 0.463f, 1.0f};     // #93FF76 verde: fase di rilassamento
-constexpr render::Color kOk        {0.50f, 0.93f, 0.46f, 1.0f};
-constexpr render::Color kWarn      {0.96f, 0.62f, 0.26f, 1.0f};
-constexpr render::Color kBad       {0.94f, 0.36f, 0.36f, 1.0f};
-constexpr render::Color kPanel     {0.055f, 0.10f, 0.30f, 0.95f};    // #0E1A4D base dei pannelli a sfumatura
-constexpr render::Color kShadow    {0.0f, 0.0f, 0.0f, 0.5f};
+// Tavolozza Biodetails (design/biodetails/IDENTITA-VISIVA.md): i cinque
+// colori piatti del poster, e basta. Fondo acqua da bordo a bordo, nero per
+// tutto cio' che va letto, i tre caldi - magenta, corallo, arancio - per
+// titoli, cifre ed etichette. Niente grigi: un testo secondario e' NERO con
+// meno opacita', mai un tono intermedio. Niente sfumature, ombre, bagliori.
+constexpr render::Color kBg        {0.671f, 0.812f, 0.835f, 1.0f};   // #ABCFD5 acqua: il fondo
+constexpr render::Color kInk       {0.0f, 0.0f, 0.0f, 1.0f};         // nero: il testo
+constexpr render::Color kMuted     {0.0f, 0.0f, 0.0f, 0.68f};        // nero attenuato: testo secondario
+constexpr render::Color kAccent    {1.0f, 0.0f, 0.52f, 1.0f};        // #FF0085 magenta: la macchia, la concentrazione
+constexpr render::Color kAccent2   {1.0f, 0.43f, 0.11f, 1.0f};       // #FF6E1C arancio: titoletti, il rilassamento
+constexpr render::Color kCoral     {1.0f, 0.22f, 0.32f, 1.0f};       // #FF3852 corallo: il lettering, le cifre
+// Gli stati del pannello operatore restano nella tavolozza: normale = nero
+// (sul fondo acqua e' lo stato "niente da segnalare"), attenzione = arancio,
+// errore = corallo.
+constexpr render::Color kOk        = kInk;
+constexpr render::Color kWarn      = kAccent2;
+constexpr render::Color kBad       = kCoral;
+constexpr render::Color kPanel     = kBg;                            // i pannelli sono campiture piatte del fondo
+constexpr render::Color kHairline  {0.0f, 0.0f, 0.0f, 0.14f};        // l'unico "filetto": nero quasi trasparente
 
-/**
- * Stessa tinta, luminanza leggermente piu' bassa: l'estremo scuro delle
- * sfumature diagonali. Scala uniformemente i tre canali invece di spostare la
- * tinta, cosi' il colore resta "lo stesso" percettivamente, solo piu' in ombra.
- */
-constexpr render::Color darken(render::Color c, float amount) noexcept {
-    const float k = 1.0f - amount;
-    return {c.r * k, c.g * k, c.b * k, c.a};
-}
+// Dietro la FOTOGRAFIA il fondo resta nero, non acqua: e' la tela su cui
+// vive l'immagine al microscopio (che ha i propri neri), e una banda color
+// acqua ai lati di una foto che non riempie lo schermo la spegnerebbe. E' il
+// colore con cui si pulisce il fotogramma; le schermate di contorno si
+// dipingono da sole il proprio fondo acqua sopra.
+constexpr render::Color kPhotoBg   {0.0f, 0.0f, 0.0f, 1.0f};
+
+// Gli strumenti dell'operatore - pannello, grafici, debug - vivono sopra la
+// foto, cioe' sul nero, non sulla carta. Li' la tavolozza si rovescia:
+// l'acqua diventa l'inchiostro e il nero il fondo, e i tre caldi tornano
+// leggibili (su nero stanno fra 5.6 e 7.5 di contrasto, sull'acqua fra 1.7 e
+// 2.3). Non e' una seconda identita': sono gli stessi cinque colori, scambiati
+// di ruolo.
+constexpr render::Color kHudBg       {0.0f, 0.0f, 0.0f, 0.72f};
+constexpr render::Color kHudInk      = kBg;
+constexpr render::Color kHudMuted    {kBg.r, kBg.g, kBg.b, 0.62f};
+constexpr render::Color kHudOk       = kBg;                        // "niente da segnalare"
+constexpr render::Color kHudHairline {1.0f, 1.0f, 1.0f, 0.12f};
 
 // Tavolozza per l'effetto caustico/particellare dei cerchi animati della
 // calibrazione (drawCausticSphere, usata da drawBreathingCircles e
-// drawFocusTarget): verde-blu invece della sfumatura "alla Siri" di prima.
-constexpr render::Color kSiriBlue {0.10f, 0.33f, 0.95f, 1.0f};
-constexpr render::Color kSiriGreen{0.576f, 1.0f, 0.463f, 1.0f};
+// drawFocusTarget): i due estremi della rampa dei puntini sono i due caldi
+// estremi del poster, magenta e arancio; il corallo sta in mezzo (swarmTint).
+constexpr render::Color kSiriBlue  = kAccent;
+constexpr render::Color kSiriGreen = kAccent2;
 
 /** Pallino numerato (badge) per i due passaggi della calibrazione: cerchio pieno + cifra. */
 void drawStepBadge(render::Renderer& r, render::Point c, float radius, int number, bool active,
                    bool done, render::Color tint) {
+    // Fatto = nero pieno con cifra acqua; attivo = il caldo della fase con
+    // cifra nera; in attesa = solo un filetto nero. Tre campiture piatte.
     if (done) {
-        r.fillCircle(c, radius, kOk);
+        r.fillCircle(c, radius, kInk);
     } else if (active) {
         r.fillCircle(c, radius, tint);
     } else {
-        r.fillCircle(c, radius, {1.0f, 1.0f, 1.0f, 0.10f});
+        r.drawArc(c, radius - 0.75f, -90.0f, 270.0f, 1.5f, kHairline);
     }
-    const render::Color numColor = (active || done) ? render::Color{0.04f, 0.05f, 0.07f, 1.0f}
-                                                     : kMuted;
-    // Cifra nel sans del corpo, non nel serif d'accento: Iowan Old Style ha
-    // cifre "da testo" (altezze diverse, alcune sotto la linea di base) che
-    // dentro un pallino piccolo sembrano disallineate. Le cifre di servizio -
-    // badge, contatori - vogliono numeri allineati.
+    const render::Color numColor = done ? kBg : active ? kInk : kMuted;
     r.drawTextBodyCentered(std::to_wstring(number), c, radius * 1.1f, numColor, true);
+}
+
+/**
+ * Stessa tinta, luminanza piu' bassa: l'estremo scuro delle sfumature
+ * diagonali. Scala uniformemente i tre canali invece di spostare la tinta,
+ * cosi' il colore resta "lo stesso" percettivamente, solo piu' in ombra.
+ */
+constexpr render::Color darken(render::Color c, float amount) noexcept {
+    const float k = 1.0f - amount;
+    return {c.r * k, c.g * k, c.b * k, c.a};
 }
 
 /** Pulsante a pillola: sfumatura diagonale sottile sullo stesso tono. */
@@ -97,18 +122,20 @@ void drawPillButton(render::Renderer& r, render::Rect box, const std::wstring& l
     r.fillRectShadow(box, fill, radius, {fill.r, fill.g, fill.b, 0.35f}, 18.0f, {0.0f, 6.0f});
     r.fillRectGradient(box, fill, darken(fill, 0.16f), radius);
     r.drawTextCentered(label, {(box.left + box.right) * 0.5f, (box.top + box.bottom) * 0.5f},
-                       box.height() * 0.4f, {0.03f, 0.04f, 0.06f, 1.0f}, true);
+                       box.height() * 0.4f, {1.0f, 1.0f, 1.0f, 1.0f}, true);
 }
 
 /**
  * Pulsante d'ingresso: e' il gruppo Figma 5:6 (620x130) riprodotto livello
  * per livello, coi valori letti dal file; tutto e' in proporzione all'altezza
- * del box (s = 1 alla dimensione originale).
+ * del box (s = 1 alla dimensione originale). Con l'identita' Biodetails
+ * cambiano SOLO i colori: la costruzione - pillola, interno sfocato, ombra
+ * interna, bagliore, contorno a sfumatura animata - resta quella.
  *
- *   1. pillola base #1A3281 con ombra interna ciano #00BFFF (blur 7.8);
- *   2. sopra, una pillola piu' piccola (rientro 8x6) #0B1F61 con layer blur
+ *   1. pillola base magenta profondo con ombra interna arancio (blur 7.8);
+ *   2. sopra, una pillola piu' piccola (rientro 8x6) piu' scura con layer blur
  *      26.4: e' lei a fare l'interno scuro che schiarisce verso il bordo;
- *   3. contorno 2px INTERNO a sfumatura lineare verde -> blu -> magenta,
+ *   3. contorno 2px INTERNO a sfumatura lineare arancio -> corallo -> magenta,
  *      con layer blur 5.6;
  *   4. etichetta Manrope Regular 40, bianca.
  *
@@ -137,10 +164,10 @@ render::Rect entryButtonRect(render::Size win, float dy) {
 
 void drawEntryButton(render::Renderer& r, render::Rect box, const std::wstring& label,
                      double animT, float opacity = 1.0f) {
-    constexpr render::Color kBase  {0.101f, 0.196f, 0.507f, 1.0f};   // #1A3281
-    constexpr render::Color kInner {0.042f, 0.121f, 0.379f, 1.0f};   // #0B1F61
-    constexpr render::Color kRim   {0.049f, 0.168f, 0.558f, 1.0f};   // #0D2B8E
-    constexpr render::Color kGlow  {0.0f,   0.75f,  1.0f,   1.0f};   // #00BFFF
+    constexpr render::Color kBase  {0.77f, 0.0f, 0.40f, 1.0f};       // #C40066 magenta profondo
+    constexpr render::Color kInner {0.54f, 0.0f, 0.28f, 1.0f};       // #8A0047
+    constexpr render::Color kRim   {1.00f, 0.10f, 0.56f, 1.0f};      // #FF1A8F
+    constexpr render::Color kGlow  = kAccent2;                       // #FF6E1C arancio
 
     // Un pulsante "spento" e' lo STESSO disegno con meno opacita', non un
     // secondo disegno: cosi' l'accensione e' una dissolvenza sola e non ci
@@ -168,11 +195,11 @@ void drawEntryButton(render::Renderer& r, render::Rect box, const std::wstring& 
     r.fillInnerGlow(box, fade(kGlow), radius, 7.8f * kFigmaBlurToSigma * s);
 
     // Sfumatura di Figma: u = a*x/W + b*y/H + tx in coordinate normalizzate
-    // del nodo, verde a u=0, blu a 0.53, magenta a u=1. Per animarla la si
+    // del nodo, arancio a u=0, corallo a 0.53, magenta a u=1. Per animarla la si
     // rende periodica - la rampa e poi la stessa a specchio, periodo 2 - e la
     // si fa scorrere lungo il proprio asse: i colori viaggiano da sinistra a
-    // destra e ogni punto del bordo passa verde -> blu -> magenta -> blu ->
-    // verde, senza mai un salto. Nel fotogramma con fase 0 e' esattamente il
+    // destra e ogni punto del bordo passa arancio -> corallo -> magenta ->
+    // corallo -> arancio, senza mai un salto. Nel fotogramma con fase 0 e' esattamente il
     // disegno statico.
     constexpr float a = 1.6368624f, b = 0.13640025f, tx = -0.38663131f;
     const float gx = a / box.width(), gy = b / box.height();
@@ -188,9 +215,9 @@ void drawEntryButton(render::Renderer& r, render::Rect box, const std::wstring& 
                              box.top + uu * gy / g2 - tx * gy / g2};
     };
     const render::Point from = at(kU0), to = at(kU1);
-    constexpr render::Color kGreen  {0.578f, 1.0f,  0.461f, 1.0f};   // #93FF76
-    constexpr render::Color kBlue   {0.0f,   0.35f, 1.0f,   1.0f};   // #0059FF
-    constexpr render::Color kMagenta{0.95f,  0.0f,  1.0f,   1.0f};   // #F200FF
+    constexpr render::Color kGreen   = kAccent2;                     // #FF6E1C arancio
+    constexpr render::Color kBlue    = kCoral;                       // #FF3852 corallo
+    constexpr render::Color kMagenta = kAccent;                      // #FF0085 magenta
     constexpr float kMid = 0.5288461f;
     constexpr int   kStopCount = 11;
     constexpr render::Color kStopBase[kStopCount] = {
@@ -816,10 +843,17 @@ void dspThread() {
 // Disegno
 // ---------------------------------------------------------------------------
 
-/** Riga di stato in fondo alla scheda: la stessa striscia serve a tutte le fasi. */
-void drawStatusHint(render::Renderer& r, render::Rect box, const std::wstring& text,
-                    render::Color color) {
-    r.drawTextBody(text, box, 14.0f, color, render::TextAlign::Center);
+/**
+ * Riga di stato in fondo alla scheda: la stessa striscia serve a tutte le fasi.
+ *
+ * Sempre NERA, qualunque cosa dica. Sul fondo acqua i tre caldi della palette
+ * stanno fra 1.7 e 2.3 di contrasto (vedi la tabella nelle linee guida): a
+ * 14pt sono illeggibili, e questa riga la legge il pubblico. Lo stato lo
+ * dicono gia' le parole - "non collegata", "ricerca in corso" - non serve
+ * ripeterlo con un colore che toglie leggibilita'.
+ */
+void drawStatusHint(render::Renderer& r, render::Rect box, const std::wstring& text) {
+    r.drawTextBody(text, box, 14.0f, kInk, render::TextAlign::Center);
 }
 
 /** Cosa dire e quanto contare alla rovescia, per il lato corrente del box breathing. */
@@ -869,14 +903,16 @@ float breathRadius(double phaseS, float rMin, float rMax) {
  * percettiva, ma coperta da tinte distinguibili.
  */
 inline render::Color swarmTint(float u) noexcept {
+    // Con la tavolozza Biodetails la rampa e' quella dei tre caldi del poster
+    // in ordine di temperatura, arancio -> corallo -> magenta: tre tinte
+    // distinguibili, tutte gia' nel foglio, e i toni di mezzo restano caldi
+    // perche' i tre estremi condividono rosso = 1.
     static constexpr render::Color kStops[] = {
-        kSiriGreen,                    // verde, estremo della rampa
-        {0.20f, 0.88f, 0.62f, 1.0f},   // smeraldo
-        {0.15f, 0.82f, 0.78f, 1.0f},   // turchese
-        {0.18f, 0.72f, 0.92f, 1.0f},   // ciano
-        kSiriBlue,                     // blu
-        {0.55f, 0.18f, 1.00f, 1.0f},   // viola, di passaggio
-        {0.95f, 0.00f, 1.00f, 1.0f},   // fucsia #F200FF, lo stesso del bordo del pulsante
+        kSiriGreen,                    // arancio, estremo della rampa
+        {1.0f, 0.33f, 0.20f, 1.0f},    // fra arancio e corallo
+        kCoral,                        // corallo
+        {1.0f, 0.12f, 0.42f, 1.0f},    // fra corallo e magenta
+        kSiriBlue,                     // magenta
     };
     constexpr int kCount = static_cast<int>(sizeof(kStops) / sizeof(kStops[0]));
 
@@ -1445,28 +1481,232 @@ private:
     std::vector<std::vector<render::Rect>> buckets_;
 };
 
-// Pagina d'ingresso: molte piu' particelle degli altri due sciami, e piu'
-// piccole. Deve coprire tutto lo schermo, e su quella superficie il conteggio
-// del disco di calibrazione si leggerebbe come una spruzzata rada.
+// ---------------------------------------------------------------------------
+// Campo di metaball: la macchia del poster Biodetails, viva.
 //
-// Il numero e' MISURATO, non scelto a occhio: lo sciame e' l'unica cosa che
-// tenga la pagina d'ingresso sotto i 60 fps - senza, e' inchiodata al tetto
-// del vsync, e titolo, testo e pulsante col gradiente animato non costano
-// nulla. Sweep in finestra 1280x800 su schermo retina, cioe' 4,1 megapixel
-// per fotogramma, circa il doppio del carico di un proiettore 1080p:
+// Ha preso il posto dello sciame di puntini della pagina d'ingresso. La
+// macchia del poster (design/biodetails/IDENTITA-VISIVA.md, par. 5) e' fatta
+// di tre lobi tondi uniti da colli lisci: e' gia' un campo di metaball
+// disegnato a mano. Qui i lobi diventano sorgenti di un campo scalare
 //
-//     puntini   15000   12000   9000   6000   3000
-//     fps        53-56   57-61    60     60     60
+//     f(p) = somma di r_i^2 / |p - c_i|^2 ,  contorno dove f = 1
 //
-// 9000 e' il piu' alto che tenga i 60 senza un solo calo, ed e' risultato
-// indistinguibile da 15000 in un confronto a pixel nativi. Se in mostra il
-// proiettore mostrasse margine si puo' risalire.
-constexpr int   kLandingDots     = 9000;
-constexpr float kLandingDotScale = 0.48f;
+// che si fondono da soli quando si avvicinano - il collo si forma con la
+// stessa curvatura del poster - e si staccano allontanandosi. E' la "tensione
+// superficiale" richiesta: non e' simulata, viene dalla forma del campo.
+//
+// I centri misurati sul tracciato del poster (distance transform sul contorno,
+// in unita' della LARGHEZZA del riquadro della macchia):
+//
+//     lobo               centro x   centro y   raggio
+//     grande, in basso     0.482      0.411     0.155
+//     destro, in alto      0.882      0.118     0.118
+//     sinistro             0.082      0.196     0.076
+//
+// Il riquadro e' alto 0.566 volte la propria larghezza.
+// ---------------------------------------------------------------------------
 
-CausticSwarm gBreathSwarm;
-CausticSwarm gFocusSwarm;
-CausticSwarm gLandingSwarm;
+/** Una sorgente del campo: centro e raggio, in pixel di finestra. */
+struct MetaBall {
+    float x, y, r;
+};
+
+class MetaballField {
+public:
+    /**
+     * Ricalcola posizioni e contorni. Da chiamare una volta per fotogramma.
+     *
+     * @param area   zona in cui vive il campo (i lobi restano attorno al suo centro)
+     * @param t      orologio dell'animazione, in secondi
+     * @param gather 1 = raccolti e fusi (segnale presente), 0 = sparsi e separati
+     */
+    void update(render::Rect area, double t, float gather) {
+        posiziona(area, t, gather);
+        contorni();
+    }
+
+    void fill(render::Renderer& r, render::Color color) const {
+        if (lens_.empty()) return;
+        r.fillPolygons(verts_.data(), lens_.data(), static_cast<int>(lens_.size()), color);
+    }
+
+    /** Da chiudere con r.popClip(). Il dispositivo "il titolo cambia colore dentro la macchia". */
+    void pushClip(render::Renderer& r) const {
+        r.pushClipPolygons(verts_.data(), lens_.data(), static_cast<int>(lens_.size()));
+    }
+
+private:
+    // I tre lobi del poster piu' due satelliti piccoli. I satelliti non stanno
+    // nel foglio: servono qui perche' l'animazione vive dei momenti in cui due
+    // masse si toccano e si fondono, e con tre lobi soli quei momenti sono
+    // radi. Sono piu' piccoli di tutti e tre, quindi non cambiano la lettura
+    // della forma - la macchia resta quella.
+    //
+    // Scostamenti dal centro del riquadro, in unita' della sua larghezza.
+    struct Sorgente {
+        float dx, dy, r;      // posizione a riposo e raggio
+        float ax, ay;         // ampiezza della deriva
+        float f1, f2, p1, p2; // due frequenze incommensurabili per asse, e le fasi
+    };
+    static constexpr Sorgente kSorgenti[] = {
+        {-0.018f,  0.128f, 0.155f, 0.070f, 0.052f, 0.0290f, 0.0171f, 0.00f, 1.90f},
+        { 0.382f, -0.165f, 0.118f, 0.085f, 0.063f, 0.0231f, 0.0139f, 2.20f, 0.40f},
+        {-0.418f, -0.087f, 0.076f, 0.090f, 0.070f, 0.0187f, 0.0263f, 4.10f, 3.30f},
+        { 0.200f,  0.220f, 0.052f, 0.105f, 0.082f, 0.0341f, 0.0197f, 1.30f, 5.10f},
+        {-0.300f,  0.140f, 0.044f, 0.110f, 0.088f, 0.0223f, 0.0311f, 5.60f, 2.70f},
+    };
+    // Lato della cella della griglia, in pixel logici. Il contorno esce da un
+    // marching squares: piu' fine e' la cella, piu' liscio il bordo e piu'
+    // costa. Misurato in finestra 1280x800 su schermo retina, pagina
+    // d'ingresso completa:
+    //
+    //     cella (px)    4      6      8     12
+    //     fps          60     60     60     60
+    //
+    // Nessuna delle quattro fa scendere sotto il tetto del vsync (il campo e'
+    // 5 sorgenti su ~4000 punti di reticolo: due ordini di grandezza meno del
+    // vecchio sciame). Scelta 6: a 8 i tratti diritti si vedono sui bordi
+    // quasi orizzontali, a 4 non si distingue da 6.
+    static constexpr float kCella = 6.0f;
+
+    void posiziona(render::Rect area, double t, float gather) {
+        // L'unita' di misura e' la larghezza del riquadro della macchia, che
+        // si prende una frazione della zona: con i satelliti e la deriva la
+        // forma arriva a occupare circa 1.2 volte questa larghezza.
+        const float u  = std::min(area.width() * 0.62f, area.height() * 1.10f);
+        const float cx = (area.left + area.right) * 0.5f;
+        const float cy = (area.top + area.bottom) * 0.5f;
+
+        // Raccolti o sparsi: cambia la distanza dal centro, non il raggio. A
+        // segnale presente i lobi si stringono e diventano una massa sola; a
+        // segnale assente si allontanano finche' il campo non li tiene piu'
+        // insieme e si staccano. La fusione e lo strappo li fa il campo.
+        const float sparsi = 1.32f - 0.52f * std::clamp(gather, 0.0f, 1.0f);
+
+        balls_.clear();
+        for (const auto& g : kSorgenti) {
+            // Somma di due sinusoidi incommensurabili per asse: il moto non
+            // torna mai sullo stesso giro, ma resta lento e senza scatti (i
+            // periodi piu' brevi sono di circa 29 secondi).
+            const auto onda = [&](float f1, float f2, float p1, float p2) {
+                return 0.62f * std::sin(static_cast<float>(t) * f1 * 6.2831853f + p1) +
+                       0.38f * std::sin(static_cast<float>(t) * f2 * 6.2831853f + p2);
+            };
+            const float dx = onda(g.f1, g.f2, g.p1, g.p2);
+            const float dy = onda(g.f2, g.f1, g.p2 + 1.7f, g.p1 + 0.6f);
+            balls_.push_back({cx + (g.dx * sparsi + g.ax * dx) * u,
+                              cy + (g.dy * sparsi + g.ay * dy) * u,
+                              g.r * u});
+        }
+    }
+
+    /** f(x,y) del campo. Il +1 evita la singolarita' esatta sul centro di una sorgente. */
+    float campo(float x, float y) const {
+        float v = 0.0f;
+        for (const auto& b : balls_) {
+            const float dx = x - b.x, dy = y - b.y;
+            v += b.r * b.r / (dx * dx + dy * dy + 1.0f);
+        }
+        return v;
+    }
+
+    /**
+     * Marching squares "pieno": per ogni cella si emette il POLIGONO della
+     * parte interna al contorno, non il segmento di bordo. Cosi' non serve
+     * inseguire i contorni per chiuderli in anelli - cosa che con due masse
+     * che si fondono e si staccano vorrebbe dire gestire i cambi di topologia
+     * a ogni fotogramma - e le celle tutte piene diventano rettangoli, che si
+     * accorpano in strisce.
+     *
+     * I pezzi finiscono in UNA sola path (fillPolygons): i bordi in comune fra
+     * due pezzi adiacenti si annullano invece di lasciare una cucitura chiara.
+     */
+    void contorni() {
+        verts_.clear();
+        lens_.clear();
+        if (balls_.empty()) return;
+
+        // La griglia copre solo dove il campo puo' arrivare a 1: il riquadro
+        // delle sorgenti, allargato di un raggio e mezzo per i colli.
+        float x0 = balls_[0].x, y0 = balls_[0].y, x1 = x0, y1 = y0;
+        for (const auto& b : balls_) {
+            x0 = std::min(x0, b.x - b.r * 1.5f);
+            y0 = std::min(y0, b.y - b.r * 1.5f);
+            x1 = std::max(x1, b.x + b.r * 1.5f);
+            y1 = std::max(y1, b.y + b.r * 1.5f);
+        }
+        const int gw = static_cast<int>((x1 - x0) / kCella) + 2;
+        const int gh = static_cast<int>((y1 - y0) / kCella) + 2;
+        if (gw < 2 || gh < 2 || gw > 4000 || gh > 4000) return;
+
+        f_.assign(static_cast<std::size_t>(gw) * static_cast<std::size_t>(gh), 0.0f);
+        for (int j = 0; j < gh; ++j) {
+            for (int i = 0; i < gw; ++i) {
+                f_[static_cast<std::size_t>(j) * gw + i] =
+                    campo(x0 + i * kCella, y0 + j * kCella);
+            }
+        }
+
+        const auto vx = [&](int i) { return x0 + i * kCella; };
+        const auto vy = [&](int j) { return y0 + j * kCella; };
+        const auto at = [&](int i, int j) { return f_[static_cast<std::size_t>(j) * gw + i]; };
+
+        for (int j = 0; j + 1 < gh; ++j) {
+            int runInizio = -1;   // striscia di celle tutte piene, da chiudere in un rettangolo
+            for (int i = 0; i + 1 < gw; ++i) {
+                const float fv[4] = {at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1)};
+                const int mask = (fv[0] >= 1.0f ? 1 : 0) | (fv[1] >= 1.0f ? 2 : 0) |
+                                 (fv[2] >= 1.0f ? 4 : 0) | (fv[3] >= 1.0f ? 8 : 0);
+                if (mask == 15) {
+                    if (runInizio < 0) runInizio = i;
+                    continue;
+                }
+                if (runInizio >= 0) {
+                    emettiRettangolo(vx(runInizio), vy(j), vx(i), vy(j + 1));
+                    runInizio = -1;
+                }
+                if (mask == 0) continue;
+
+                // Giro dei quattro spigoli in senso orario: si tiene lo spigolo
+                // se e' dentro, e si aggiunge il punto sul lato ogni volta che
+                // il contorno lo attraversa.
+                const float cxs[4] = {vx(i), vx(i + 1), vx(i + 1), vx(i)};
+                const float cys[4] = {vy(j), vy(j), vy(j + 1), vy(j + 1)};
+                const int   partenza = static_cast<int>(verts_.size());
+                for (int k = 0; k < 4; ++k) {
+                    const int kk = (k + 1) & 3;
+                    const bool a = fv[k] >= 1.0f, bnext = fv[kk] >= 1.0f;
+                    if (a) verts_.push_back({cxs[k], cys[k]});
+                    if (a != bnext) {
+                        const float den = fv[kk] - fv[k];
+                        const float tt  = den != 0.0f ? (1.0f - fv[k]) / den : 0.5f;
+                        verts_.push_back({cxs[k] + (cxs[kk] - cxs[k]) * tt,
+                                          cys[k] + (cys[kk] - cys[k]) * tt});
+                    }
+                }
+                lens_.push_back(static_cast<int>(verts_.size()) - partenza);
+            }
+            if (runInizio >= 0) emettiRettangolo(vx(runInizio), vy(j), vx(gw - 1), vy(j + 1));
+        }
+    }
+
+    void emettiRettangolo(float l, float t, float rr, float b) {
+        verts_.push_back({l, t});
+        verts_.push_back({rr, t});
+        verts_.push_back({rr, b});
+        verts_.push_back({l, b});
+        lens_.push_back(4);
+    }
+
+    std::vector<MetaBall>      balls_;
+    std::vector<float>         f_;
+    std::vector<render::Point> verts_;
+    std::vector<int>           lens_;
+};
+
+CausticSwarm  gBreathSwarm;
+CausticSwarm  gFocusSwarm;
+MetaballField gLandingBlobs;
 
 /**
  * Cerchi che respirano: lo sciame si espande e si contrae col respiro dentro
@@ -1486,7 +1726,7 @@ void drawBreathingCircles(render::Renderer& r, render::Point c, double phaseS, d
     constexpr float kRMax = 92.0f;
     const float radius = breathRadius(phaseS, kRMin, kRMax);
 
-    constexpr render::Color kBreathBackdrop{1.0f, 1.0f, 1.0f, 0.08f};
+    constexpr render::Color kBreathBackdrop{0.0f, 0.0f, 0.0f, 0.06f};
     r.fillCircle(c, kRMax, kBreathBackdrop);
     gBreathSwarm.draw(r, c, radius, animT, 1.0f, 0xB2EA7Fu);
 
@@ -1523,13 +1763,15 @@ void drawFocusTarget(render::Renderer& r, render::Point c, float outerR, float f
     // La transizione parte dal 75% e non da un valore secco, cosi' si vede
     // ARRIVARE - un cambio istantaneo sull'ultimo pixel non si nota, e questa
     // e' l'unica conferma che la persona riceve mentre sta facendo lo sforzo.
-    constexpr render::Color kTargetRing{1.0f, 1.0f, 1.0f, 0.15f};
+    constexpr render::Color kTargetRing{0.0f, 0.0f, 0.0f, 0.10f};
     constexpr float kRingThickness = 44.0f;
     const auto near = static_cast<float>(util::smoothstep01((frac - 0.75f) / 0.25f));
-    const render::Color ring{kTargetRing.r + (kOk.r - kTargetRing.r) * near,
-                             kTargetRing.g + (kOk.g - kTargetRing.g) * near,
-                             kTargetRing.b + (kOk.b - kTargetRing.b) * near,
-                             kTargetRing.a + (0.85f - kTargetRing.a) * near};
+    // "Ci sei" = il magenta della concentrazione (kOk ora e' il nero degli
+    // stati normali, non un colore di conferma).
+    const render::Color ring{kTargetRing.r + (kAccent.r - kTargetRing.r) * near,
+                             kTargetRing.g + (kAccent.g - kTargetRing.g) * near,
+                             kTargetRing.b + (kAccent.b - kTargetRing.b) * near,
+                             kTargetRing.a + (1.0f - kTargetRing.a) * near};
 
     // drawArc CENTRA la fascia sul raggio dato: passando outerR, una fascia
     // spessa 44px si estenderebbe da outerR-22 a outerR+22, e lo sciame a
@@ -1547,6 +1789,54 @@ void drawFocusTarget(render::Renderer& r, render::Point c, float outerR, float f
     }
 }
 
+// ---------------------------------------------------------------------------
+// La macchia e il lettering: i due artefatti dell'identita' Biodetails (vedi
+// design/biodetails/IDENTITA-VISIVA.md, paragrafi 4 e 5). Il lettering e'
+// corallo sul fondo e diventa arancio ESATTAMENTE dove attraversa la forma
+// magenta: nel poster e' fatto con due copie del titolo, la seconda
+// ritagliata con il tracciato della macchia, ed e' fatto cosi' anche qui.
+// ---------------------------------------------------------------------------
+
+/** I punti della macchia (biodetails_blob.hpp) mappati su `box`, nel formato di fillCubicPath. */
+std::vector<render::Point> blobPoints(render::Rect box) {
+    std::vector<render::Point> pts;
+    pts.reserve(1 + 3 * biodetails::kBlobSegments);
+    const auto map = [&](float u, float v) {
+        return render::Point{box.left + u * box.width(), box.top + v * box.height()};
+    };
+    pts.push_back(map(biodetails::kBlobStart[0], biodetails::kBlobStart[1]));
+    for (const auto& seg : biodetails::kBlob) {
+        pts.push_back(map(seg[0], seg[1]));
+        pts.push_back(map(seg[2], seg[3]));
+        pts.push_back(map(seg[4], seg[5]));
+    }
+    return pts;
+}
+
+// League Gothic: maiuscole alte 0.735 del corpo, ascendente 0.9675, riga 1.2.
+// Servono a piazzare il lettering per l'altezza delle MAIUSCOLE, che e' la
+// misura con cui il poster e' costruito, e non per il riquadro del testo.
+constexpr float kDisplayCapEm    = 0.735f;
+constexpr float kDisplayAscentEm = 0.9675f;
+constexpr float kDisplayLineEm   = 1.30f;   // 1.2 piu' un margine: sotto la riga naturale drawText non disegna
+
+/** Riquadro per drawTextDisplay tale che le maiuscole partano da `capTop`, largo quanto la finestra. */
+render::Rect displayBox(render::Size win, float capTop, float fontSize) {
+    const float top = capTop - (kDisplayAscentEm - kDisplayCapEm) * fontSize;
+    return render::rect(0.0f, top, win.width, top + fontSize * kDisplayLineEm);
+}
+
+/** Il dispositivo del poster: forma magenta, lettering corallo sopra, arancio dentro la forma. */
+void drawLetteringOverShape(render::Renderer& r, const std::wstring& text, render::Rect box,
+                            float fontSize, const std::vector<render::Point>& shape) {
+    const int n = static_cast<int>(shape.size());
+    r.fillCubicPath(shape.data(), n, kAccent);
+    r.drawTextDisplay(text, box, fontSize, kCoral);
+    r.pushClipCubicPath(shape.data(), n);
+    r.drawTextDisplay(text, box, fontSize, kAccent2);
+    r.popClip();
+}
+
 /**
  * Pagina d'ingresso: il titolo dell'esperienza e un tasto per cominciare.
  *
@@ -1562,22 +1852,6 @@ void drawLandingPage(render::Renderer& r, const app::ControlState& st, double an
     const float cy  = win.height * 0.5f;
 
     r.fillRect(render::rect(0, 0, win.width, win.height), kBg);
-
-    // Lo stesso sciame delle fasi di calibrazione, ma qui non sta dietro il
-    // titolo: riempie lo SCHERMO. E' la pagina d'ingresso a raccontare cosa
-    // succede quando la fascia comincia a leggere - i pallini sparsi ovunque
-    // sono il segnale che ancora non c'e', la sfera al centro e' il segnale
-    // trovato. Il passaggio fra i due stati non e' un taglio: lo fa la fisica
-    // dello sciame, vedi CausticSwarm::draw.
-    const render::Point swarmC{cx, cy + 40.0f};
-    const float         swarmR = 210.0f;
-    gLandingSwarm.configure(kLandingDots, kLandingDotScale);
-
-    // Semiampiezze del riquadro da coprire, in unita' di swarmR, misurate dal
-    // centro dello sciame al bordo piu' lontano. Il margine del 6% manda i
-    // pallini appena oltre il bordo, cosi' il campo non ha una cornice vuota.
-    const float boxW = std::max(cx, win.width - cx) * 1.06f / swarmR;
-    const float boxH = std::max(swarmC.y, win.height - swarmC.y) * 1.06f / swarmR;
 
     // Non basta che la fascia sia collegata: una fascia accesa sul tavolo e'
     // collegata e non dice niente. Serve che stiano arrivando dati recenti e
@@ -1599,14 +1873,31 @@ void drawLandingPage(render::Renderer& r, const app::ControlState& st, double an
     const float tau       = segnale ? 2.6f : 1.2f;
     gather += (bersaglio - gather) * std::clamp(dt / tau, 0.0f, 1.0f);
 
-    gLandingSwarm.draw(r, swarmC, swarmR, animT, 1.0f, 0x1A9F3Du, gather, boxW, boxH);
+    // La macchia del poster, al centro dello schermo e viva: e' lei adesso a
+    // raccontare cosa succede quando la fascia comincia a leggere. Lobi
+    // separati che vagano = segnale che ancora non c'e'; lobi che si
+    // avvicinano, si toccano e si fondono in una massa sola = segnale
+    // trovato. Il passaggio fra i due stati non e' un taglio: lo fa la forma
+    // del campo (vedi MetaballField), come due gocce che si uniscono.
+    gLandingBlobs.update(render::rect(0, 0, win.width, win.height), animT, gather);
+    gLandingBlobs.fill(r, kAccent);
 
-    // Il riquadro deve stare COMODO attorno al corpo del testo: se l'altezza
-    // non basta per l'interlinea, la riga non viene disegnata affatto invece
-    // di sbordare - a 72pt servono circa 86px, e un riquadro da 82 faceva
-    // sparire il titolo senza dire niente.
-    r.drawText(L"Mind Zoom", render::rect(cx - 460.0f, cy - 280.0f, cx + 460.0f, cy - 160.0f),
-              72.0f, kInk, render::TextAlign::Center, true);
+    // --- lettering, e il dispositivo del poster ---
+    // Il titolo e' corallo, e diventa arancio dove la macchia gli passa
+    // sotto: e' la firma dell'identita' (par. 4.2 delle linee guida). Qui la
+    // macchia si muove, quindi il cambio di colore va e viene da solo quando
+    // un lobo sale fin sotto le lettere.
+    //
+    // C e' l'altezza delle maiuscole: nel poster vale il 17.8% dell'altezza
+    // del foglio, qui il 16% della finestra, perche' lo schermo e' largo e
+    // sotto deve starci il resto della pagina.
+    const float C        = win.height * 0.16f;
+    const float titoloPt = C / kDisplayCapEm;
+    const render::Rect titoloBox = displayBox(win, win.height * 0.07f, titoloPt);
+    r.drawTextDisplay(L"MIND ZOOM", titoloBox, titoloPt, kCoral);
+    gLandingBlobs.pushClip(r);
+    r.drawTextDisplay(L"MIND ZOOM", titoloBox, titoloPt, kAccent2);
+    r.popClip();
     // Le ultime due righe spiegano il meccanismo (cosa succede concentrandosi
     // o rilassandosi) e danno un compito concreto ("un dettaglio della foto"),
     // non solo l'esistenza di un legame fra attenzione e zoom: e' la lacuna
@@ -1615,7 +1906,7 @@ void drawLandingPage(render::Renderer& r, const app::ControlState& st, double an
     r.drawTextBody(L"Una fotografia al microscopio elettronico.\n"
                    L"Una fascia legge la tua attività cerebrale e guida lo zoom:\n"
                    L"concentrati per avvicinarti, rilassati per allontanarti.",
-                  render::rect(cx - 420.0f, cy - 140.0f, cx + 420.0f, cy + 20.0f), 19.0f, kMuted);
+                  render::rect(cx - 420.0f, cy - 120.0f, cx + 420.0f, cy + 40.0f), 19.0f, kInk);
 
     // Il tasto va detto a parte, sotto, invece che dentro l'etichetta: il
     // pulsante si puo' anche cliccare (vedi handleClick), ma in mostra la
@@ -1634,11 +1925,7 @@ void drawLandingPage(render::Renderer& r, const app::ControlState& st, double an
         : st.bleState == 3                ? L"Fascia EEG collegata · pronta"
         : st.bleState == 0                ? L"Fascia EEG non collegata"
                                           : L"Ricerca della fascia EEG in corso…";
-    const render::Color colore = st.replaying ? kAccent
-                               : st.bleState == 3 ? kOk
-                               : st.bleState == 0 ? kBad : kWarn;
-    drawStatusHint(r, render::rect(cx - 400.0f, cy + 346.0f, cx + 400.0f, cy + 374.0f), stato,
-                  colore);
+    drawStatusHint(r, render::rect(cx - 400.0f, cy + 346.0f, cx + 400.0f, cy + 374.0f), stato);
 }
 
 // ---------------------------------------------------------------------------
@@ -1656,7 +1943,7 @@ void drawLandingPage(render::Renderer& r, const app::ControlState& st, double an
 // scostamenti dal centro aggiustati a mano uno per uno. Stanno fuori dalla
 // funzione di disegno perche' serve anche a onboardButtonRect(), che deve
 // sapere dove e' finito il pulsante senza disegnare niente.
-constexpr float kOnbTitoloPt = 44.0f, kOnbPassoPt = 19.0f, kOnbEtichettaPt = 14.0f;
+constexpr float kOnbTitoloPt = 68.0f, kOnbPassoPt = 19.0f, kOnbEtichettaPt = 14.0f;
 constexpr float kOnbParagrafoPt = 17.0f, kOnbNotaPt = 13.0f;
 constexpr float kOnbInterlinea = 1.5f;
 constexpr float kOnbRigaPasso  = 48.0f;    // passo fra un punto e il successivo
@@ -1666,13 +1953,13 @@ constexpr float kOnbBadgeR = 15.0f, kOnbBadgeGap = 20.0f;
 // ascendenti e discendenti piu' generose del sans, e drawText NON disegna
 // affatto una riga che non ci sta nel riquadro - a 1.3 il titolo spariva senza
 // dire niente, che e' il modo peggiore di sbagliare una misura.
-constexpr float kOnbTitoloH        = kOnbTitoloPt * 1.60f;
+constexpr float kOnbTitoloH        = kOnbTitoloPt * 1.30f;   // lettering: riga 1.2 em piu' margine
 constexpr float kOnbDopoTitolo     = 44.0f;
 constexpr float kOnbPassiH         = kOnbRigaPasso * 3.0f;
 constexpr float kOnbDopoPassi      = 40.0f;
 constexpr float kOnbEtichettaH     = kOnbEtichettaPt * 1.60f;
 constexpr float kOnbDopoEtichetta  = 10.0f;
-constexpr float kOnbParagrafoH     = kOnbParagrafoPt * kOnbInterlinea * 4.0f;   // quattro righe
+constexpr float kOnbParagrafoH     = kOnbParagrafoPt * kOnbInterlinea * 3.0f;   // tre righe
 constexpr float kOnbDopoParagrafo  = 48.0f;
 constexpr float kOnbDopoPulsante   = 14.0f;
 constexpr float kOnbNotaH          = kOnbNotaPt * 1.60f;
@@ -1740,17 +2027,16 @@ void drawOnboarding(render::Renderer& r, double elapsed, double animT) {
         L"Prenditi un momento per respirare, prima di entrare",
     };
     static const wchar_t* const kParagrafo =
-        L"Inspira contando fino a quattro, trattieni per quattro,\n"
-        L"espira per quattro, trattieni per quattro. Bastano pochi giri.\n"
-        L"Schiarisce la mente e rilassa il corpo: con meno pensieri di fondo\n"
-        L"la lettura è più pulita e l’esperienza risponde meglio.";
+        L"Quattro tempi uguali: inspira, trattieni, espira, trattieni.\n"
+        L"Bastano due o tre giri perché il respiro si distenda\n"
+        L"e il segnale che guida l’immagine diventi più nitido.";
 
     float y = win.height * 0.5f - kOnbTotale * 0.5f;
 
     // --- titolo ---
-    r.drawText(L"Prima di cominciare",
-              render::rect(cx - 460.0f, y, cx + 460.0f, y + kOnbTitoloH),
-              kOnbTitoloPt, kInk, render::TextAlign::Center, true);
+    r.drawTextDisplay(L"PRIMA DI COMINCIARE",
+                      render::rect(cx - 460.0f, y, cx + 460.0f, y + kOnbTitoloH),
+                      kOnbTitoloPt, kCoral);
     y += kOnbTitoloH + kOnbDopoTitolo;
 
     // --- i tre passaggi ---
@@ -1769,7 +2055,7 @@ void drawOnboarding(render::Renderer& r, double elapsed, double animT) {
     const float bloccoW     = kOnbBadgeR * 2.0f + kOnbBadgeGap + larghezzaTesto;
     const float bloccoX     = cx - bloccoW * 0.5f;
 
-    constexpr render::Color kPasso{kInk.r, kInk.g, kInk.b, 0.90f};
+    constexpr render::Color kPasso = kInk;
     for (int i = 0; i < 3; ++i) {
         const float centro = y + kOnbRigaPasso * 0.5f + kOnbRigaPasso * static_cast<float>(i);
         drawStepBadge(r, {bloccoX + kOnbBadgeR, centro}, kOnbBadgeR, i + 1, true, false, kAccent);
@@ -1791,7 +2077,7 @@ void drawOnboarding(render::Renderer& r, double elapsed, double animT) {
 
     r.drawParagraph(kParagrafo,
                     render::rect(cx - 440.0f, y, cx + 440.0f, y + kOnbParagrafoH + 8.0f),
-                    kOnbParagrafoPt, kMuted, render::TextAlign::Center, kOnbInterlinea);
+                    kOnbParagrafoPt, kInk, render::TextAlign::Center, kOnbInterlinea);
     y += kOnbParagrafoH + kOnbDopoParagrafo;
 
     // --- pulsante e chiuse ---
@@ -1837,13 +2123,14 @@ void drawRestartHint(render::Renderer& r, double hold, double animT) {
     // con la coda dell'occhio senza mai chiedere attenzione, che e' quello che
     // deve fare un promemoria mentre qualcuno sta guardando una fotografia.
     const auto  pulse = static_cast<float>(0.5 + 0.5 * std::sin(animT * 1.1));
-    const float fondo = attivo ? 0.62f : 0.34f + 0.06f * pulse;
-    r.fillRect(box, {0.0f, 0.0f, 0.0f, fondo}, h * 0.5f);
-    r.drawRectOutline(box, {1.0f, 1.0f, 1.0f, attivo ? 0.22f : 0.10f}, 1.0f, h * 0.5f);
+    // Pillola acqua piatta sopra la foto: il respiro sta sull'opacita' della
+    // campitura, che a riposo lascia intravedere la foto sotto.
+    const float fondo = attivo ? 1.0f : 0.80f + 0.08f * pulse;
+    r.fillRect(box, {kBg.r, kBg.g, kBg.b, fondo}, h * 0.5f);
 
     const render::Point tasto{box.left + 28.0f, (box.top + box.bottom) * 0.5f};
     constexpr float kTastoR = 12.5f;
-    r.fillCircle(tasto, kTastoR, {1.0f, 1.0f, 1.0f, attivo ? 0.16f : 0.10f});
+    r.fillCircle(tasto, kTastoR, {0.0f, 0.0f, 0.0f, attivo ? 0.14f : 0.08f});
     // Sans come le cifre dei badge: e' un tasto disegnato, cioe' chrome di
     // servizio, e il serif d'accento qui resta al titolo delle schermate.
     r.drawTextBodyCentered(L"R", tasto, 13.5f,
@@ -1855,16 +2142,14 @@ void drawRestartHint(render::Renderer& r, double hold, double animT) {
         // dalle 12 e gira in senso orario - -90 gradi e' l'alto anche qui,
         // dove la y cresce verso il basso (vedi Renderer::drawArc).
         //
-        // Bianco e non verde: il verde e' il colore del rilassamento nella
-        // legge di controllo (kAccent2), e qui non si sta misurando niente -
-        // e' un conto alla rovescia meccanico, che non deve sembrare un
-        // ritorno del segnale.
+        // Nero e non un caldo: i caldi sono i colori delle fasi nella legge di
+        // controllo, e qui non si sta misurando niente - e' un conto alla
+        // rovescia meccanico, che non deve sembrare un ritorno del segnale.
         constexpr float kAnelloR = kTastoR + 4.5f;
-        r.drawArc(tasto, kAnelloR, -90.0f, 270.0f, 2.5f, {1.0f, 1.0f, 1.0f, 0.16f});
+        r.drawArc(tasto, kAnelloR, -90.0f, 270.0f, 2.5f, kHairline);
         const auto frazione = static_cast<float>(std::clamp(hold, 0.0, 1.0));
         if (frazione > 0.0f) {
-            r.drawArc(tasto, kAnelloR, -90.0f, -90.0f + 360.0f * frazione, 2.5f,
-                      {1.0f, 1.0f, 1.0f, 0.95f});
+            r.drawArc(tasto, kAnelloR, -90.0f, -90.0f + 360.0f * frazione, 2.5f, kInk);
         }
     }
 
@@ -1899,36 +2184,49 @@ void drawOffboarding(render::Renderer& r, double elapsed, double animT) {
     // Stesso ritmo dell'accoglienza: altezze e distanze dichiarate, totale
     // sommato, blocco centrato. Qui il contenuto e' poco, e proprio per questo
     // un centraggio approssimato si vedrebbe di piu'.
-    constexpr float kTitoloPt = 60.0f, kCorpoPt = 20.0f;
+    // Il lettering si misura sull'altezza delle MAIUSCOLE, come nel poster: qui
+    // il 13% dell'altezza della finestra (la pagina d'ingresso sta al 16%,
+    // questa e' una schermata piu' quieta e con meno da dire).
+    const float     kTitoloPt   = win.height * 0.13f / kDisplayCapEm;
+    constexpr float kCorpoPt    = 20.0f;
     constexpr float kInterlinea = 1.5f;
-    constexpr float kTitoloH = kTitoloPt * 1.60f;   // serif d'accento, vedi kOnbTitoloH
+    const float     kTitoloH    = kTitoloPt * kDisplayLineEm;
     constexpr float kDopoTitolo = 34.0f;
     constexpr float kCorpoH = kCorpoPt * kInterlinea * 2.0f;   // due righe
     constexpr float kDopoCorpo = 52.0f;
     constexpr float kBarH = 4.0f;
-    constexpr float kTotale = kTitoloH + kDopoTitolo + kCorpoH + kDopoCorpo + kBarH;
+    const float kTotale = kTitoloH + kDopoTitolo + kCorpoH + kDopoCorpo + kBarH;
 
     float y = cy - kTotale * 0.5f;
 
-    // Un alone morbido al posto dello sciame della pagina d'ingresso: qui non
-    // c'e' piu' niente da leggere nel segnale, e un campo di puntini che si
-    // agita mentre si dice "abbiamo finito" direbbe il contrario. Centrato sul
-    // blocco di testo, non sullo schermo, cosi' non scivola rispetto a lui.
+    // La macchia FERMA dietro al lettering, nelle proporzioni esatte del
+    // poster, al posto del campo animato della pagina d'ingresso: qui non
+    // c'e' piu' niente da leggere nel segnale, e una forma che si agita
+    // mentre si dice "abbiamo finito" direbbe il contrario. Respira appena,
+    // ed e' agganciata al titolo (non allo schermo) cosi' non scivola
+    // rispetto a lui.
     const auto  respiro = static_cast<float>(0.5 + 0.5 * std::sin(animT * 0.7));
-    const float aloneR  = 190.0f + 10.0f * respiro;
-    r.fillCircleGradient({cx, y + kTotale * 0.5f}, aloneR,
-                         {kAccent2.r, kAccent2.g, kAccent2.b, 0.10f},
-                         {kAccent.r, kAccent.g, kAccent.b, 0.05f},
-                         {kAccent.r, kAccent.g, kAccent.b, 0.0f});
-
-    r.drawText(L"Grazie", render::rect(cx - 460.0f, y, cx + 460.0f, y + kTitoloH),
-              kTitoloPt, kInk, render::TextAlign::Center, true);
+    const float cap     = kTitoloPt * kDisplayCapEm;
+    const float capTop  = y + (kDisplayAscentEm - kDisplayCapEm) * kTitoloPt;
+    // Nel poster la macchia si misura sull'altezza delle MAIUSCOLE, non sulla
+    // larghezza della parola: e' alta 1.97 C, larga di conseguenza, e le
+    // lettere la attraversano a meta'. Misurandola sulla parola, "GRAZIE" -
+    // che e' corta - la faceva diventare un ornamento con due lobi che
+    // spuntavano sopra le lettere come orecchie.
+    const float blobH   = cap * (1.97f + 0.04f * respiro);
+    const float blobW   = blobH * biodetails::kBlobAspect;
+    const float blobCx  = cx - 0.06f * cap;
+    const float blobTop = capTop - 0.455f * cap;
+    drawLetteringOverShape(r, L"GRAZIE", render::rect(cx - 460.0f, y, cx + 460.0f, y + kTitoloH),
+                           kTitoloPt,
+                           blobPoints(render::rect(blobCx - blobW * 0.5f, blobTop,
+                                                   blobCx + blobW * 0.5f, blobTop + blobH)));
     y += kTitoloH + kDopoTitolo;
 
     r.drawParagraph(L"Togli la fascia e igienizzala con una salvietta.\n"
                     L"Il prossimo visitatore la troverà pronta.",
                     render::rect(cx - 420.0f, y, cx + 420.0f, y + kCorpoH + 8.0f),
-                    kCorpoPt, kMuted, render::TextAlign::Center, kInterlinea);
+                    kCorpoPt, kInk, render::TextAlign::Center, kInterlinea);
     y += kCorpoH + kDopoCorpo;
 
     // Barra che si svuota: dice che lo schermo tornera' da solo, cosi' nessuno
@@ -1936,11 +2234,11 @@ void drawOffboarding(render::Renderer& r, double elapsed, double animT) {
     const auto  rimasto = static_cast<float>(
         std::clamp(1.0 - elapsed / config::kOffboardS, 0.0, 1.0));
     constexpr float kBarW = 260.0f;
-    r.fillRect(render::rect(cx - kBarW / 2, y, cx + kBarW / 2, y + kBarH),
-              {1.0f, 1.0f, 1.0f, 0.10f}, kBarH * 0.5f);
+    r.fillRect(render::rect(cx - kBarW / 2, y, cx + kBarW / 2, y + kBarH), kHairline,
+              kBarH * 0.5f);
     if (rimasto > 0.0f) {
         r.fillRect(render::rect(cx - kBarW / 2, y, cx - kBarW / 2 + kBarW * rimasto, y + kBarH),
-                  {kAccent2.r, kAccent2.g, kAccent2.b, 0.75f}, kBarH * 0.5f);
+                  kAccent2, kBarH * 0.5f);
     }
 }
 
@@ -1988,17 +2286,17 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
         // Il titolo sta sopra, il compito sotto, entrambi lontani
         // dall'elemento - si leggono una volta e poi si dimenticano.
         const render::Color stageColor = inConcentrate ? kAccent : kAccent2;
-        r.drawText(inConcentrate ? L"Concentrazione" : L"Rilassamento",
-                  render::rect(cx - 320.0f, win.height * 0.5f - 232.0f,
-                              cx + 320.0f, win.height * 0.5f - 190.0f),
-                  30.0f, stageColor, render::TextAlign::Center, true);
+        r.drawTextDisplay(inConcentrate ? L"CONCENTRAZIONE" : L"RILASSAMENTO",
+                          render::rect(cx - 320.0f, win.height * 0.5f - 250.0f,
+                                      cx + 320.0f, win.height * 0.5f - 186.0f),
+                          48.0f, stageColor);
         r.drawTextBody(inConcentrate
                            ? L"Fai crescere la sfera fino al bordo:\n"
                              L"conta all’indietro da 300, sottraendo 7 ogni volta."
                            : L"Respira seguendo la sfera.",
                       render::rect(cx - 340.0f, win.height * 0.5f + 178.0f,
                                   cx + 340.0f, win.height * 0.5f + 238.0f),
-                      16.0f, kMuted);
+                      16.0f, kInk);
         // Unica eccezione: se il segnale non e' utilizzabile la persona deve
         // saperlo, altrimenti resta li' a sforzarsi mentre nulla viene
         // contato. Sta in basso, lontano dall'elemento.
@@ -2006,14 +2304,12 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
             render::rect(cx - 320.0f, win.height - 78.0f, cx + 320.0f, win.height - 46.0f);
         if (!st.signalFresh) {
             drawStatusHint(r, avviso,
-                          L"In attesa del segnale dalla fascia EEG: il conteggio è in pausa.",
-                          kWarn);
+                          L"In attesa del segnale dalla fascia EEG: il conteggio è in pausa.");
         } else if (st.signalFault != 0) {
             drawStatusHint(r, avviso,
-                          L"Segnale non utilizzabile: questi istanti non vengono conteggiati.",
-                          kBad);
+                          L"Segnale non utilizzabile: questi istanti non vengono conteggiati.");
         } else if (!st.contactOk) {
-            drawStatusHint(r, avviso, L"Contatto assente: sistema la fascia sulla fronte.", kWarn);
+            drawStatusHint(r, avviso, L"Contatto assente: sistema la fascia sulla fronte.");
         }
         return;
     }
@@ -2022,10 +2318,8 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
     const float panelH = 600.0f;
     const render::Rect panel = render::rect(cx - panelW / 2, win.height * 0.5f - panelH / 2,
                                           cx + panelW / 2, win.height * 0.5f + panelH / 2);
-    r.fillRectShadow(panel, kPanel, 24.0f, kShadow, 46.0f, {0.0f, 20.0f});
-    r.fillRectGradient(panel, kPanel, darken(kPanel, 0.10f), 24.0f);
-    r.drawRectOutline(panel, {1, 1, 1, 0.09f}, 1.0f, 24.0f);
-
+    // Nessun riquadro: il poster non ha cornici, la scheda e' un blocco di
+    // testo sul fondo. `panel` resta come gabbia di impaginazione.
     const float top = panel.top + 40.0f;
 
     // Indicatore di passaggio: due pallini numerati, condiviso da tutte le fasi
@@ -2037,15 +2331,15 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
         const float gap = 64.0f;
         const render::Point b1{cx - gap / 2, by};
         const render::Point b2{cx + gap / 2, by};
-        r.drawLine({b1.x + 16.0f, b1.y}, {b2.x - 16.0f, b2.y}, {1, 1, 1, 0.14f}, 2.0f);
+        r.drawLine({b1.x + 16.0f, b1.y}, {b2.x - 16.0f, b2.y}, kHairline, 2.0f);
         drawStepBadge(r, b1, 16.0f, 1, stage == control::CalibStage::Intro || inConcentrate,
                      pastFirst, kAccent);
         drawStepBadge(r, b2, 16.0f, 2, pastFirst, false, kAccent2);
     }
 
     if (stage == control::CalibStage::Intro) {
-        r.drawText(L"Calibrazione", render::rect(panel.left, top + 42, panel.right, top + 92),
-                  34.0f, kInk, render::TextAlign::Center, true);
+        r.drawTextDisplay(L"CALIBRAZIONE", render::rect(panel.left, top + 30, panel.right, top + 96),
+                          50.0f, kCoral);
         r.drawTextBody(L"Due passaggi brevi: la durata si adatta al tuo segnale.",
                       render::rect(panel.left + 40, top + 100, panel.right - 40, top + 128), 16.0f,
                       kMuted);
@@ -2061,7 +2355,7 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
         r.drawTextBody(L"Rilassamento\nrespira con la sfera",
                       render::rect(p2.x - 110.0f, p2.y + 38.0f, p2.x + 110.0f, p2.y + 90.0f), 15.0f,
                       kInk, render::TextAlign::Center);
-        r.drawLine({p1.x + 34.0f, p1.y}, {p2.x - 34.0f, p2.y}, {1, 1, 1, 0.14f}, 2.0f);
+        r.drawLine({p1.x + 34.0f, p1.y}, {p2.x - 34.0f, p2.y}, kHairline, 2.0f);
 
         r.drawTextBody(L"Termina automaticamente quando le misure sono sufficienti.",
                       render::rect(panel.left + 48, rowY + 110.0f, panel.right - 48, rowY + 160.0f),
@@ -2073,8 +2367,7 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
 
         drawStatusHint(r, render::rect(panel.left, panel.bottom - 46, panel.right, panel.bottom - 22),
                       st.replaying ? L"Sessione dimostrativa · segnale registrato"
-                                  : L"La fascia EEG deve essere collegata",
-                      kMuted);
+                                  : L"La fascia EEG deve essere collegata");
         if (!st.signalFresh && !st.replaying) {
             r.drawTextBody(L"Nessun dato dalla fascia: puoi iniziare comunque,\n"
                            L"il conteggio partirà all’arrivo del segnale.",
@@ -2094,18 +2387,18 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
         // presentata la prima, invece che con una riga di testo buttata li'.
         // Al posto del pulsante c'e' una barra che si riempie: dice che si
         // andra' avanti da soli, e quanto manca, senza chiedere niente.
-        r.drawText(L"Secondo passaggio",
-                  render::rect(panel.left, top + 42, panel.right, top + 92),
-                  32.0f, kInk, render::TextAlign::Center, true);
+        r.drawTextDisplay(L"SECONDO PASSAGGIO",
+                          render::rect(panel.left, top + 30, panel.right, top + 96),
+                          50.0f, kCoral);
         r.drawTextBody(L"La fase di concentrazione è conclusa. Ora si misura l’opposto.",
                       render::rect(panel.left + 40, top + 100, panel.right - 40, top + 128), 16.0f,
                       kMuted);
 
         const float rowY = top + 190.0f;
         drawStepBadge(r, {cx, rowY}, 34.0f, 2, true, false, kAccent2);
-        r.drawText(L"Rilassamento",
-                  render::rect(panel.left, rowY + 54.0f, panel.right, rowY + 96.0f), 26.0f,
-                  kAccent2, render::TextAlign::Center, true);
+        r.drawTextDisplay(L"RILASSAMENTO",
+                          render::rect(panel.left, rowY + 50.0f, panel.right, rowY + 100.0f),
+                          36.0f, kAccent2);
         r.drawTextBody(L"Segui la sfera che respira: inspira, trattieni, espira, trattieni —\n"
                        L"quattro tempi da 4 secondi ciascuno.\n"
                        L"Lascia andare lo sforzo di prima.",
@@ -2115,33 +2408,31 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
         // Barra di avanzamento: e' l'unica cosa che sostituisce il pulsante.
         const float barW = 280.0f, barH = 6.0f;
         const float barY = panel.bottom - 108.0f;
-        r.fillRect(render::rect(cx - barW / 2, barY, cx + barW / 2, barY + barH),
-                  {1, 1, 1, 0.10f}, barH * 0.5f);
+        r.fillRect(render::rect(cx - barW / 2, barY, cx + barW / 2, barY + barH), kHairline,
+                  barH * 0.5f);
         const auto avanz = static_cast<float>(std::clamp(st.calibProgress, 0.0, 1.0));
         if (avanz > 0.0f) {
             r.fillRect(render::rect(cx - barW / 2, barY, cx - barW / 2 + barW * avanz, barY + barH),
                       kAccent2, barH * 0.5f);
         }
         drawStatusHint(r, render::rect(panel.left, barY + 22.0f, panel.right, barY + 46.0f),
-                      L"Parte automaticamente.", kMuted);
+                      L"Parte automaticamente.");
         return;
     }
 
     if (stage == control::CalibStage::Done) {
         const render::Point ic{cx, win.height * 0.5f - 96.0f};
         const float pulse = 3.0f + 2.0f * static_cast<float>(std::sin(animT * 2.0));
-        r.fillCircle(ic, 42.0f + pulse, {kOk.r, kOk.g, kOk.b, 0.12f});
-        r.fillCircle(ic, 34.0f, kOk);
-        r.drawLine({ic.x - 15.0f, ic.y + 1.0f}, {ic.x - 4.0f, ic.y + 13.0f},
-                   {0.03f, 0.05f, 0.04f, 1.0f}, 4.0f);
-        r.drawLine({ic.x - 4.0f, ic.y + 13.0f}, {ic.x + 17.0f, ic.y - 12.0f},
-                   {0.03f, 0.05f, 0.04f, 1.0f}, 4.0f);
+        r.fillCircle(ic, 42.0f + pulse, {kAccent.r, kAccent.g, kAccent.b, 0.18f});
+        r.fillCircle(ic, 34.0f, kAccent);
+        r.drawLine({ic.x - 15.0f, ic.y + 1.0f}, {ic.x - 4.0f, ic.y + 13.0f}, kInk, 4.0f);
+        r.drawLine({ic.x - 4.0f, ic.y + 13.0f}, {ic.x + 17.0f, ic.y - 12.0f}, kInk, 4.0f);
 
-        r.drawText(st.calibUsingFallback ? L"Pronto · profilo generico"
-                                         : L"Calibrazione completata",
-                  render::rect(panel.left, win.height * 0.5f - 30, panel.right,
-                              win.height * 0.5f + 12),
-                  28.0f, kInk, render::TextAlign::Center, true);
+        r.drawTextDisplay(st.calibUsingFallback ? L"PRONTO · PROFILO GENERICO"
+                                                : L"CALIBRAZIONE COMPLETATA",
+                          render::rect(panel.left, win.height * 0.5f - 36, panel.right,
+                                      win.height * 0.5f + 20),
+                          42.0f, kCoral);
         r.drawTextBody(st.calibUsingFallback
                            ? L"Concentrandoti avvicini l’immagine, rilassandoti la allontani —\n"
                              L"ma il profilo non è il tuo: è un valore generico,\n"
@@ -2172,10 +2463,10 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
         r.drawLine({ic.x - 12.0f, ic.y - 12.0f}, {ic.x + 12.0f, ic.y + 12.0f}, kBad, 4.0f);
         r.drawLine({ic.x + 12.0f, ic.y - 12.0f}, {ic.x - 12.0f, ic.y + 12.0f}, kBad, 4.0f);
 
-        r.drawText(L"Calibrazione non riuscita",
-                   render::rect(panel.left, win.height * 0.5f - 76, panel.right,
-                               win.height * 0.5f - 32),
-                   26.0f, kInk, render::TextAlign::Center, true);
+        r.drawTextDisplay(L"CALIBRAZIONE NON RIUSCITA",
+                          render::rect(panel.left, win.height * 0.5f - 82, panel.right,
+                                      win.height * 0.5f - 28),
+                          40.0f, kCoral);
         r.drawTextBody(detail,
                       render::rect(panel.left + 48, win.height * 0.5f - 12, panel.right - 48,
                                   win.height * 0.5f + 78),
@@ -2186,10 +2477,8 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
         drawPillButton(r, cta, L"Premi INVIO per riprovare", kBad);
 
         if (reason == app::FailReason::NoSignal) {
-            drawStatusHint(
-                r, render::rect(panel.left + 32, panel.bottom - 30, panel.right - 32, panel.bottom - 6),
-                L"M per continuare comunque, con un profilo generico non personale",
-                kMuted);
+            drawStatusHint(r, render::rect(panel.left + 32, panel.bottom - 30, panel.right - 32, panel.bottom - 6),
+                      L"M per continuare comunque, con un profilo generico non personale");
         }
         return;
     }
@@ -2234,6 +2523,7 @@ void drawProjectionScale(render::Renderer& r, const control::CrossfadeState& cf)
     const auto  win = r.size();
     const float cx  = win.width * 0.5f;
 
+    // --- pillola dell'ingrandimento, in alto ---
     const float testo = std::max(24.0f, win.height * 0.055f);
     const float padX  = testo * 0.9f;
     const float padY  = testo * 0.34f;
@@ -2245,40 +2535,47 @@ void drawProjectionScale(render::Renderer& r, const control::CrossfadeState& cf)
 
     const render::Rect box =
         render::rect(cx - boxW / 2, boxY, cx + boxW / 2, boxY + boxH);
-    r.fillRectShadow(box, {0.05f, 0.06f, 0.08f, 0.85f}, boxH * 0.5f, {0.0f, 0.0f, 0.0f, 0.4f},
-                    16.0f, {0.0f, 4.0f});
-    r.drawRectOutline(box, {kAccent.r, kAccent.g, kAccent.b, 0.45f}, 1.5f, boxH * 0.5f);
-    r.drawTextCentered(etichetta, {cx, (box.top + box.bottom) * 0.5f}, testo, kInk, true);
+    r.fillRect(box, kBg, boxH * 0.5f);
+    r.drawTextCentered(etichetta, {cx, (box.top + box.bottom) * 0.5f}, testo, kCoral, true);
 
+    // --- barra della scala, in basso ---
     const double campo = fieldWidthMeters(cf.magnification);
     if (campo <= 0.0) return;
 
     const double perPixel = campo / win.width;
-    const double target   = perPixel * (win.width * 0.20);
+    // Un settimo della larghezza: la barra e' un riferimento, non un titolo.
+    const double target   = perPixel * (win.width * 0.14);
     const double lunghezza = niceLength(target);
     if (lunghezza <= 0.0) return;
 
-    const auto  barW = static_cast<float>(lunghezza / perPixel);
-    const float barY = win.height * 0.93f;
-    const float tick = std::max(8.0f, win.height * 0.014f);
-    const float spess = std::max(2.0f, win.height * 0.004f);
+    // Ritmo verticale dichiarato invece che aggiustato a occhio: corpo
+    // dell'etichetta, la sua riga, lo stacco, la barra, e lo stesso margine
+    // sopra e sotto. Prima la pillola era costruita per differenze a partire
+    // dalla barra, e l'etichetta finiva a filo del bordo superiore.
+    const float et     = std::max(13.0f, win.height * 0.020f);
+    const float rigaH  = et * 1.30f;
+    const float tick   = std::max(6.0f, win.height * 0.010f);
+    const float spess  = std::max(2.0f, win.height * 0.003f);
+    const float margY  = et * 0.72f;
+    const float stacco = et * 0.55f;
 
-    const float x0 = cx - barW / 2.0f;
-    const float x1 = cx + barW / 2.0f;
+    const auto  barW  = static_cast<float>(lunghezza / perPixel);
+    const float pilloW = barW + et * 2.6f;
+    const float pilloH = margY * 2.0f + rigaH + stacco + tick;
+    const float pilloB = win.height * 0.955f;
+    const render::Rect pillo =
+        render::rect(cx - pilloW * 0.5f, pilloB - pilloH, cx + pilloW * 0.5f, pilloB);
+    r.fillRect(pillo, kBg, pilloH * 0.5f);
 
-    const float etichettaH = std::max(15.0f, win.height * 0.026f);
-    const render::Rect sfondo =
-        render::rect(x0 - 28.0f, barY - etichettaH - 18.0f, x1 + 28.0f, barY + tick + 12.0f);
-    r.fillRectShadow(sfondo, {0.05f, 0.06f, 0.08f, 0.6f}, 12.0f, {0.0f, 0.0f, 0.0f, 0.35f}, 14.0f,
-                    {0.0f, 3.0f});
+    const float etY  = pillo.top + margY + rigaH * 0.5f;
+    const float barY = pillo.top + margY + rigaH + stacco;
+    const float x0   = cx - barW * 0.5f;
+    const float x1   = cx + barW * 0.5f;
 
-    const render::Color bianco{1.0f, 1.0f, 1.0f, 0.92f};
-    r.fillRect(render::rect(x0, barY, x1, barY + spess), bianco);
-    r.fillRect(render::rect(x0, barY - tick / 2, x0 + spess, barY + tick), bianco);
-    r.fillRect(render::rect(x1 - spess, barY - tick / 2, x1, barY + tick), bianco);
-
-    r.drawTextCentered(formatLength(lunghezza), {(x0 + x1) * 0.5f, barY - etichettaH - 10.0f},
-                       etichettaH, bianco, true);
+    r.drawTextCentered(formatLength(lunghezza), {cx, etY}, et, kInk, true);
+    r.fillRect(render::rect(x0, barY, x1, barY + spess), kInk);
+    r.fillRect(render::rect(x0, barY - tick / 2, x0 + spess, barY + tick / 2), kInk);
+    r.fillRect(render::rect(x1 - spess, barY - tick / 2, x1, barY + tick / 2), kInk);
 }
 
 std::wstring toWide(const char* s) {
@@ -2350,14 +2647,16 @@ float drawHud(render::Renderer& r, const app::ControlState& st, const control::Z
         const float lines = s.size() > 78 ? 2.0f : 1.0f;
         rows.push_back({s, c, size, (size + 4.0f) * lines + 3.0f});
     };
-    const render::Color kKeys{0.55f, 0.60f, 0.75f, 1.0f};
+    // Le righe dei tasti: acqua smorzata, come il resto del pannello. Nere
+    // sarebbero invisibili - il pannello sta sul nero della foto.
+    const render::Color kKeys{kBg.r, kBg.g, kBg.b, 0.55f};
 
     // --- intestazione: livello e FPS ---
     {
-        render::Color fc = fps >= 50.0 ? kOk : (fps >= 30.0 ? kWarn : kBad);
+        render::Color fc = fps >= 50.0 ? kHudOk : (fps >= 30.0 ? kWarn : kBad);
         line(std::wstring(L"PANNELLO OPERATORE · ") + (level >= 2 ? L"esperto" : L"base") +
                  L"     " + fixed(fps, 0) + L" fps",
-             fps >= 50.0 ? kMuted : fc, 12.0f);
+             fps >= 50.0 ? kHudMuted : fc, 12.0f);
     }
 
     // --- sorgente ---
@@ -2368,7 +2667,7 @@ float drawHud(render::Renderer& r, const app::ControlState& st, const control::Z
                                      L"Connessione alla fascia in corso…",
                                      L"Fascia EEG collegata · dati in arrivo"};
         const int bs = std::clamp(st.bleState, 0, 3);
-        line(std::wstring(L"Sorgente: ") + bleNames[bs], bs == 3 ? kOk : (bs == 0 ? kBad : kWarn),
+        line(std::wstring(L"Sorgente: ") + bleNames[bs], bs == 3 ? kHudOk : (bs == 0 ? kBad : kWarn),
              15.0f);
     }
 
@@ -2378,21 +2677,21 @@ float drawHud(render::Renderer& r, const app::ControlState& st, const control::Z
         const render::Color c = d.severity == diag::Severity::Error ? kBad
                               : d.severity == diag::Severity::Warn  ? kWarn
                               : d.severity == diag::Severity::Info  ? kAccent
-                                                                    : kOk;
+                                                                    : kHudOk;
         line(L"[" + toWide(d.code) + L"]  " + d.title, c, 15.0f);
-        if (d.action[0]) para(std::wstring(L"→ ") + d.action, kInk, 12.5f);
+        if (d.action[0]) para(std::wstring(L"→ ") + d.action, kHudInk, 12.5f);
     }
 
-    line(L"Fase: " + phaseInWords(st, landing, zoom.locked()), kInk);
+    line(L"Fase: " + phaseInWords(st, landing, zoom.locked()), kHudInk);
     line(L"Ingrandimento: " + std::to_wstring(cf.magnification) + L"×", kAccent, 15.0f);
 
     if (st.recording) {
         const double secs = static_cast<double>(st.recordedSamples) / config::kSampleRate;
         line(L"Registrazione: " + fileNameOf(g.recorder.path()) + L"  (" + fixed(secs, 0) + L" s)",
-             kOk, 12.0f);
+             kHudOk, 12.0f);
     }
     if (!g.debugLogPath.empty()) {
-        line(L"Log: debug/" + fileNameOf(toWide(g.debugLogPath.c_str())), kMuted, 12.0f);
+        line(L"Log: debug/" + fileNameOf(toWide(g.debugLogPath.c_str())), kHudMuted, 12.0f);
     }
 
     line(L"H livello pannello   B Bluetooth   R tenuto premuto: riavvio completo   ESC/Q esci",
@@ -2402,8 +2701,7 @@ float drawHud(render::Renderer& r, const app::ControlState& st, const control::Z
         // --- disegno (solo base) ---
         float h = 16.0f;
         for (const auto& row : rows) h += row.h;
-        r.fillRect(render::rect(x - 12.0f, 12.0f, x + w + 12.0f, 12.0f + h),
-                   {kBg.r, kBg.g, kBg.b, 0.72f}, 10.0f);
+        r.fillRect(render::rect(x - 12.0f, 12.0f, x + w + 12.0f, 12.0f + h), kHudBg, 10.0f);
         float y = 20.0f;
         for (const auto& row : rows) {
             r.drawTextBody(row.s, render::rect(x, y, x + w, y + row.h + 2.0f), row.size, row.c,
@@ -2414,7 +2712,7 @@ float drawHud(render::Renderer& r, const app::ControlState& st, const control::Z
     }
 
     // --- livello esperto: le letture numeriche, com'erano prima ---
-    line(L"", kMuted, 4.0f);
+    line(L"", kHudMuted, 4.0f);
     line(L"LETTURE (livello esperto)", kKeys, 11.0f);
 
     if (st.signalFault != 0) {
@@ -2426,20 +2724,20 @@ float drawHud(render::Renderer& r, const app::ControlState& st, const control::Z
         if (fi == static_cast<int>(dsp::SignalFault::Mains)) {
             line(L"  " + fixed(st.mainsFraction * 100.0, 0) +
                      L"% a 50 Hz DOPO la derivazione bipolare: non e' modo comune",
-                 kMuted, 12.0f);
+                 kHudMuted, 12.0f);
             line(L"  i due frontali leggono cose diverse: uno dei due non e' accoppiato",
-                 kMuted, 12.0f);
+                 kHudMuted, 12.0f);
         } else {
             line(L"  correlazione " + fixed(st.autocorr1, 2) + L" (serve > " +
                      fixed(config::kMinAutocorr1, 2) + L")   saturi " +
                      fixed(st.railFraction * 100.0, 1) + L"%   rete " +
                      fixed(st.mainsFraction * 100.0, 0) + L"%",
-                 kMuted, 12.0f);
+                 kHudMuted, 12.0f);
         }
     } else {
         const wchar_t* gate = !st.contactOk ? L"CONTATTO" : (st.artifact ? L"ARTEFATTO" : L"OK");
         line(std::wstring(L"Segnale: ") + gate,
-             !st.contactOk ? kBad : (st.artifact ? kWarn : kOk));
+             !st.contactOk ? kBad : (st.artifact ? kWarn : kHudOk));
     }
 
     if (st.stalled) line(L"Flusso fermo: ripresa in corso", kBad);
@@ -2449,20 +2747,20 @@ float drawHud(render::Renderer& r, const app::ControlState& st, const control::Z
     std::wstring phaseLine = std::wstring(L"Fase interna: ") +
                              phaseNames[std::clamp(st.phase, 0, 6)];
     if (zoom.locked()) phaseLine += L" (HOLD)";
-    line(phaseLine, kMuted);
+    line(phaseLine, kHudMuted);
 
-    line(L"Indice: " + fixed(st.rawIndex, 3) + L"   c: " + fixed(st.smoothedIndex, 3), kMuted);
+    line(L"Indice: " + fixed(st.rawIndex, 3) + L"   c: " + fixed(st.smoothedIndex, 3), kHudMuted);
 
     if (st.calibValid) {
         line(L"Banda: [" + fixed(st.absMin, 2) + L" .. " + fixed(st.absMax, 2) + L"]   M: " +
-                 fixed(st.neutral, 2), kMuted);
-        line(L"Locale: [" + fixed(st.localMin, 2) + L" .. " + fixed(st.localMax, 2) + L"]", kMuted);
+                 fixed(st.neutral, 2), kHudMuted);
+        line(L"Locale: [" + fixed(st.localMin, 2) + L" .. " + fixed(st.localMax, 2) + L"]", kHudMuted);
     } else {
-        line(L"Banda: calibrazione in corso", kMuted);
+        line(L"Banda: calibrazione in corso", kHudMuted);
     }
 
     line(L"Velocita': " + fixed(st.velocity, 3) + L"  (cruda " + fixed(st.velocityRaw, 3) + L")",
-         st.velocity > 0 ? kOk : (st.velocity < 0 ? kWarn : kMuted));
+         st.velocity > 0 ? kHudOk : (st.velocity < 0 ? kWarn : kHudMuted));
 
     // La barra di attivazione si disegna dopo le righe: qui si riserva solo
     // lo spazio e ci si segna a che riga va.
@@ -2471,22 +2769,22 @@ float drawHud(render::Renderer& r, const app::ControlState& st, const control::Z
     std::size_t barRow  = 0;
     if (showBar) {
         barRow = rows.size();
-        rows.push_back({L"", kMuted, 0.0f, bh + 7.0f});
+        rows.push_back({L"", kHudMuted, 0.0f, bh + 7.0f});
         line(L"Gate: " + fixed(st.gate, 2) + L"   Ampiezza: " + fixed(st.magnitude, 2),
-             st.gate > 0.05 ? kOk : kMuted, 13.0f);
+             st.gate > 0.05 ? kHudOk : kHudMuted, 13.0f);
     }
 
-    line(L"Focus: " + fixed(zoom.targetFocus(), 3) + L" -> " + fixed(zoom.currentFocus(), 3), kMuted);
+    line(L"Focus: " + fixed(zoom.targetFocus(), 3) + L" -> " + fixed(zoom.currentFocus(), 3), kHudMuted);
     line(L"Bande  t:" + fixed(st.theta, 1) + L"  a:" + fixed(st.alpha, 1) + L"  b:" +
-             fixed(st.beta, 1), kMuted);
+             fixed(st.beta, 1), kHudMuted);
     line(L"Ampiezza: " + fixed(st.maxAbsRaw, 0) + L" uV   pkt: " +
              std::to_wstring(st.packetLen) + L"B/" + std::to_wstring(st.packetSamples) + L"smp",
-         kMuted);
+         kHudMuted);
 
     {
         const std::wstring counts = L"Pacchetti: " + std::to_wstring(st.rawPackets) +
                                     L" grezzi / " + std::to_wstring(st.validPackets) + L" validi";
-        render::Color c = kMuted;
+        render::Color c = kHudMuted;
         if (st.bleState == 3 && st.rawPackets == 0)                 c = kBad;
         else if (st.rawPackets > 0 && st.validPackets == 0)         c = kWarn;
         line(counts, c);
@@ -2494,12 +2792,12 @@ float drawHud(render::Renderer& r, const app::ControlState& st, const control::Z
 
     const auto logLines = g.bleLogSnapshot();
     if (!logLines.empty()) {
-        line(L"", kMuted, 1.0f);
+        line(L"", kHudMuted, 1.0f);
         line(L"Ultime righe del log:", kKeys, 12.0f);
-        for (const auto& l : logLines) line(L"  " + l, kMuted, 12.0f);
+        for (const auto& l : logLines) line(L"  " + l, kHudMuted, 12.0f);
     }
 
-    line(L"", kMuted, 1.0f);
+    line(L"", kHudMuted, 1.0f);
     line(L"Sensibilita': " + fixed(t.sensitivity, 1) + L"x    Tolleranza: " +
              fixed(t.localTolerance, 2) + L"    Smoothing: " + fixed(t.velTauS, 2) + L"s" +
              L"    Elastico: " + fixed(t.elasticTauS, 2) + L"s",
@@ -2516,7 +2814,7 @@ float drawHud(render::Renderer& r, const app::ControlState& st, const control::Z
     float h = 16.0f;
     for (const auto& row : rows) h += row.h;
     r.fillRect(render::rect(x - 12.0f, 12.0f, x + w + 12.0f, 12.0f + h),
-               {kBg.r, kBg.g, kBg.b, 0.72f}, 10.0f);
+               {kHudBg.r, kHudBg.g, kHudBg.b, 0.72f}, 10.0f);
     float y = 20.0f;
     for (std::size_t i = 0; i < rows.size(); ++i) {
         const auto& row = rows[i];
@@ -2526,17 +2824,17 @@ float drawHud(render::Renderer& r, const app::ControlState& st, const control::Z
                 const double f = (v - st.absMin) / (st.absMax - st.absMin);
                 return x + static_cast<float>(std::clamp(f, 0.0, 1.0)) * bw;
             };
-            r.fillRect(render::rect(x, by, x + bw, by + bh), {1, 1, 1, 0.06f}, 4.0f);
+            r.fillRect(render::rect(x, by, x + bw, by + bh), {0, 0, 0, 0.06f}, 4.0f);
             r.fillRect(render::rect(toX(st.localMin), by, toX(st.localMax), by + bh),
-                       {1, 1, 1, 0.07f}, 4.0f);
+                       {0, 0, 0, 0.08f}, 4.0f);
             const double tolUp = t.localTolerance * (st.absMax - st.neutral);
             const double tolDn = t.localTolerance * (st.neutral - st.absMin);
             r.fillRect(render::rect(toX(st.localMax - tolUp), by, toX(st.localMax), by + bh),
-                       {kOk.r, kOk.g, kOk.b, 0.24f}, 4.0f);
+                       {kHudOk.r, kHudOk.g, kHudOk.b, 0.24f}, 4.0f);
             r.fillRect(render::rect(toX(st.localMin), by, toX(st.localMin + tolDn), by + bh),
                        {kWarn.r, kWarn.g, kWarn.b, 0.24f}, 4.0f);
             const float nx = toX(st.neutral);
-            r.fillRect(render::rect(nx - 1.0f, by, nx + 1.0f, by + bh), kMuted);
+            r.fillRect(render::rect(nx - 1.0f, by, nx + 1.0f, by + bh), kHudMuted);
             const float px = toX(st.smoothedIndex);
             r.fillRect(render::rect(px - 2.0f, by - 3.0f, px + 2.0f, by + bh + 3.0f), kAccent,
                        2.0f);
@@ -2562,27 +2860,27 @@ constexpr const wchar_t* kOperatorCopy = L"";
 
 void drawCopyPanel(render::Renderer& r, render::Rect box) {
     if (box.height() < 40.0f) return;
-    r.fillRect(box, {kBg.r, kBg.g, kBg.b, 0.72f}, 10.0f);
-    r.drawRectOutline(box, {1, 1, 1, 0.10f}, 1.0f, 10.0f);
+    r.fillRect(box, kHudBg);
+    r.drawRectOutline(box, kHudHairline, 1.0f);
     if (kOperatorCopy[0] == L'\0') {
         r.drawTextBody(L"Spazio riservato al testo di sala — da compilare\n"
                        L"(kOperatorCopy in src/app/experience.cpp)",
                       render::rect(box.left + 16, (box.top + box.bottom) * 0.5f - 22.0f,
                                   box.right - 16, (box.top + box.bottom) * 0.5f + 22.0f),
-                      13.0f, {kMuted.r, kMuted.g, kMuted.b, 0.45f});
+                      13.0f, {kHudMuted.r, kHudMuted.g, kHudMuted.b, 0.45f});
         return;
     }
     r.drawTextBody(kOperatorCopy, render::rect(box.left + 20, box.top + 18, box.right - 20,
                                                box.bottom - 18),
-                  15.0f, kInk, render::TextAlign::Left);
+                  15.0f, kHudInk, render::TextAlign::Left);
 }
 
 /** Cornice di un grafico dello schermo operatore, con titolo. */
 void plotFrame(render::Renderer& r, render::Rect box, const wchar_t* title) {
-    r.fillRect(box, {kBg.r, kBg.g, kBg.b, 0.72f}, 6.0f);
-    r.drawRectOutline(box, {1, 1, 1, 0.10f}, 1.0f, 6.0f);
+    r.fillRect(box, kHudBg);
+    r.drawRectOutline(box, kHudHairline, 1.0f);
     r.drawTextBody(title, render::rect(box.left + 8, box.top + 4, box.right - 8, box.top + 22),
-                  12.0f, kMuted, render::TextAlign::Left);
+                  12.0f, kHudMuted, render::TextAlign::Left);
 }
 
 /**
@@ -2624,15 +2922,15 @@ void drawWaveforms(render::Renderer& r, const app::WaveSnapshot& w, render::Rect
         const render::Rect lane = render::rect(rawBox.left + 44.0f, laneTop + ch * laneH,
                                                rawBox.right - 8.0f, laneTop + (ch + 1) * laneH);
         const float mid = (lane.top + lane.bottom) * 0.5f;
-        r.drawLine({lane.left, mid}, {lane.right, mid}, {1, 1, 1, 0.06f}, 1.0f);
+        r.drawLine({lane.left, mid}, {lane.right, mid}, {0, 0, 0, 0.08f}, 1.0f);
         const float scale = std::max(20.0f, maxAbs(w.raw[ch]) * 1.1f);
         r.drawTextBody(kChannelNames[ch], render::rect(rawBox.left + 8, mid - 9.0f,
                                                        rawBox.left + 44.0f, mid + 9.0f),
-                      11.0f, kMuted, render::TextAlign::Left);
+                      11.0f, kHudMuted, render::TextAlign::Left);
         r.drawTextBody(L"±" + fixed(scale, 0), render::rect(lane.right - 60.0f, lane.top,
                                                               lane.right, lane.top + 14.0f),
-                      10.0f, {kMuted.r, kMuted.g, kMuted.b, 0.6f}, render::TextAlign::Left);
-        trace(w.raw[ch], lane, scale, {kInk.r, kInk.g, kInk.b, 0.85f});
+                      10.0f, {kHudMuted.r, kHudMuted.g, kHudMuted.b, 0.6f}, render::TextAlign::Left);
+        trace(w.raw[ch], lane, scale, {kHudInk.r, kHudInk.g, kHudInk.b, 0.85f});
     }
     r.popClip();
 
@@ -2643,11 +2941,11 @@ void drawWaveforms(render::Renderer& r, const app::WaveSnapshot& w, render::Rect
                                                procBox.right - 8.0f, procBox.bottom - 6.0f);
         const float mid = (lane.top + lane.bottom) * 0.5f;
         r.pushClip(procBox);
-        r.drawLine({lane.left, mid}, {lane.right, mid}, {1, 1, 1, 0.06f}, 1.0f);
+        r.drawLine({lane.left, mid}, {lane.right, mid}, {0, 0, 0, 0.08f}, 1.0f);
         const float scale = std::max(10.0f, maxAbs(w.processed) * 1.1f);
         r.drawTextBody(L"±" + fixed(scale, 0), render::rect(lane.right - 60.0f, lane.top,
                                                               lane.right, lane.top + 14.0f),
-                      10.0f, {kMuted.r, kMuted.g, kMuted.b, 0.6f}, render::TextAlign::Left);
+                      10.0f, {kHudMuted.r, kHudMuted.g, kHudMuted.b, 0.6f}, render::TextAlign::Left);
         trace(w.processed, lane, scale, kAccent);
         r.popClip();
     }
@@ -2668,10 +2966,10 @@ void drawWaveforms(render::Renderer& r, const app::WaveSnapshot& w, render::Rect
             const float x0 = area.left + (b - 1) * binW + 1.0f;
             const int   grp = (b >= 4 && b < 8) ? 1 : (b >= 8 && b < 13) ? 2 : (b >= 13 && b < 30) ? 0 : -1;
             const render::Rect bar = render::rect(x0, area.bottom - h, x0 + binW - 2.0f, area.bottom);
-            if (grp < 0) r.fillRect(bar, {kMuted.r, kMuted.g, kMuted.b, 0.35f});
+            if (grp < 0) r.fillRect(bar, {kHudMuted.r, kHudMuted.g, kHudMuted.b, 0.35f});
             else         bars[grp].push_back(bar);
         }
-        r.fillRects(bars[0].data(), static_cast<int>(bars[0].size()), {kInk.r, kInk.g, kInk.b, 0.55f});
+        r.fillRects(bars[0].data(), static_cast<int>(bars[0].size()), {kHudInk.r, kHudInk.g, kHudInk.b, 0.55f});
         r.fillRects(bars[1].data(), static_cast<int>(bars[1].size()), kAccent2);
         r.fillRects(bars[2].data(), static_cast<int>(bars[2].size()), kAccent);
         for (const int hz : {10, 20, 30, 40}) {
@@ -2679,7 +2977,7 @@ void drawWaveforms(render::Renderer& r, const app::WaveSnapshot& w, render::Rect
                                                              area.bottom + 1.0f,
                                                              area.left + (hz - 1) * binW + 14.0f,
                                                              area.bottom + 14.0f),
-                          10.0f, {kMuted.r, kMuted.g, kMuted.b, 0.6f}, render::TextAlign::Left);
+                          10.0f, {kHudMuted.r, kHudMuted.g, kHudMuted.b, 0.6f}, render::TextAlign::Left);
         }
     }
 }
@@ -2709,8 +3007,8 @@ void drawOperatorDashboard(render::Renderer& r, const app::ControlState& st,
     const render::Rect specBox = next(0.15f);
     drawWaveforms(r, g.wave.read(), rawBox, procBox, specBox);
 
-    const app::PlotTheme theme{kInk, kMuted, kAccent, kOk, kWarn, kBad,
-                               {1.0f, 1.0f, 1.0f, 0.10f}, {kBg.r, kBg.g, kBg.b, 0.72f}};
+    const app::PlotTheme theme{kHudInk, kHudMuted, kAccent, kHudOk, kWarn, kBad,
+                               kHudHairline, kHudBg};
     app::drawTelemetry(r, render::rect(gx, y, gr, win.height - 12.0f), history, st, t, theme);
 }
 
@@ -2735,13 +3033,12 @@ void drawCalibDebug(render::Renderer& r, const app::TelemetryHistory& history,
     const float y0  = win.height - h - 24.0f;
 
     const render::Rect box = render::rect(x0, y0, x0 + w, y0 + h);
-    r.fillRectShadow(box, kPanel, 16.0f, kShadow, 24.0f, {0.0f, 8.0f});
-    r.fillRectGradient(box, kPanel, darken(kPanel, 0.10f), 16.0f);
-    r.drawRectOutline(box, {kAccent.r, kAccent.g, kAccent.b, 0.35f}, 1.5f, 16.0f);
+    r.fillRect(box, kHudBg);
+    r.drawRectOutline(box, {0.0f, 0.0f, 0.0f, 0.25f}, 1.0f);
 
     r.drawTextBody(L"Debug calibrazione (V per chiudere)",
                    render::rect(box.left + 14, box.top + 10, box.right - 14, box.top + 28),
-                   13.0f, kMuted, render::TextAlign::Left);
+                   13.0f, kHudMuted, render::TextAlign::Left);
 
     constexpr double kWindowS = 60.0;
     const auto visible = static_cast<std::size_t>(kWindowS * config::kControlHz);
@@ -2755,8 +3052,8 @@ void drawCalibDebug(render::Renderer& r, const app::TelemetryHistory& history,
     const auto plotSeries = [&](render::Rect g, double lo, double hi,
                                 double (*get)(const app::TelemetrySample&),
                                 render::Color color) {
-        r.fillRect(g, {1.0f, 1.0f, 1.0f, 0.04f}, 6.0f);
-        r.drawRectOutline(g, {1.0f, 1.0f, 1.0f, 0.10f}, 1.0f, 6.0f);
+        r.fillRect(g, {0.0f, 0.0f, 0.0f, 0.04f});
+        r.drawRectOutline(g, kHudHairline, 1.0f);
         if (count < 2 || hi <= lo) return;
         std::vector<render::Point> pts;
         pts.reserve(count);
@@ -2779,7 +3076,7 @@ void drawCalibDebug(render::Renderer& r, const app::TelemetryHistory& history,
         const double hi = std::max(target * 1.3, st.calibEffN * 1.15);
         r.drawTextBody(L"Campioni effettivi (n_eff)",
                        render::rect(g.left, g.top - 16.0f, g.right, g.top), 11.0f,
-                       render::Color{kMuted.r, kMuted.g, kMuted.b, kMuted.a * 0.8f}, render::TextAlign::Left);
+                       render::Color{kHudMuted.r, kHudMuted.g, kHudMuted.b, kHudMuted.a * 0.8f}, render::TextAlign::Left);
         const float targetY = g.bottom - static_cast<float>(target / hi) * (g.bottom - g.top);
         r.drawLine({g.left, targetY}, {g.right, targetY},
                   render::Color{kWarn.r, kWarn.g, kWarn.b, kWarn.a * 0.6f}, 1.0f);
@@ -2797,7 +3094,7 @@ void drawCalibDebug(render::Renderer& r, const app::TelemetryHistory& history,
                                             box.top + 36.0f + rowH + gapY + rowH);
         r.drawTextBody(L"Autocorrelazione (0 = indipendente, 1 = ripetuto)",
                        render::rect(g.left, g.top - 16.0f, g.right, g.top), 11.0f,
-                       render::Color{kMuted.r, kMuted.g, kMuted.b, kMuted.a * 0.8f}, render::TextAlign::Left);
+                       render::Color{kHudMuted.r, kHudMuted.g, kHudMuted.b, kHudMuted.a * 0.8f}, render::TextAlign::Left);
         plotSeries(g, 0.0, 1.0,
                   [](const app::TelemetrySample& s) { return s.autocorr1; }, kWarn);
         r.drawTextBody(L"rho " + fixed(st.autocorr1, 2),
@@ -2813,15 +3110,16 @@ void drawBleModal(render::Renderer& r, const app::ControlState& st) {
     const float w   = std::min(520.0f, win.width * 0.7f);
     const float h   = 260.0f;
 
-    r.fillRect(render::rect(0, 0, win.width, win.height), {0.0f, 0.0f, 0.0f, 0.6f});
+    // Velo acqua quasi pieno sopra la foto, riquadro piatto con un filetto
+    // nero: e' una finestra di servizio, non un pezzo dell'esperienza.
+    r.fillRect(render::rect(0, 0, win.width, win.height), {kBg.r, kBg.g, kBg.b, 0.92f});
 
     const render::Rect box = render::rect(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2);
-    r.fillRectShadow(box, kPanel, 20.0f, kShadow, 30.0f, {0.0f, 10.0f});
-    r.fillRectGradient(box, kPanel, darken(kPanel, 0.10f), 20.0f);
-    r.drawRectOutline(box, {kAccent.r, kAccent.g, kAccent.b, 0.35f}, 1.5f, 20.0f);
+    r.fillRect(box, kPanel);
+    r.drawRectOutline(box, {0.0f, 0.0f, 0.0f, 0.25f}, 1.0f);
 
-    float y = box.top + 40.0f;
-    r.drawTextCentered(L"Bluetooth", {cx, y}, 26.0f, kInk, true);
+    float y = box.top + 44.0f;
+    r.drawTextDisplayCentered(L"BLUETOOTH", {cx, y}, 40.0f, kCoral);
     y += 46.0f;
 
     if (st.replaying) {
@@ -2870,12 +3168,12 @@ void drawBleModal(render::Renderer& r, const app::ControlState& st) {
  */
 void drawScreenPicker(render::Renderer& r, int candidate, const std::vector<Display>& displays) {
     const auto win = r.size();
-    r.fillRect(render::rect(0, 0, win.width, win.height), {0.03f, 0.05f, 0.08f, 1.0f});
+    r.fillRect(render::rect(0, 0, win.width, win.height), kBg);
 
     const std::wstring number = std::to_wstring(candidate + 1);
     r.drawText(number,
                render::rect(0, win.height * 0.5f - 190.0f, win.width, win.height * 0.5f + 60.0f),
-               260.0f, kAccent, render::TextAlign::Center, true);
+               260.0f, kCoral, render::TextAlign::Center, true);
 
     std::wstring caption = L"Questo schermo";
     if (candidate >= 0 && candidate < static_cast<int>(displays.size())) {
@@ -2895,22 +3193,20 @@ void drawScreenPickerPanel(render::Renderer& r, int candidate, const std::vector
     const auto win = r.size();
     const float cx = win.width * 0.5f;
 
-    r.fillRect(render::rect(0, 0, win.width, win.height), {0.0f, 0.0f, 0.0f, 0.78f});
+    r.fillRect(render::rect(0, 0, win.width, win.height), {kBg.r, kBg.g, kBg.b, 0.92f});
 
     const float panelW = 620.0f;
     const float rowH   = 52.0f;
     const float panelH = 250.0f + rowH * static_cast<float>(displays.size());
     const render::Rect panel = render::rect(cx - panelW / 2, win.height * 0.5f - panelH / 2,
                                           cx + panelW / 2, win.height * 0.5f + panelH / 2);
-    r.fillRectShadow(panel, kPanel, 18.0f, kShadow, 30.0f, {0.0f, 10.0f});
-    r.fillRectGradient(panel, kPanel, darken(kPanel, 0.10f), 18.0f);
-    r.drawRectOutline(panel, {1, 1, 1, 0.10f}, 1.0f, 18.0f);
+    r.fillRect(panel, kPanel);
+    r.drawRectOutline(panel, {0.0f, 0.0f, 0.0f, 0.25f}, 1.0f);
 
-    float y = panel.top + 34.0f;
-    r.drawText(L"Su quale schermo proiettare?",
-               render::rect(panel.left, y, panel.right, y + 40.0f), 28.0f, kInk,
-               render::TextAlign::Center, true);
-    y += 56.0f;
+    float y = panel.top + 30.0f;
+    r.drawTextDisplay(L"SU QUALE SCHERMO PROIETTARE?",
+                      render::rect(panel.left, y, panel.right, y + 56.0f), 40.0f, kCoral);
+    y += 60.0f;
 
     r.drawText(L"Il partecipante vedrà solo l’immagine, a schermo intero.\n"
                L"Qui restano il pannello operatore e i comandi.",
@@ -2921,8 +3217,7 @@ void drawScreenPickerPanel(render::Renderer& r, int candidate, const std::vector
         const bool sel = (static_cast<int>(i) == candidate);
         const render::Rect row = render::rect(panel.left + 30, y, panel.right - 30, y + rowH - 8.0f);
         if (sel) {
-            r.fillRect(row, {kAccent.r, kAccent.g, kAccent.b, 0.20f}, 8.0f);
-            r.drawRectOutline(row, {kAccent.r, kAccent.g, kAccent.b, 0.65f}, 1.5f, 8.0f);
+            r.fillRect(row, kAccent);
         }
         r.drawText(std::to_wstring(i + 1) + L".   " + displays[i].describe(),
                    render::rect(row.left + 18, row.top + 10, row.right - 18, row.bottom),
@@ -3429,7 +3724,7 @@ void frame(render::Renderer& r, double dt, const ProjectionState& proj) {
         // dell'operatore e' SOLO la sala di controllo (nessuna foto: chi
         // guida vede i dati, il partecipante vede l'immagine). ---
         render::Renderer& pr = *proj.renderer;
-        pr.begin(kBg);
+        pr.begin(kPhotoBg);
         if (proj.choosing) drawScreenPicker(pr, proj.candidate, *proj.displays);
         else               drawExperience(pr);
         pr.end();
@@ -3441,11 +3736,11 @@ void frame(render::Renderer& r, double dt, const ProjectionState& proj) {
         // begin()/end() il layer della finestra tiene l'ultima immagine.
         static unsigned dashboardTick = 0;
         if (++dashboardTick % 3 != 0) return;
-        r.begin(kBg);
+        r.begin(kPhotoBg);
         drawOperatorDashboard(r, st, zoom, cf, g.tune, history, fps, code, showLanding);
     } else {
         // --- schermo unico: esperienza con il pannello operatore sopra ---
-        r.begin(kBg);
+        r.begin(kPhotoBg);
         drawExperience(r);
         if (const int level = g.hudLevel.load(std::memory_order_relaxed); level > 0) {
             drawHud(r, st, zoom, cf, g.tune, level, fps, code, showLanding);

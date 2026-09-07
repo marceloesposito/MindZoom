@@ -168,17 +168,23 @@ elseif(APPLE)
                 "$<TARGET_FILE_DIR:mz_app>/assets"
         COMMENT "Copia delle immagini in assets/")
 
-    # Il font di corpo (Manrope) non e' di sistema: viaggia nel bundle, in
-    # <bundle>/Contents/MacOS/fonts, dove lo shell lo registra con
-    # GraphicsCore::loadFonts. L'accento (Iowan Old Style) e' di sistema e non
-    # va impacchettato. Si copia il solo file che serve, non la cartella:
-    # assets/fonts contiene ancora i vecchi Space Grotesk e Newsreader.
+    # Due font non di sistema viaggiano nel bundle, in
+    # <bundle>/Contents/MacOS/fonts, dove lo shell li registra con
+    # GraphicsCore::loadFonts: Manrope per il corpo del testo e League Gothic
+    # per il lettering delle intestazioni (identita' Biodetails, vedi
+    # design/biodetails/IDENTITA-VISIVA.md). L'accento (Iowan Old Style) e' di
+    # sistema e non va impacchettato. Si copiano i due file che servono, non la
+    # cartella: assets/fonts contiene ancora Space Grotesk e Newsreader, di
+    # identita' precedenti.
     add_custom_command(TARGET mz_app POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:mz_app>/fonts"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/Manrope-Variable.ttf"
                 "$<TARGET_FILE_DIR:mz_app>/fonts/Manrope-Variable.ttf"
-        COMMENT "Copia di Manrope in fonts/")
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/LeagueGothic-Variable.ttf"
+                "$<TARGET_FILE_DIR:mz_app>/fonts/LeagueGothic-Variable.ttf"
+        COMMENT "Copia dei font in fonts/")
 
     # La firma che il linker mette da solo (adhoc,linker-signed) copre solo
     # l'eseguibile nudo, PRIMA che gli step qui sopra riempiano il bundle: non
