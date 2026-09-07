@@ -19,8 +19,19 @@ COME SI AVVIA
    che macOS mette alle app arrivate da un'altra macchina.)
 3. Nella finestra che si apre, premi INVIO per iniziare.
 
-Se macOS chiede conferma per aprire "Avvia Demo.command": tasto destro
-(o Ctrl+clic) sul file -> Apri -> Apri. Va fatto una volta sola.
+Se macOS rifiuta di aprire "Avvia Demo.command" (dicitura tipo "Apple non e'
+in grado di verificare che l'app non contenga malware"), prova in quest'ordine:
+
+  1. Tasto destro (o Ctrl+clic) sul file -> Apri -> Apri.
+  2. Se non basta: Impostazioni di Sistema -> Privacy e sicurezza -> scorri in
+     fondo alla pagina. Compare una riga "'Avvia Demo.command' e' stato
+     bloccato per proteggere il Mac" con un pulsante Apri comunque: cliccalo,
+     conferma, poi riprova il doppio clic (un'ultima conferma con Apri).
+  3. Se hai il Terminale a portata (il piu' sicuro): scrivi "xattr -cr "
+     (con lo spazio alla fine), trascina dentro questa cartella e premi Invio.
+     Toglie il blocco da tutti e tre i file in un colpo solo.
+
+Va fatto una volta sola: dopo la prima apertura riuscita non serve piu'.
 
 
 TASTI

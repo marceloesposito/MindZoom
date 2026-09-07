@@ -147,9 +147,10 @@ int reportScreens() {
 // ---------------------------------------------------------------------------
 
 // Quanto tenere premuto R prima che scatti il riavvio completo invece del
-// semplice reset delle manopole. Ne' cosi' corto da scattare per sbaglio su
-// un tap normale, ne' cosi' lungo da sembrare che il tasto non risponda.
-static const NSTimeInterval kRHoldSeconds = 0.9;
+// semplice reset delle manopole sta in config::kRestartHoldS: la stessa
+// costante la usa l'anello di avanzamento disegnato in experience.cpp, e due
+// numeri separati vorrebbero dire un anello che si riempie prima o dopo del
+// gesto che rappresenta.
 
 // ---------------------------------------------------------------------------
 // Delegate: dichiarato qui (l'implementazione resta piu' sotto, dopo MZView)
@@ -203,8 +204,9 @@ static const NSTimeInterval kRHoldSeconds = 0.9;
 @end
 
 @interface MZView : NSView {
-    NSTimer* _rHoldTimer;
-    BOOL     _rHoldFired;
+    NSTimer*       _rHoldTimer;
+    BOOL           _rHoldFired;
+    NSTimeInterval _rHoldStart;
 }
 // Debole: il delegate possiede la vista, non il contrario. Serve solo per
 // intercettare i tasti della scelta schermo (frecce/INVIO/cifre) PRIMA che
@@ -220,17 +222,36 @@ static const NSTimeInterval kRHoldSeconds = 0.9;
 - (void)startRHold {
     [_rHoldTimer invalidate];
     _rHoldFired = NO;
-    _rHoldTimer = [NSTimer scheduledTimerWithTimeInterval:kRHoldSeconds
+    _rHoldStart = [NSDate timeIntervalSinceReferenceDate];
+    mz::app::experience::setRestartHold(0.0);
+    // Ripetuto invece che a scadenza unica come prima: l'anello disegnato
+    // attorno al tasto ha bisogno dell'avanzamento a ogni fotogramma, non solo
+    // dell'istante in cui il tempo e' finito. Il conto vero lo fa comunque
+    // l'orologio, non il numero di scatti: un timer che perde qualche colpo
+    // (finestra trascinata, sistema sotto carico) allunga il gesto invece di
+    // sballare la soglia.
+    _rHoldTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0
                                                     target:self
-                                                  selector:@selector(rHoldFired:)
+                                                  selector:@selector(rHoldTick:)
                                                   userInfo:nil
-                                                   repeats:NO];
+                                                   repeats:YES];
 }
 
-- (void)rHoldFired:(NSTimer*)timer {
+- (void)rHoldTick:(NSTimer*)timer {
     (void)timer;
-    _rHoldFired = YES;
+    const NSTimeInterval trascorso = [NSDate timeIntervalSinceReferenceDate] - _rHoldStart;
+    const double avanzamento = trascorso / mz::config::kRestartHoldS;
+    if (avanzamento < 1.0) {
+        mz::app::experience::setRestartHold(avanzamento);
+        return;
+    }
+
+    // Anello pieno nel fotogramma in cui parte il riavvio: senza, l'ultimo
+    // spicchio non si vede mai e il gesto sembra scattare "quasi" alla fine.
+    mz::app::experience::setRestartHold(1.0);
+    [_rHoldTimer invalidate];
     _rHoldTimer = nil;
+    _rHoldFired = YES;
     mz::app::experience::handleKey(mz::app::experience::Key::RHold);
 }
 
@@ -238,6 +259,15 @@ static const NSTimeInterval kRHoldSeconds = 0.9;
     [_rHoldTimer invalidate];
     _rHoldTimer = nil;
     _rHoldFired = NO;
+    mz::app::experience::setRestartHold(0.0);
+}
+
+- (void)mouseDown:(NSEvent*)event {
+    // La vista e' flipped (isFlipped), quindi convertPoint: restituisce gia'
+    // l'origine in alto a sinistra e in punti: le stesse coordinate in cui
+    // disegna il Renderer, nessuna conversione da fare.
+    const NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    mz::app::experience::handleClick(static_cast<float>(p.x), static_cast<float>(p.y));
 }
 
 - (BOOL)resignFirstResponder {

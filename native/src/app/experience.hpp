@@ -64,6 +64,25 @@ void stop();
 /** Aggiorna lo stato che dipende dai tasti (taratura dal vivo, HUD, calibrazione). */
 void handleKey(Key key);
 
+/**
+ * Clic del mouse, in coordinate della finestra che disegna l'esperienza
+ * (origine in alto a sinistra, punti non pixel: le stesse in cui disegna il
+ * Renderer). Serve solo ai due pulsanti che chiedono di proseguire - pagina
+ * d'ingresso e accoglienza - perche' chi non conosce l'installazione prova a
+ * cliccare prima di cercare INVIO.
+ *
+ * Ignorato quando l'esperienza sta su un secondo schermo: li' la finestra che
+ * riceve il clic e' la sala di controllo, che quei pulsanti non li disegna.
+ */
+void handleClick(float x, float y);
+
+/**
+ * Avanzamento [0,1] della pressione prolungata di R, misurata dallo shell
+ * (e' lui che vede i tasti giu' e su) e pubblicata qui per disegnare l'anello
+ * attorno al promemoria. 0 = tasto non premuto, l'anello sparisce.
+ */
+void setRestartHold(double progress);
+
 /** true se l'utente ha chiesto di uscire (ESC o Q). */
 bool wantsQuit();
 

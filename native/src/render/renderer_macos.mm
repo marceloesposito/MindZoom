@@ -1081,4 +1081,95 @@ void Renderer::drawTextBodyCentered(const std::wstring& text, Point center, floa
     drawCenteredText(impl_->ctx, text, center, color, font);
 }
 
+Size Renderer::measureTextBody(const std::wstring& text, float fontSize, bool bold,
+                               float maxWidth) const {
+    if (text.empty()) return {0.0f, 0.0f};
+
+    CFStringRef cf = toCFString(text);
+    if (!cf) return {0.0f, 0.0f};
+
+    CTFontRef       font   = cachedBodyFont(fontSize, bold);
+    CFStringRef     keys[] = {kCTFontAttributeName};
+    CFTypeRef       vals[] = {font};
+    CFDictionaryRef attrs  = CFDictionaryCreate(
+        kCFAllocatorDefault, reinterpret_cast<const void**>(keys),
+        reinterpret_cast<const void**>(vals), 1,
+        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+
+    CFAttributedStringRef attributed = CFAttributedStringCreate(kCFAllocatorDefault, cf, attrs);
+    CTFramesetterRef      setter     = CTFramesetterCreateWithAttributedString(attributed);
+
+    CFRange fitted{};
+    const CGSize suggerita = CTFramesetterSuggestFrameSizeWithConstraints(
+        setter, CFRangeMake(0, 0), nullptr, CGSizeMake(maxWidth, 100000.0), &fitted);
+
+    CFRelease(setter);
+    CFRelease(attributed);
+    CFRelease(attrs);
+    CFRelease(cf);
+
+    // Arrotondato per eccesso: una misura che sottostima di mezzo pixel fa
+    // sparire l'ultimo glifo quando il risultato viene usato come larghezza
+    // del riquadro in cui poi si disegna.
+    return {static_cast<float>(std::ceil(suggerita.width)),
+            static_cast<float>(std::ceil(suggerita.height))};
+}
+
+void Renderer::drawParagraph(const std::wstring& text, Rect box, float fontSize, Color color,
+                             TextAlign align, float lineHeight) {
+    if (!impl_->ctx || text.empty()) return;
+
+    CFStringRef cf = toCFString(text);
+    if (!cf) return;
+
+    CTFontRef  font    = cachedBodyFont(fontSize, false);
+    CGColorRef cgColor = CGColorCreateGenericRGB(color.r, color.g, color.b, color.a);
+
+    CTTextAlignment ctAlign = (align == TextAlign::Center) ? kCTTextAlignmentCenter
+                                                           : kCTTextAlignmentLeft;
+    // Altezza di riga FISSA in punti, non un moltiplicatore: LineHeightMultiple
+    // moltiplica il leading naturale del font (per Manrope ~1.35 del corpo),
+    // quindi 1.5 dava righe distanti il doppio del voluto e l'ultima usciva
+    // dal riquadro. Fissando minimo e massimo allo stesso valore, "interlinea
+    // 1.5" vuol dire davvero 1.5 volte il corpo, che e' come si ragiona
+    // impaginando.
+    const CGFloat altezzaRiga = fontSize * lineHeight;
+    CTParagraphStyleSetting settings[] = {
+        {kCTParagraphStyleSpecifierAlignment, sizeof(ctAlign), &ctAlign},
+        {kCTParagraphStyleSpecifierMinimumLineHeight, sizeof(altezzaRiga), &altezzaRiga},
+        {kCTParagraphStyleSpecifierMaximumLineHeight, sizeof(altezzaRiga), &altezzaRiga},
+    };
+    CTParagraphStyleRef para = CTParagraphStyleCreate(settings, 3);
+
+    CFStringRef keys[]   = {kCTFontAttributeName, kCTForegroundColorAttributeName,
+                            kCTParagraphStyleAttributeName};
+    CFTypeRef   values[] = {font, cgColor, para};
+    CFDictionaryRef attrs = CFDictionaryCreate(
+        kCFAllocatorDefault, reinterpret_cast<const void**>(keys),
+        reinterpret_cast<const void**>(values), 3,
+        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+
+    CFAttributedStringRef attributed = CFAttributedStringCreate(kCFAllocatorDefault, cf, attrs);
+    CTFramesetterRef      setter     = CTFramesetterCreateWithAttributedString(attributed);
+
+    CGMutablePathRef path = CGPathCreateMutable();
+    CGPathAddRect(path, nullptr, CGRectMake(0, 0, box.width(), box.height()));
+    CTFrameRef frame = CTFramesetterCreateFrame(setter, CFRangeMake(0, 0), path, nullptr);
+
+    CGContextSaveGState(impl_->ctx);
+    CGContextTranslateCTM(impl_->ctx, box.left, box.top + box.height());
+    CGContextScaleCTM(impl_->ctx, 1.0, -1.0);
+    CTFrameDraw(frame, impl_->ctx);
+    CGContextRestoreGState(impl_->ctx);
+
+    CFRelease(frame);
+    CGPathRelease(path);
+    CFRelease(setter);
+    CFRelease(attributed);
+    CFRelease(attrs);
+    CFRelease(para);
+    CGColorRelease(cgColor);
+    CFRelease(cf);
+}
+
 } // namespace mz::render

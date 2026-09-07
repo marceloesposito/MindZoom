@@ -48,15 +48,28 @@ AL PRIMO AVVIO
 ---------------
 L'app non e' firmata con un certificato Apple (firma "ad-hoc": vedi il
 commento in CMakeLists.txt se vuoi i dettagli tecnici). Copiata da un'altra
-macchina, macOS puo' mostrare "Apple non puo' verificare che MindZoom non
-contenga malware" o "sviluppatore non identificato".
+macchina, macOS puo' rifiutarsi di aprire qualcosa con una dicitura tipo
+"Apple non e' in grado di verificare che [...] non contenga malware" o
+"sviluppatore non identificato".
 
-Se hai usato "Avvia MindZoom.command", di solito non compare: il launcher
-toglie il flag di quarantena da solo. Se compare comunque, o se hai aperto
-MindZoom.app direttamente:
+Puo' capitare sia su "Avvia MindZoom.command" sia su MindZoom.app stesso: il
+launcher toglie il flag di quarantena dall'app, ma se e' LUI ad essere
+bloccato non fa in tempo a farlo. In entrambi i casi, sul file bloccato,
+prova in quest'ordine:
 
-  Tasto destro (o Ctrl+clic) su MindZoom.app -> Apri -> Apri, invece del
-  doppio clic normale. Va fatto una volta sola.
+  1. Tasto destro (o Ctrl+clic) sul file -> Apri -> Apri, invece del doppio
+     clic normale.
+  2. Se non basta (dicitura "non e' stata aperta", niente scelta se non
+     Sposta nel Cestino/OK): Impostazioni di Sistema -> Privacy e sicurezza
+     -> scorri in fondo alla pagina principale. Compare una riga col nome del
+     file bloccato e un pulsante Apri comunque: cliccalo, conferma con
+     password/Touch ID, poi riprova il doppio clic - un'ultima conferma con
+     Apri e basta.
+  3. Il piu' affidabile, da Terminale: scrivi "xattr -cr " (con lo spazio
+     alla fine), trascina dentro la cartella con MindZoom.app e "Avvia
+     MindZoom.command", Invio. Toglie il blocco da tutto in un colpo solo.
+
+Va fatto una volta sola: dopo la prima apertura riuscita non serve piu'.
 
 Alla prima connessione alla fascia, macOS chiede il permesso per il
 Bluetooth: va concesso, altrimenti l'app non trova la Muse.
@@ -270,9 +283,10 @@ della mostra.
 
 SE QUALCOSA NON VA
 -------------------
-"MindZoom.app e' danneggiato e non puo' essere aperto"
-  Flag di quarantena. Tasto destro -> Apri -> Apri, oppure rilancia da
-  "Avvia MindZoom.command" che lo toglie da solo.
+"MindZoom.app e' danneggiato e non puo' essere aperto" o "non e' stata aperta"
+  Flag di quarantena. Vedi la procedura completa in "AL PRIMO AVVIO" piu'
+  sopra (tasto destro -> Apri, poi Impostazioni di Sistema se non basta,
+  poi xattr -cr da Terminale se serve ancora).
 
 "Muse: RICERCA" che non cambia mai
   La fascia e' spenta, scarica, o gia' collegata a un altro dispositivo.

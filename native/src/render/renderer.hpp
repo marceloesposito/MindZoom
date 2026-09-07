@@ -162,6 +162,28 @@ public:
     // controparte Direct2D subito. Quando shell_win32 passera' a experience.cpp
     // andranno implementate anche li'.
 
+    /**
+     * Ingombro del testo nel font del corpo, entro `maxWidth`.
+     *
+     * Serve a CENTRARE davvero un blocco allineato a sinistra (per esempio un
+     * elenco numerato): senza misura, l'unico modo e' stimare la larghezza a
+     * occhio, e il blocco finisce spostato di qualche decina di pixel rispetto
+     * all'asse - visibile, e proprio la cosa che un impaginato pulito non deve
+     * avere. Con `maxWidth` grande, misura la riga piu' lunga.
+     */
+    Size measureTextBody(const std::wstring& text, float fontSize, bool bold = false,
+                         float maxWidth = 100000.0f) const;
+
+    /**
+     * Paragrafo con interlinea esplicita (`lineHeight` come multiplo del corpo).
+     *
+     * drawTextBody usa il leading naturale del font, che per Manrope e' stretto
+     * e va bene per una riga sola o due; per un paragrafo di quattro righe
+     * serve piu' aria, e serve poterla scegliere invece di subirla.
+     */
+    void drawParagraph(const std::wstring& text, Rect box, float fontSize, Color color,
+                       TextAlign align = TextAlign::Center, float lineHeight = 1.45f);
+
     /** Riempimento con sfumatura verticale (top -> bottom), stesso arrotondamento di fillRect. */
     void fillRectGradient(Rect r, Color top, Color bottom, float radius = 0.0f);
 

@@ -143,6 +143,35 @@ inline constexpr int kCalibMinRawForLatch = 40;
 inline constexpr double kBreathBoxS      = 4.0;
 inline constexpr double kBreathCycleS    = kBreathBoxS * 4.0;   // un ciclo intero, 16 s
 
+// --- Accoglienza e congedo (mostra senza operatore accanto) ---
+//
+// Fra la pagina d'ingresso e l'esperienza c'e' una schermata di istruzioni:
+// indossare la fascia, accenderla, respirare un ciclo di box breathing. Il
+// pulsante per proseguire resta SPENTO per kOnboardReadyS e poi si accende
+// con una dissolvenza: e' l'unico modo per far durare davvero le istruzioni
+// il tempo di leggerle e di fare almeno mezzo respiro guidato - chi ha fretta
+// preme INVIO appena entrato e si ritrova nell'esperienza senza fascia in
+// testa. Non e' un tempo di caricamento travestito: la banda adattiva si
+// scalda per conto suo, e questo tempo le va a favore.
+inline constexpr double kOnboardReadyS = 8.0;
+inline constexpr double kOnboardFadeS  = 0.8;    // dissolvenza del pulsante quando si abilita
+
+// Il promemoria per il riavvio compare solo a esperienza avviata da un po':
+// prima sarebbe un invito a interromperla appena cominciata.
+inline constexpr double kRestartHintAfterS = 50.0;
+
+// Quanto tenere premuto R per riavviare. Due secondi sono lunghi apposta: e'
+// un gesto che butta via la sessione, e l'anello di avanzamento attorno al
+// tasto ha bisogno di tempo per essere letto come "sto per fare qualcosa" e
+// non come un lampo. Condiviso con lo shell (shell_macos.mm), che e' chi
+// misura la pressione.
+inline constexpr double kRestartHoldS = 2.0;
+
+// Congedo dopo il riavvio: togliere e igienizzare la fascia per chi viene
+// dopo. Passa da solo - a fine esperienza nessuno ha voglia di premere un
+// altro tasto, e la persona ha le mani occupate dalla fascia.
+inline constexpr double kOffboardS = 8.0;
+
 // Schermata di istruzioni fra la prima e la seconda fase: ha la stessa forma
 // dell'introduzione, ma passa da sola invece di chiedere un tasto - a meta'
 // esercizio non si puo' pretendere che la persona tenga una mano sulla

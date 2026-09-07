@@ -83,7 +83,11 @@ void drawStepBadge(render::Renderer& r, render::Point c, float radius, int numbe
     }
     const render::Color numColor = (active || done) ? render::Color{0.04f, 0.05f, 0.07f, 1.0f}
                                                      : kMuted;
-    r.drawTextCentered(std::to_wstring(number), c, radius * 1.1f, numColor, true);
+    // Cifra nel sans del corpo, non nel serif d'accento: Iowan Old Style ha
+    // cifre "da testo" (altezze diverse, alcune sotto la linea di base) che
+    // dentro un pallino piccolo sembrano disallineate. Le cifre di servizio -
+    // badge, contatori - vogliono numeri allineati.
+    r.drawTextBodyCentered(std::to_wstring(number), c, radius * 1.1f, numColor, true);
 }
 
 /** Pulsante a pillola: sfumatura diagonale sottile sullo stesso tono. */
@@ -114,29 +118,54 @@ void drawPillButton(render::Renderer& r, render::Rect box, const std::wstring& l
  * ricalcano il profilo gaussiano misurato sul render di Figma (sigma ~2px,
  * picco ~45%).
  */
+// Riquadro del pulsante "prosegui": lo condividono pagina d'ingresso e
+// accoglienza, e soprattutto lo condivide handleClick(), che non disegna
+// nulla. Se il bersaglio del clic fosse scritto una seconda volta, potrebbe
+// scivolare rispetto al pulsante disegnato senza che niente lo segnali.
+// La pagina d'ingresso lo posiziona per scostamento dal centro; l'accoglienza
+// lo ricava invece dal proprio ritmo verticale (onboardButtonRect, piu' sotto).
+constexpr float kLandingButtonDy = 226.0f;
+constexpr float kEntryButtonW    = 400.0f;
+constexpr float kEntryButtonH    = 84.0f;
+
+render::Rect entryButtonRect(render::Size win, float dy) {
+    const float cx = win.width * 0.5f;
+    const float cy = win.height * 0.5f;
+    return render::rect(cx - kEntryButtonW * 0.5f, cy + dy,
+                        cx + kEntryButtonW * 0.5f, cy + dy + kEntryButtonH);
+}
+
 void drawEntryButton(render::Renderer& r, render::Rect box, const std::wstring& label,
-                     double animT) {
+                     double animT, float opacity = 1.0f) {
     constexpr render::Color kBase  {0.101f, 0.196f, 0.507f, 1.0f};   // #1A3281
     constexpr render::Color kInner {0.042f, 0.121f, 0.379f, 1.0f};   // #0B1F61
     constexpr render::Color kRim   {0.049f, 0.168f, 0.558f, 1.0f};   // #0D2B8E
     constexpr render::Color kGlow  {0.0f,   0.75f,  1.0f,   1.0f};   // #00BFFF
 
+    // Un pulsante "spento" e' lo STESSO disegno con meno opacita', non un
+    // secondo disegno: cosi' l'accensione e' una dissolvenza sola e non ci
+    // sono due aspetti da tenere allineati quando il bottone cambia.
+    const auto fade = [opacity](render::Color c) {
+        c.a *= opacity;
+        return c;
+    };
+
     const float radius = box.height() * 0.5f;
     const float s      = box.height() / 130.0f;
 
-    r.fillRect(box, kBase, radius);
+    r.fillRect(box, fade(kBase), radius);
 
     const render::Rect inner = render::rect(box.left + 8.0f * s, box.top + 6.0f * s,
                                             box.right - 8.0f * s, box.bottom - 6.0f * s);
     // I "blur" di Figma sono raggi, non sigma: misurato sul render del bordo
     // (blur 5.6 -> sigma ~2), il rapporto e' circa 2.8.
     constexpr float kFigmaBlurToSigma = 1.0f / 2.8f;
-    r.fillRectBlurred(inner, kInner, radius - 6.0f * s, 26.4f * kFigmaBlurToSigma * s);
+    r.fillRectBlurred(inner, fade(kInner), radius - 6.0f * s, 26.4f * kFigmaBlurToSigma * s);
     // Ombra interna del livello scuro (#0D2B8E, blur 29.5, spread 8): e' lei a
     // tenere chiara la fascia vicino al bordo prima che l'interno scurisca.
-    r.fillInnerGlow(inner, kRim, radius - 6.0f * s, 29.5f * kFigmaBlurToSigma * s, 8.0f * s);
+    r.fillInnerGlow(inner, fade(kRim), radius - 6.0f * s, 29.5f * kFigmaBlurToSigma * s, 8.0f * s);
 
-    r.fillInnerGlow(box, kGlow, radius, 7.8f * kFigmaBlurToSigma * s);
+    r.fillInnerGlow(box, fade(kGlow), radius, 7.8f * kFigmaBlurToSigma * s);
 
     // Sfumatura di Figma: u = a*x/W + b*y/H + tx in coordinate normalizzate
     // del nodo, verde a u=0, blu a 0.53, magenta a u=1. Per animarla la si
@@ -186,14 +215,14 @@ void drawEntryButton(render::Renderer& r, render::Rect box, const std::wstring& 
         render::Color stops[kStopCount];
         for (int i = 0; i < kStopCount; ++i) {
             stops[i]   = kStopBase[i];
-            stops[i].a = kRingAlpha[k];
+            stops[i].a = kRingAlpha[k] * opacity;
         }
         r.drawRectOutlineGradient(edge, stops, stopPos, kStopCount, from, to,
                                   2.0f * kRingHalfW[k] * kSigma * s, radius - s);
     }
 
     r.drawTextBodyCentered(label, {(box.left + box.right) * 0.5f, (box.top + box.bottom) * 0.5f},
-                           40.0f * s, {1.0f, 1.0f, 1.0f, 1.0f});
+                           40.0f * s, {1.0f, 1.0f, 1.0f, opacity});
 }
 
 /**
@@ -227,6 +256,14 @@ struct Shared {
     // l'esperienza intera - quindi vive qui e non in CalibStage, che altrimenti
     // finirebbe per descrivere cose che con la calibrazione non c'entrano.
     std::atomic<bool>          landingVisible{true};
+    // Accoglienza (dopo INVIO sulla pagina d'ingresso) e congedo (dopo il
+    // riavvio tenuto premuto). Stessa ragione della pagina d'ingresso per
+    // stare qui e non in CalibStage: descrivono l'esperienza intera, non la
+    // calibrazione. I due orologi che le governano - da quanto sono aperte -
+    // vivono invece col resto dello stato di disegno, perche' avanzano in
+    // frame() e nessun altro thread li guarda.
+    std::atomic<bool>          onboardingVisible{false};
+    std::atomic<bool>          offboardingVisible{false};
     // Banda adattiva invece della calibrazione a due fasi (vedi StartOptions).
     // Letto dal thread DSP e dal disegno, scritto una volta sola in start().
     std::atomic<bool>          adaptiveBand{true};
@@ -1580,11 +1617,12 @@ void drawLandingPage(render::Renderer& r, const app::ControlState& st, double an
                    L"concentrati per avvicinarti, rilassati per allontanarti.",
                   render::rect(cx - 420.0f, cy - 140.0f, cx + 420.0f, cy + 20.0f), 19.0f, kMuted);
 
-    // Il pulsante non si clicca (l'app va a tastiera), quindi il tasto va detto
-    // a parte, sotto, invece che dentro l'etichetta come prima.
-    const render::Rect cta = render::rect(cx - 200.0f, cy + 226.0f, cx + 200.0f, cy + 310.0f);
-    drawEntryButton(r, cta, L"Inizia l’esperienza", animT);
-    r.drawTextBody(L"Premi INVIO", render::rect(cx - 200.0f, cy + 318.0f, cx + 200.0f, cy + 338.0f),
+    // Il tasto va detto a parte, sotto, invece che dentro l'etichetta: il
+    // pulsante si puo' anche cliccare (vedi handleClick), ma in mostra la
+    // tastiera resta la via principale e va nominata.
+    drawEntryButton(r, entryButtonRect(win, kLandingButtonDy), L"Inizia l’esperienza", animT);
+    r.drawTextBody(L"Premi INVIO o tocca il pulsante",
+                   render::rect(cx - 240.0f, cy + 318.0f, cx + 240.0f, cy + 338.0f),
                    13.0f, {kMuted.r, kMuted.g, kMuted.b, 0.75f});
 
     // Stato della fascia: qui e' un'informazione utile prima di cominciare, non
@@ -1603,58 +1641,306 @@ void drawLandingPage(render::Renderer& r, const app::ControlState& st, double an
                   colore);
 }
 
+// ---------------------------------------------------------------------------
+// Accoglienza e congedo: il giro completo di un visitatore, senza nessuno
+// accanto a spiegare. Le due schermate stanno agli estremi dell'esperienza -
+// una prepara (indossa, accendi, respira), l'altra lascia la postazione
+// pronta per chi viene dopo - e sono l'unico punto in cui l'installazione
+// parla a chi non ha letto niente.
+// ---------------------------------------------------------------------------
+
+// --- scala tipografica e ritmo verticale dell'accoglienza -------------------
+// Corpi e distanze su una scala di 4, dichiarati qui una volta sola: l'altezza
+// totale si SOMMA da queste e il blocco viene centrato in verticale, cosi'
+// l'impaginato resta bilanciato su qualunque finestra invece di dipendere da
+// scostamenti dal centro aggiustati a mano uno per uno. Stanno fuori dalla
+// funzione di disegno perche' serve anche a onboardButtonRect(), che deve
+// sapere dove e' finito il pulsante senza disegnare niente.
+constexpr float kOnbTitoloPt = 44.0f, kOnbPassoPt = 19.0f, kOnbEtichettaPt = 14.0f;
+constexpr float kOnbParagrafoPt = 17.0f, kOnbNotaPt = 13.0f;
+constexpr float kOnbInterlinea = 1.5f;
+constexpr float kOnbRigaPasso  = 48.0f;    // passo fra un punto e il successivo
+constexpr float kOnbBadgeR = 15.0f, kOnbBadgeGap = 20.0f;
+
+// 1.6 e non 1.3: il titolo e' nel serif d'accento (Iowan Old Style), che ha
+// ascendenti e discendenti piu' generose del sans, e drawText NON disegna
+// affatto una riga che non ci sta nel riquadro - a 1.3 il titolo spariva senza
+// dire niente, che e' il modo peggiore di sbagliare una misura.
+constexpr float kOnbTitoloH        = kOnbTitoloPt * 1.60f;
+constexpr float kOnbDopoTitolo     = 44.0f;
+constexpr float kOnbPassiH         = kOnbRigaPasso * 3.0f;
+constexpr float kOnbDopoPassi      = 40.0f;
+constexpr float kOnbEtichettaH     = kOnbEtichettaPt * 1.60f;
+constexpr float kOnbDopoEtichetta  = 10.0f;
+constexpr float kOnbParagrafoH     = kOnbParagrafoPt * kOnbInterlinea * 4.0f;   // quattro righe
+constexpr float kOnbDopoParagrafo  = 48.0f;
+constexpr float kOnbDopoPulsante   = 14.0f;
+constexpr float kOnbNotaH          = kOnbNotaPt * 1.60f;
+constexpr float kOnbDopoSuggerimento = 12.0f;
+
+constexpr float kOnbTotale = kOnbTitoloH + kOnbDopoTitolo + kOnbPassiH + kOnbDopoPassi +
+                             kOnbEtichettaH + kOnbDopoEtichetta + kOnbParagrafoH +
+                             kOnbDopoParagrafo + kEntryButtonH + kOnbDopoPulsante + kOnbNotaH +
+                             kOnbDopoSuggerimento + kOnbNotaH;
+
+/** Dove finisce il pulsante dell'accoglienza, dato il ritmo qui sopra. */
+render::Rect onboardButtonRect(render::Size win) {
+    const float cx  = win.width * 0.5f;
+    const float top = win.height * 0.5f - kOnbTotale * 0.5f + kOnbTitoloH + kOnbDopoTitolo +
+                      kOnbPassiH + kOnbDopoPassi + kOnbEtichettaH + kOnbDopoEtichetta +
+                      kOnbParagrafoH + kOnbDopoParagrafo;
+    return render::rect(cx - kEntryButtonW * 0.5f, top, cx + kEntryButtonW * 0.5f,
+                        top + kEntryButtonH);
+}
+
+/** Il pulsante dell'accoglienza accetta INVIO/clic solo da qui in poi. */
+bool onboardReady(double elapsed) noexcept { return elapsed >= config::kOnboardReadyS; }
+
 /**
- * Riscaldamento della banda adattiva: quello che si vede al posto della
- * calibrazione.
- *
- * NON e' una calibrazione mascherata: non si chiede niente alla persona, non
- * si puo' fallire e non c'e' un traguardo da raggiungere. E' solo il tempo che
- * serve perche' i percentili dell'indice significhino qualcosa - e infatti il
- * testo dice di guardare la foto, non di fare un esercizio.
- *
- * La foto sta gia' dietro (in modalita' adattiva l'esperienza e' partita dal
- * primo istante): qui sopra ci va solo una velatura e una riga, cosi' il
- * passaggio a "adesso comandi tu" non e' un cambio di schermata ma lo
- * svanire di un velo.
+ * Opacita' del pulsante dell'accoglienza: spento finche' non e' il momento,
+ * poi dissolvenza con smoothstep - una rampa lineare "parte" e "arriva" con
+ * uno scatto percettibile, questa no.
  */
-void drawWarmupOverlay(render::Renderer& r, const app::ControlState& st) {
+float onboardButtonOpacity(double elapsed) noexcept {
+    constexpr float kSpento = 0.24f;
+    const double dopo = elapsed - config::kOnboardReadyS;
+    if (dopo <= 0.0) return kSpento;
+    const auto t = static_cast<float>(std::clamp(dopo / config::kOnboardFadeS, 0.0, 1.0));
+    return kSpento + (1.0f - kSpento) * (t * t * (3.0f - 2.0f * t));
+}
+
+/**
+ * Accoglienza: cosa fare prima di cominciare, e perche' conviene arrivare
+ * all'esperienza con la testa sgombra.
+ *
+ * Il respiro e' SPIEGATO, non guidato: niente cerchio che pulsa ne' conto
+ * alla rovescia. Un esercizio a tempo diventa un compito da eseguire bene -
+ * si guarda l'animazione invece di respirare - ed e' l'opposto di quello che
+ * serve qui. Detto a parole, ognuno lo fa col proprio ritmo o non lo fa
+ * affatto, e in nessuno dei due casi resta bloccato a guardare uno schermo.
+ *
+ * Il pulsante resta spento per i primi secondi APPOSTA (config::kOnboardReadyS):
+ * e' l'unica cosa che impedisce di attraversare la schermata senza leggerla, e
+ * intanto la banda adattiva si scalda - questa schermata ha preso il posto del
+ * vecchio velo di "ascolto del segnale", quindi quel tempo va speso qui.
+ *
+ * Tipografia: il serif d'accento e' solo del titolo, come nella pagina
+ * d'ingresso; tutto il resto e' il sans del corpo, e la gerarchia la fanno
+ * corpo e opacita', non un terzo carattere.
+ */
+void drawOnboarding(render::Renderer& r, double elapsed, double animT) {
+    const auto  win = r.size();
+    const float cx  = win.width * 0.5f;
+
+    r.fillRect(render::rect(0, 0, win.width, win.height), kBg);
+
+    static const wchar_t* const kPassi[] = {
+        L"Indossa la fascia sulla fronte, sopra le sopracciglia",
+        L"Accendila con il tasto sul lato: la luce si accende",
+        L"Prenditi un momento per respirare, prima di entrare",
+    };
+    static const wchar_t* const kParagrafo =
+        L"Inspira contando fino a quattro, trattieni per quattro,\n"
+        L"espira per quattro, trattieni per quattro. Bastano pochi giri.\n"
+        L"Schiarisce la mente e rilassa il corpo: con meno pensieri di fondo\n"
+        L"la lettura è più pulita e l’esperienza risponde meglio.";
+
+    float y = win.height * 0.5f - kOnbTotale * 0.5f;
+
+    // --- titolo ---
+    r.drawText(L"Prima di cominciare",
+              render::rect(cx - 460.0f, y, cx + 460.0f, y + kOnbTitoloH),
+              kOnbTitoloPt, kInk, render::TextAlign::Center, true);
+    y += kOnbTitoloH + kOnbDopoTitolo;
+
+    // --- i tre passaggi ---
+    // Restano accesi tutti insieme: non sono una procedura da spuntare uno
+    // alla volta, sono le tre cose da fare adesso.
+    //
+    // Il blocco (pallino + riga piu' lunga) viene CENTRATO sull'asse: un
+    // elenco allineato a sinistra piazzato "a occhio" resta sempre spostato di
+    // qualche decina di pixel, perche' le righe non hanno tutte la stessa
+    // lunghezza. Misurando, il centro ottico e' quello vero.
+    float larghezzaTesto = 0.0f;
+    for (const wchar_t* passo : kPassi) {
+        larghezzaTesto = std::max(larghezzaTesto, r.measureTextBody(passo, kOnbPassoPt).width);
+    }
+    const float altezzaRiga = r.measureTextBody(L"Hg", kOnbPassoPt).height;
+    const float bloccoW     = kOnbBadgeR * 2.0f + kOnbBadgeGap + larghezzaTesto;
+    const float bloccoX     = cx - bloccoW * 0.5f;
+
+    constexpr render::Color kPasso{kInk.r, kInk.g, kInk.b, 0.90f};
+    for (int i = 0; i < 3; ++i) {
+        const float centro = y + kOnbRigaPasso * 0.5f + kOnbRigaPasso * static_cast<float>(i);
+        drawStepBadge(r, {bloccoX + kOnbBadgeR, centro}, kOnbBadgeR, i + 1, true, false, kAccent);
+        r.drawTextBody(kPassi[static_cast<std::size_t>(i)],
+                      render::rect(bloccoX + kOnbBadgeR * 2.0f + kOnbBadgeGap,
+                                  centro - altezzaRiga * 0.5f,
+                                  bloccoX + bloccoW, centro + altezzaRiga * 0.5f + 2.0f),
+                      kOnbPassoPt, kPasso, render::TextAlign::Left);
+    }
+    y += kOnbPassiH + kOnbDopoPassi;
+
+    // --- il respiro quadrato, spiegato e basta ---
+    // La riga d'etichetta e' l'unico grassetto della sezione: dice "qui
+    // comincia un'altra cosa" senza bisogno di una cornice attorno.
+    r.drawTextBody(L"IL RESPIRO QUADRATO",
+                  render::rect(cx - 400.0f, y, cx + 400.0f, y + kOnbEtichettaH),
+                  kOnbEtichettaPt, kAccent2, render::TextAlign::Center, true);
+    y += kOnbEtichettaH + kOnbDopoEtichetta;
+
+    r.drawParagraph(kParagrafo,
+                    render::rect(cx - 440.0f, y, cx + 440.0f, y + kOnbParagrafoH + 8.0f),
+                    kOnbParagrafoPt, kMuted, render::TextAlign::Center, kOnbInterlinea);
+    y += kOnbParagrafoH + kOnbDopoParagrafo;
+
+    // --- pulsante e chiuse ---
+    const bool  pronto  = onboardReady(elapsed);
+    const float opacita = onboardButtonOpacity(elapsed);
+    drawEntryButton(r, onboardButtonRect(win), L"Entra nell’esperienza", animT, opacita);
+    y += kEntryButtonH + kOnbDopoPulsante;
+
+    r.drawTextBody(pronto ? L"Premi INVIO o tocca il pulsante" : L"Fra poco…",
+                  render::rect(cx - 260.0f, y, cx + 260.0f, y + kOnbNotaH), kOnbNotaPt,
+                  {kMuted.r, kMuted.g, kMuted.b, 0.30f + 0.55f * opacita});
+    y += kOnbNotaH + kOnbDopoSuggerimento;
+
+    // Detto qui e non solo alla fine: quando l'esperienza sara' finita la
+    // persona avra' la fascia in testa e nessuna voglia di leggere - se il
+    // gesto di chiusura non lo ha gia' sentito una volta, non lo fa.
+    r.drawTextBody(L"A esperienza finita, tieni premuto R per lasciarla pronta al prossimo",
+                  render::rect(cx - 420.0f, y, cx + 420.0f, y + kOnbNotaH), kOnbNotaPt,
+                  {kMuted.r, kMuted.g, kMuted.b, 0.55f});
+}
+
+/**
+ * Promemoria del riavvio: piccolo, in basso a destra, stile HUD.
+ *
+ * Compare solo a esperienza avviata da un po' (config::kRestartHintAfterS) -
+ * prima sarebbe un invito a interrompere qualcosa appena cominciato - oppure
+ * subito, se qualcuno sta gia' premendo R: in quel caso l'anello e' l'unico
+ * modo per sapere che il gesto sta funzionando e quanto manca.
+ *
+ * `hold` in [0,1] e' l'avanzamento della pressione. A 0 si vede solo il tasto
+ * disegnato; l'anello - traccia compresa - esiste solo mentre si preme, cosi'
+ * a riposo il promemoria e' una riga sola e non un widget che gira a vuoto.
+ */
+void drawRestartHint(render::Renderer& r, double hold, double animT) {
+    const auto win = r.size();
+
+    const bool  attivo = hold > 0.0;
+    const float w = 230.0f, h = 46.0f;
+    const render::Rect box = render::rect(win.width - 24.0f - w, win.height - 24.0f - h,
+                                          win.width - 24.0f, win.height - 24.0f);
+
+    // Un respiro lentissimo sull'opacita' a riposo: abbastanza da farsi notare
+    // con la coda dell'occhio senza mai chiedere attenzione, che e' quello che
+    // deve fare un promemoria mentre qualcuno sta guardando una fotografia.
+    const auto  pulse = static_cast<float>(0.5 + 0.5 * std::sin(animT * 1.1));
+    const float fondo = attivo ? 0.62f : 0.34f + 0.06f * pulse;
+    r.fillRect(box, {0.0f, 0.0f, 0.0f, fondo}, h * 0.5f);
+    r.drawRectOutline(box, {1.0f, 1.0f, 1.0f, attivo ? 0.22f : 0.10f}, 1.0f, h * 0.5f);
+
+    const render::Point tasto{box.left + 28.0f, (box.top + box.bottom) * 0.5f};
+    constexpr float kTastoR = 12.5f;
+    r.fillCircle(tasto, kTastoR, {1.0f, 1.0f, 1.0f, attivo ? 0.16f : 0.10f});
+    // Sans come le cifre dei badge: e' un tasto disegnato, cioe' chrome di
+    // servizio, e il serif d'accento qui resta al titolo delle schermate.
+    r.drawTextBodyCentered(L"R", tasto, 13.5f,
+                           attivo ? kInk : render::Color{kInk.r, kInk.g, kInk.b, 0.80f}, true);
+
+    if (attivo) {
+        // Traccia + avanzamento, entrambi solo mentre si preme: a riposo il
+        // promemoria e' una riga sola, non un widget che gira a vuoto. Parte
+        // dalle 12 e gira in senso orario - -90 gradi e' l'alto anche qui,
+        // dove la y cresce verso il basso (vedi Renderer::drawArc).
+        //
+        // Bianco e non verde: il verde e' il colore del rilassamento nella
+        // legge di controllo (kAccent2), e qui non si sta misurando niente -
+        // e' un conto alla rovescia meccanico, che non deve sembrare un
+        // ritorno del segnale.
+        constexpr float kAnelloR = kTastoR + 4.5f;
+        r.drawArc(tasto, kAnelloR, -90.0f, 270.0f, 2.5f, {1.0f, 1.0f, 1.0f, 0.16f});
+        const auto frazione = static_cast<float>(std::clamp(hold, 0.0, 1.0));
+        if (frazione > 0.0f) {
+            r.drawArc(tasto, kAnelloR, -90.0f, -90.0f + 360.0f * frazione, 2.5f,
+                      {1.0f, 1.0f, 1.0f, 0.95f});
+        }
+    }
+
+    // Allineato a sinistra ma centrato in verticale sulla pillola: drawTextBody
+    // ancora al TOP del riquadro, quindi il riquadro va posizionato sull'altezza
+    // misurata della riga invece che su un mezzo-corpo stimato - a 11.5pt uno
+    // scarto di due pixel dentro una pillola alta 46 si vede.
+    const std::wstring etichetta = attivo ? L"Continua a tenere premuto"
+                                          : L"Tieni premuto per ricominciare";
+    constexpr float kEtichettaPt = 11.5f;
+    const float rigaH = r.measureTextBody(etichetta, kEtichettaPt).height;
+    const float meta  = (box.top + box.bottom) * 0.5f;
+    r.drawTextBody(etichetta,
+                  render::rect(box.left + 50.0f, meta - rigaH * 0.5f,
+                              box.right - 12.0f, meta + rigaH * 0.5f + 2.0f),
+                  kEtichettaPt, attivo ? kInk : kMuted, render::TextAlign::Left);
+}
+
+/**
+ * Congedo: la postazione va lasciata pronta, e questa e' l'unica occasione
+ * per dirlo. Passa da sola dopo config::kOffboardS - a fine esperienza le
+ * mani sono occupate dalla fascia e chiedere un altro tasto vorrebbe dire
+ * che qualcuno resta a guardare uno schermo fermo.
+ */
+void drawOffboarding(render::Renderer& r, double elapsed, double animT) {
     const auto  win = r.size();
     const float cx  = win.width * 0.5f;
     const float cy  = win.height * 0.5f;
 
-    r.fillRect(render::rect(0, 0, win.width, win.height), {kBg.r, kBg.g, kBg.b, 0.82f});
+    r.fillRect(render::rect(0, 0, win.width, win.height), kBg);
 
-    r.drawText(L"Ascolto del segnale",
-              render::rect(cx - 400.0f, cy - 130.0f, cx + 400.0f, cy - 50.0f),
-              46.0f, kInk, render::TextAlign::Center, true);
-    // Restava un promemoria passivo ("non devi fare niente: guarda la
-    // fotografia") senza dire cosa sarebbe successo dopo: chi arrivava qui
-    // senza aver letto la landing page si ritrovava a comandare lo zoom senza
-    // preavviso. Resta un'attesa passiva - nessun esercizio, vedi il commento
-    // sopra la funzione - ma ora anticipa il meccanismo che sta per diventare
-    // attivo.
-    r.drawTextBody(L"La fascia sta leggendo la tua attività cerebrale\n"
-                   L"e il sistema si sta tarando su di te.\n"
-                   L"Tra pochi secondi la tua attenzione guiderà lo zoom.",
-                  render::rect(cx - 420.0f, cy - 34.0f, cx + 420.0f, cy + 56.0f), 18.0f, kMuted);
+    // Stesso ritmo dell'accoglienza: altezze e distanze dichiarate, totale
+    // sommato, blocco centrato. Qui il contenuto e' poco, e proprio per questo
+    // un centraggio approssimato si vedrebbe di piu'.
+    constexpr float kTitoloPt = 60.0f, kCorpoPt = 20.0f;
+    constexpr float kInterlinea = 1.5f;
+    constexpr float kTitoloH = kTitoloPt * 1.60f;   // serif d'accento, vedi kOnbTitoloH
+    constexpr float kDopoTitolo = 34.0f;
+    constexpr float kCorpoH = kCorpoPt * kInterlinea * 2.0f;   // due righe
+    constexpr float kDopoCorpo = 52.0f;
+    constexpr float kBarH = 4.0f;
+    constexpr float kTotale = kTitoloH + kDopoTitolo + kCorpoH + kDopoCorpo + kBarH;
 
-    const float barW = 320.0f, barH = 6.0f, barY = cy + 92.0f;
-    r.fillRect(render::rect(cx - barW / 2, barY, cx + barW / 2, barY + barH),
-              {1, 1, 1, 0.10f}, barH * 0.5f);
-    const auto avanz = static_cast<float>(std::clamp(st.adaptiveWarmup, 0.0, 1.0));
-    if (avanz > 0.0f) {
-        r.fillRect(render::rect(cx - barW / 2, barY, cx - barW / 2 + barW * avanz, barY + barH),
-                  kAccent2, barH * 0.5f);
-    }
+    float y = cy - kTotale * 0.5f;
 
-    // Se il segnale non arriva la barra non avanza, e va detto: altrimenti
-    // sembra che il programma sia bloccato.
-    if (!st.signalFresh) {
-        drawStatusHint(r, render::rect(cx - 400.0f, barY + 26.0f, cx + 400.0f, barY + 54.0f),
-                      L"In attesa del segnale dalla fascia EEG.", kWarn);
-    } else if (st.signalFault != 0 || !st.contactOk) {
-        drawStatusHint(r, render::rect(cx - 400.0f, barY + 26.0f, cx + 400.0f, barY + 54.0f),
-                      L"Segnale non utilizzabile: verifica il contatto della fascia.", kBad);
+    // Un alone morbido al posto dello sciame della pagina d'ingresso: qui non
+    // c'e' piu' niente da leggere nel segnale, e un campo di puntini che si
+    // agita mentre si dice "abbiamo finito" direbbe il contrario. Centrato sul
+    // blocco di testo, non sullo schermo, cosi' non scivola rispetto a lui.
+    const auto  respiro = static_cast<float>(0.5 + 0.5 * std::sin(animT * 0.7));
+    const float aloneR  = 190.0f + 10.0f * respiro;
+    r.fillCircleGradient({cx, y + kTotale * 0.5f}, aloneR,
+                         {kAccent2.r, kAccent2.g, kAccent2.b, 0.10f},
+                         {kAccent.r, kAccent.g, kAccent.b, 0.05f},
+                         {kAccent.r, kAccent.g, kAccent.b, 0.0f});
+
+    r.drawText(L"Grazie", render::rect(cx - 460.0f, y, cx + 460.0f, y + kTitoloH),
+              kTitoloPt, kInk, render::TextAlign::Center, true);
+    y += kTitoloH + kDopoTitolo;
+
+    r.drawParagraph(L"Togli la fascia e igienizzala con una salvietta.\n"
+                    L"Il prossimo visitatore la troverà pronta.",
+                    render::rect(cx - 420.0f, y, cx + 420.0f, y + kCorpoH + 8.0f),
+                    kCorpoPt, kMuted, render::TextAlign::Center, kInterlinea);
+    y += kCorpoH + kDopoCorpo;
+
+    // Barra che si svuota: dice che lo schermo tornera' da solo, cosi' nessuno
+    // resta li' a chiedersi se deve fare qualcosa.
+    const auto  rimasto = static_cast<float>(
+        std::clamp(1.0 - elapsed / config::kOffboardS, 0.0, 1.0));
+    constexpr float kBarW = 260.0f;
+    r.fillRect(render::rect(cx - kBarW / 2, y, cx + kBarW / 2, y + kBarH),
+              {1.0f, 1.0f, 1.0f, 0.10f}, kBarH * 0.5f);
+    if (rimasto > 0.0f) {
+        r.fillRect(render::rect(cx - kBarW / 2, y, cx - kBarW / 2 + kBarW * rimasto, y + kBarH),
+                  {kAccent2.r, kAccent2.g, kAccent2.b, 0.75f}, kBarH * 0.5f);
     }
 }
 
@@ -2004,6 +2290,15 @@ std::wstring toWide(const char* s) {
 /** Fase corrente in parole, per chi presidia la postazione. */
 std::wstring phaseInWords(const app::ControlState& st, bool landing, bool locked) {
     if (landing) return L"Pagina d’ingresso · in attesa del partecipante";
+    // Lette da qui invece che passate: sono schermate dell'esperienza intera,
+    // esattamente come la pagina d'ingresso, e aggiungere due parametri a
+    // ogni chiamante per due bandierine globali non chiarirebbe niente.
+    if (g.onboardingVisible.load(std::memory_order_relaxed)) {
+        return L"Accoglienza · istruzioni e respiro guidato";
+    }
+    if (g.offboardingVisible.load(std::memory_order_relaxed)) {
+        return L"Congedo · fascia da togliere e igienizzare";
+    }
     const auto phase = static_cast<control::Phase>(st.phase);
     if (phase == control::Phase::Onboarding) {
         switch (static_cast<control::CalibStage>(st.calibStage)) {
@@ -2654,6 +2949,27 @@ app::TelemetryHistory history;
 std::chrono::steady_clock::time_point lastFrameTime;
 bool          initialized = false;
 
+// Orologi delle tre schermate che si susseguono da sole: accoglienza (quanto
+// manca al pulsante), esperienza (quanto manca al promemoria del riavvio),
+// congedo (quanto manca al ritorno alla pagina d'ingresso). Avanzano in
+// frame() con lo stesso dt di tutto il resto, quindi non hanno bisogno di un
+// orologio di sistema ne' di essere atomici: li tocca solo il thread di render.
+double onboardT  = 0.0;
+double sessionT  = 0.0;
+double offboardT = 0.0;
+
+// Avanzamento della pressione di R, pubblicato dallo shell (setRestartHold).
+// Atomico perche' su Windows/altri shell potrebbe non arrivare dallo stesso
+// thread del render; su macOS arriva dal thread principale come tutto il resto.
+std::atomic<double> restartHold{0.0};
+
+// Ultima dimensione della finestra che ha disegnato l'esperienza, e se era
+// quella principale: handleClick() non riceve la geometria (lo shell manda
+// solo il punto) e i pulsanti sono posizionati rispetto al centro, quindi
+// serve sapere su che tela erano stati disegnati l'ultimo frame.
+render::Size experienceWin{0.0f, 0.0f};
+bool         experienceOnMainWindow = true;
+
 // --- FPS e diagnosi, solo thread di render ---
 // FPS contati su finestre di mezzo secondo: piu' stabili di 1/dt e abbastanza
 // pronti da vedere un calo quando avviene. Il calo conta come condizione
@@ -2712,6 +3028,60 @@ std::string statusLine(const app::ControlState& st, diag::Code code, bool landin
                   st.signalFault, st.contactOk ? 1 : 0, st.smoothedIndex, st.velocity,
                   st.replaying ? "riproduzione" : "fascia");
     return buf;
+}
+
+// --- passaggi fra le schermate ---------------------------------------------
+// Scritti una volta sola perche' li chiamano sia il tasto sia il clic: se
+// fossero due copie, il giorno che una acquisisce un azzeramento in piu'
+// l'esperienza si comporterebbe in modo diverso a seconda di come e' stata
+// avviata, ed e' il genere di differenza che non si nota provando.
+
+/** Pagina d'ingresso -> accoglienza. */
+void enterOnboarding() {
+    g.landingVisible.store(false, std::memory_order_relaxed);
+    g.onboardingVisible.store(true, std::memory_order_relaxed);
+    onboardT = 0.0;
+    // Lo zoom deve SEMPRE partire dal minimo: senza questo, il segnale gia'
+    // arrivato mentre si sistemava la fascia (in banda adattiva l'esperienza
+    // e' viva dal primo istante, vedi frame()) puo' aver spinto currentFocus_
+    // avanti prima ancora che l'utente avesse scelto di iniziare - osservato
+    // sul campo, si partiva gia' a 200x.
+    g.resetHistory.store(true, std::memory_order_release);
+}
+
+/**
+ * Accoglienza -> esperienza. Non fa niente finche' il pulsante e' spento:
+ * e' l'unico punto in cui quella regola viene applicata, e vale sia per
+ * INVIO sia per il clic.
+ * @return true se e' passata davvero.
+ */
+bool enterExperience() {
+    if (!onboardReady(onboardT)) return false;
+    g.onboardingVisible.store(false, std::memory_order_relaxed);
+    sessionT = 0.0;
+    g.resetHistory.store(true, std::memory_order_release);
+    return true;
+}
+
+/** Esperienza -> congedo (R tenuto premuto). */
+void enterOffboarding() {
+    g.onboardingVisible.store(false, std::memory_order_relaxed);
+    g.offboardingVisible.store(true, std::memory_order_relaxed);
+    offboardT = 0.0;
+    restartHold.store(0.0, std::memory_order_relaxed);
+    // La sessione si butta via QUI, non alla fine del congedo: cosi' la banda
+    // adattiva ricomincia a riempirsi durante gli otto secondi di saluto
+    // invece che dopo, e la persona seguente trova meno attesa. I campioni
+    // raccolti con la fascia sul tavolo non la inquinano - senza contatto il
+    // thread DSP non li passa alla banda (vedi dspThread).
+    g.command.store(static_cast<int>(app::Command::RestartSession), std::memory_order_release);
+    g.resetHistory.store(true, std::memory_order_release);
+}
+
+/** Congedo -> pagina d'ingresso: scade da solo, nessun tasto. */
+void backToLanding() {
+    g.offboardingVisible.store(false, std::memory_order_relaxed);
+    g.landingVisible.store(true, std::memory_order_relaxed);
 }
 
 } // namespace
@@ -2826,17 +3196,17 @@ void handleKey(Key key) {
             return;
         }
         case Key::Enter: {
-            // La pagina d'ingresso intercetta il primo INVIO: da li' si passa
-            // alla schermata di calibrazione, che chiedera' il suo.
+            // Le schermate di apertura si attraversano una alla volta, in
+            // ordine: ingresso -> accoglienza -> esperienza. Il congedo NON
+            // ascolta INVIO: scade da solo, e un tasto premuto per sbaglio
+            // salterebbe proprio l'istruzione di igienizzare la fascia.
+            if (g.offboardingVisible.load(std::memory_order_relaxed)) return;
             if (g.landingVisible.load(std::memory_order_relaxed)) {
-                g.landingVisible.store(false, std::memory_order_relaxed);
-                // Lo zoom deve SEMPRE partire dal minimo: senza questo, il
-                // segnale gia' arrivato mentre si sistemava la fascia (in
-                // banda adattiva l'esperienza e' gia' "viva" da prima
-                // dell'INVIO, vedi frame()) poteva aver spinto currentFocus_
-                // avanti prima ancora che l'utente avesse scelto di iniziare -
-                // osservato sul campo, si partiva gia' a 200x.
-                g.resetHistory.store(true, std::memory_order_release);
+                enterOnboarding();
+                return;
+            }
+            if (g.onboardingVisible.load(std::memory_order_relaxed)) {
+                enterExperience();
                 return;
             }
             const auto st = g.state.read();
@@ -2884,16 +3254,14 @@ void handleKey(Key key) {
         case Key::R:     g.tune.reset();               g.publishTunables(); return;
         case Key::RHold:
             // Riavvio completo, distinto dal semplice tap su R (che riporta
-            // solo le manopole ai default): tenuto premuto apposta - vedi la
-            // soglia in shell_macos.mm - perche' butta via la banda adattiva
-            // e i progressi della sessione corrente, non solo la taratura.
-            // RestartSession (non StartCalibration) azzera anche STFT e
-            // gating, non solo calibrazione/smoothing: e' il reset piu'
-            // completo che dspThread sa fare senza toccare il BLE.
-            g.landingVisible.store(true, std::memory_order_relaxed);
-            g.command.store(static_cast<int>(app::Command::RestartSession),
-                            std::memory_order_release);
-            g.resetHistory.store(true, std::memory_order_release);
+            // solo le manopole ai default): tenuto premuto apposta - vedi
+            // config::kRestartHoldS - perche' butta via la banda adattiva e i
+            // progressi della sessione corrente, non solo la taratura.
+            // Non torna dritto alla pagina d'ingresso: passa dal congedo, che
+            // e' l'unico momento in cui si puo' chiedere di igienizzare la
+            // fascia a chi la sta ancora togliendo.
+            if (g.offboardingVisible.load(std::memory_order_relaxed)) return;
+            enterOffboarding();
             g.pushBleLog("riavvio completo richiesto (R tenuto premuto)");
             return;
         case Key::H:
@@ -2904,6 +3272,34 @@ void handleKey(Key key) {
     }
 }
 
+void handleClick(float x, float y) {
+    if (!initialized) return;
+    // In doppio schermo il clic arriva dalla finestra dell'operatore, che
+    // l'esperienza non la disegna affatto (mostra la sala di controllo): un
+    // pulsante li' non c'e', e prendere per buone quelle coordinate vorrebbe
+    // dire far partire l'esperienza cliccando su un grafico.
+    if (!experienceOnMainWindow || experienceWin.width <= 0.0f) return;
+
+    const auto dentro = [x, y](render::Rect b) {
+        return x >= b.left && x <= b.right && y >= b.top && y <= b.bottom;
+    };
+
+    if (g.landingVisible.load(std::memory_order_relaxed)) {
+        if (dentro(entryButtonRect(experienceWin, kLandingButtonDy))) enterOnboarding();
+        return;
+    }
+    if (g.onboardingVisible.load(std::memory_order_relaxed)) {
+        // enterExperience() rifiuta da sola finche' il pulsante e' spento:
+        // il clic non e' una scorciatoia per saltare l'attesa.
+        if (dentro(onboardButtonRect(experienceWin))) enterExperience();
+        return;
+    }
+}
+
+void setRestartHold(double progress) {
+    restartHold.store(std::clamp(progress, 0.0, 1.0), std::memory_order_relaxed);
+}
+
 bool wantsQuit() { return g.quitRequested.load(std::memory_order_acquire); }
 
 void frame(render::Renderer& r, double dt, const ProjectionState& proj) {
@@ -2911,16 +3307,33 @@ void frame(render::Renderer& r, double dt, const ProjectionState& proj) {
 
     const auto st = g.state.read();
     const auto phase = static_cast<control::Phase>(st.phase);
-    const bool showLanding = g.landingVisible.load(std::memory_order_relaxed);
+    const bool showLanding  = g.landingVisible.load(std::memory_order_relaxed);
+    const bool showOnboard  = g.onboardingVisible.load(std::memory_order_relaxed);
+    const bool showOffboard = g.offboardingVisible.load(std::memory_order_relaxed);
+    // "Nell'esperienza" vuol dire: nessuna delle tre schermate di contorno.
+    const bool inExperience = !showLanding && !showOnboard && !showOffboard;
+
+    // Gli orologi delle schermate che scadono da sole. Avanzano con lo stesso
+    // dt del resto, quindi seguono il tempo davvero disegnato: se un
+    // fotogramma si allunga, si allunga anche l'attesa, invece di scadere
+    // mentre la schermata e' ancora ferma sul primo frame.
+    if (showOnboard) {
+        onboardT += dt;
+    } else if (showOffboard) {
+        offboardT += dt;
+        if (offboardT >= config::kOffboardS) backToLanding();
+    } else if (inExperience) {
+        sessionT += dt;
+    }
 
     const double velocity = velRender.push(st.velocity, dt, config::kVelRenderTauS);
-    // Prima dell'INVIO che chiude la pagina d'ingresso l'esperienza non e'
-    // ancora "iniziata" per l'utente, anche se in banda adattiva il thread DSP
-    // e' gia' in Interactive fin dal primo istante (vedi dspThread). Onboarding
-    // e' l'unica fase per cui authorityVelocity torna sempre 0: usarla qui
-    // impedisce che lo zoom derivi mentre ci si sistema la fascia, cosi' non
-    // c'e' niente da annullare quando poi si preme INVIO.
-    const auto zoomPhase = showLanding ? control::Phase::Onboarding : phase;
+    // Finche' si e' in una delle schermate di contorno l'esperienza non e'
+    // "iniziata" per l'utente, anche se in banda adattiva il thread DSP e'
+    // gia' in Interactive dal primo istante (vedi dspThread). Onboarding e'
+    // l'unica fase per cui authorityVelocity torna sempre 0: usarla qui
+    // impedisce che lo zoom derivi mentre ci si sistema la fascia o mentre si
+    // legge l'accoglienza, cosi' non c'e' niente da annullare dopo.
+    const auto zoomPhase = inExperience ? phase : control::Phase::Onboarding;
     zoom.update(velocity, dt, zoomPhase, st.phaseElapsed, g.tune);
 
     focusFrac += (st.calibDisplayTarget - focusFrac) * config::kCalibDisplayEma;
@@ -2937,7 +3350,11 @@ void frame(render::Renderer& r, double dt, const ProjectionState& proj) {
     lowFpsFor = fps < kLowFpsThreshold ? lowFpsFor + dt : 0.0;
 
     // --- diagnosi: nel log quando cambia, e un battito ogni 10 s ---
-    const diag::Code now = diag::primary(st, showLanding, lowFpsFor >= kLowFpsHoldS);
+    // L'accoglienza vale come pagina d'ingresso: e' il momento in cui la
+    // fascia viene indossata e accesa, quindi "non arrivano ancora dati" e'
+    // la normalita' e non una condizione da segnalare.
+    const diag::Code now =
+        diag::primary(st, showLanding || showOnboard, lowFpsFor >= kLowFpsHoldS);
     if (now != pendingCode) { pendingCode = now; pendingFor = 0.0; }
     else                    { pendingFor += dt; }
     if (!lastCodeSet || (pendingCode != lastCode && pendingFor >= kCodeDebounceS)) {
@@ -2966,7 +3383,8 @@ void frame(render::Renderer& r, double dt, const ProjectionState& proj) {
     history.append(st, zoom.targetFocus(), zoom.currentFocus(), zoom.locked());
 
     const auto cf = zoom.crossfade();
-    const bool showCard = !showLanding && (phase == control::Phase::Onboarding);
+    const bool showCard = inExperience && (phase == control::Phase::Onboarding);
+    const double hold = restartHold.load(std::memory_order_relaxed);
 
     // L'esperienza cosi' come la vede il partecipante: pagina d'ingresso,
     // scheda di calibrazione (a schermo intero apposta: la foto dietro
@@ -2976,17 +3394,35 @@ void frame(render::Renderer& r, double dt, const ProjectionState& proj) {
     const auto drawExperience = [&](render::Renderer& er) {
         if (showLanding) {
             drawLandingPage(er, st, animT);
+        } else if (showOnboard) {
+            drawOnboarding(er, onboardT, animT);
+        } else if (showOffboard) {
+            drawOffboarding(er, offboardT, animT);
         } else if (!showCard) {
             er.drawSprite(cf.activeIndex, static_cast<float>(cf.activeScale),
                          static_cast<float>(cf.activeAlpha));
             er.drawSprite(cf.activeIndex + 1, static_cast<float>(cf.nextScale),
                          static_cast<float>(cf.nextAlpha));
             drawProjectionScale(er, cf);
-            if (st.adaptiveActive && !st.adaptiveReady) drawWarmupOverlay(er, st);
         } else {
             drawCalibrationCard(er, st, focusFrac, animT);
         }
+
+        // Promemoria del riavvio: sopra tutto il resto, ma solo dentro
+        // l'esperienza. Compare a sessione avviata da un po', oppure subito
+        // se qualcuno sta gia' premendo R - in quel caso l'anello e' l'unica
+        // conferma che il gesto sta funzionando.
+        if (inExperience && (sessionT >= config::kRestartHintAfterS || hold > 0.0)) {
+            drawRestartHint(er, hold, animT);
+        }
+
+        // Su che tela sono finiti i pulsanti, per handleClick(): si prende
+        // dall'ultimo disegno vero invece di indovinarla, cosi' vale anche
+        // quando la finestra e' stata ridimensionata in questo stesso frame.
+        experienceWin = er.size();
     };
+
+    experienceOnMainWindow = (proj.renderer == nullptr);
 
     if (proj.renderer) {
         // --- due schermi: la proiezione e' SOLO l'esperienza, lo schermo

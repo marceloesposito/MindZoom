@@ -1,0 +1,94 @@
+MIND ZOOM
+Una fotografia al microscopio elettronico, guidata dalle onde cerebrali
+
+
+DUE MODI DI AVVIARLA
+--------------------
+  1 - Avvia la MOSTRA.command    con la fascia EEG vera. È la modalità da
+                                 usare in mostra: nessun pannello a schermo,
+                                 la sessione viene registrata da sola, e con
+                                 due schermi collegati il secondo diventa la
+                                 proiezione.
+
+  2 - Avvia la DEMO.command      senza fascia. Rigioca una sessione registrata
+                                 davvero (sessione-demo.mzr) e mostra
+                                 l'esperienza completa così com'è andata.
+
+Doppio clic su uno dei due. Se macOS si rifiuta di aprirli, vedi in fondo.
+
+
+IL GIRO DI UN VISITATORE
+------------------------
+1. PAGINA D'INGRESSO — dice cos'è. Si aspetta qui che la persona arrivi.
+   In alto compare lo stato della fascia: si parte quando dice «collegata».
+
+2. INVIO → ACCOGLIENZA — le tre cose da fare (indossare la fascia, accenderla,
+   respirare) e la spiegazione del respiro quadrato. Il pulsante «Entra
+   nell'esperienza» resta spento per i primi secondi: è voluto, serve a dare
+   il tempo di leggere davvero e intanto il sistema si tara sul segnale.
+
+3. INVIO (o clic sul pulsante) → ESPERIENZA — la fotografia si ingrandisce
+   concentrandosi e torna indietro rilassandosi. Si parte sempre dal livello
+   più basso. Dopo un minuto circa, in basso a destra compare un promemoria
+   discreto per il riavvio.
+
+4. TIENI PREMUTO R per due secondi → CONGEDO — un anello attorno alla R si
+   riempie mentre tieni premuto. Alla fine l'app ringrazia, ricorda di
+   igienizzare la fascia e dopo qualche secondo torna da sola alla pagina
+   d'ingresso, pronta per la persona successiva.
+
+
+TASTI
+-----
+INVIO     avanza (pagina d'ingresso, accoglienza)
+R tenuto  chiude il giro e riporta tutto pronto per il prossimo
+H         mostra/nasconde il pannello con i dati (parte nascosto)
+B         stato del Bluetooth: C riconnette, X disconnette
+K         rifà la taratura sul segnale, senza riavviare
+ESC / Q   esce
+
+
+SE LA FASCIA NON SI COLLEGA
+---------------------------
+- Va accesa PRIMA di aprire l'app, e va tenuta vicina al Mac.
+- Se un telefono con l'app Muse è collegato alla fascia, ha la precedenza:
+  va chiuso.
+- Con B si vede lo stato e si può forzare una riconnessione (C).
+- Batteria scarica: è la causa di gran lunga più frequente dei distacchi.
+
+
+AL PRIMISSIMO AVVIO: DUE PERMESSI DA CONCEDERE
+----------------------------------------------
+macOS li chiede una volta sola per Mac, e vanno concessi entrambi o l'app non
+funziona:
+
+  «MindZoom vorrebbe accedere ai file nella cartella Scrivania»
+      → Consenti. Succede perché questa cartella sta sulla Scrivania: senza,
+        l'app non può leggere le proprie immagini né la registrazione demo.
+        (Spostando la cartella in Applicazioni la richiesta non compare.)
+
+  «MindZoom vorrebbe usare il Bluetooth»
+      → Consenti, altrimenti la fascia non viene mai trovata. Compare al primo
+        tentativo di collegamento, quindi solo in modalità MOSTRA.
+
+
+SE macOS NON APRE GLI SCRIPT
+----------------------------
+L'app non è firmata con un certificato Apple, quindi su un Mac diverso da
+quello che l'ha prodotta macOS può bloccarla («Apple non è in grado di
+verificare...»). In ordine:
+
+  1. Tasto destro (o Ctrl+clic) sul file → Apri → Apri.
+  2. Impostazioni di Sistema → Privacy e sicurezza → scorri in fondo: c'è il
+     nome del file bloccato e un pulsante «Apri comunque».
+  3. Da Terminale, il più sicuro: scrivi «xattr -cr » (con lo spazio finale),
+     trascina dentro questa cartella, Invio.
+
+Va fatto una volta sola per Mac.
+
+
+DOVE FINISCONO LE SESSIONI
+--------------------------
+Dentro MindZoom.app, in Contents/MacOS/registrazioni (clic destro sull'app →
+«Mostra contenuto pacchetto»). Ogni sessione ha data e ora nel nome. Sono i
+dati grezzi della fascia: servono a rivedere una sessione senza rifarla.
