@@ -1,8 +1,8 @@
 #!/bin/bash
 # Mind Zoom - modalità DEMO: NON serve la fascia.
 #
-# Rigioca una sessione registrata davvero con la fascia (sessione-demo.mzr, in
-# questa cartella) al posto del segnale dal vivo. Il percorso è identico a
+# Rigioca una sessione registrata davvero con la fascia (sessione-demo.mzr, che
+# viaggia dentro il bundle) al posto del segnale dal vivo. Il percorso è identico a
 # quello vero - pagina d'ingresso, accoglienza, esperienza, congedo - ma il
 # segnale che guida lo zoom è quello di quella sessione, così si vede come si
 # comporta l'installazione senza doverla indossare.
@@ -14,7 +14,18 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP="$SCRIPT_DIR/MindZoom.app"
-REC="$SCRIPT_DIR/sessione-demo.mzr"
+
+# La registrazione della demo viaggia DENTRO il bundle. Se stesse qui accanto
+# sarebbe un file della Scrivania, e leggerlo farebbe comparire la richiesta di
+# consenso "MindZoom vorrebbe accedere ai file nella cartella Scrivania": una
+# finestra da cliccare a mano proprio all'apertura della mostra. Dentro il
+# bundle l'app legge solo roba sua, e non chiede niente.
+REC="$APP/Contents/Resources/sessione-demo.mzr"
+# Una registrazione messa qui accanto ha comunque la precedenza: serve a provare
+# un'altra sessione senza toccare il bundle. In quel caso pero' il consenso alla
+# cartella torna a essere necessario, perche' quello si' e' un file della
+# Scrivania.
+[ -f "$SCRIPT_DIR/sessione-demo.mzr" ] && REC="$SCRIPT_DIR/sessione-demo.mzr"
 cd "$SCRIPT_DIR"
 
 clear
@@ -25,7 +36,9 @@ echo
 for f in "$APP" "$REC"; do
     if [ ! -e "$f" ]; then
         echo "Manca: $f"
-        echo "MindZoom.app e sessione-demo.mzr devono stare in questa cartella."
+        echo "Serve MindZoom.app in questa cartella, con dentro"
+        echo "Contents/Resources/sessione-demo.mzr (oppure una sessione-demo.mzr"
+        echo "qui accanto)."
         read -n 1 -s -r -p "Premi un tasto per chiudere..."
         exit 1
     fi

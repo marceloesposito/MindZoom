@@ -29,7 +29,8 @@ COME SI AVVIA DA UNA CHIAVETTA USB
    Applicazioni:
 
      A - avvia da li', nessuna installazione. Le registrazioni e il log di
-         diagnostica restano sulla chiavetta, dentro MindZoom.app.
+         diagnostica NON restano sulla chiavetta: vanno in
+         ~/Libreria/Application Support/MindZoom, sul Mac che sta usando l'app.
      I - copia l'app in /Applications (o nella cartella Applicazioni
          dell'utente, se non hai i permessi su quella di sistema) e la apre
          da li'. Utile se vuoi tenerla stabilmente su un Mac dopo averla
@@ -97,7 +98,7 @@ UNA SESSIONE, DALL'INIZIO ALLA FINE
    misura da capo).
 
 6. ESC per uscire. La sessione e' gia' salvata in "registrazioni", dentro
-   MindZoom.app/Contents/MacOS/.
+   ~/Libreria/Application Support/MindZoom/.
 
 
 COMANDI
@@ -307,6 +308,8 @@ La fascia si scollega dopo poco
 LE SESSIONI SI REGISTRANO DA SOLE
 ------------------------------------
 Ogni volta che usi il programma, i dati grezzi della fascia vengono salvati in
-MindZoom.app/Contents/MacOS/registrazioni, con la data e l'ora nel nome. Se hai
-installato in Applicazioni tramite il launcher, quella cartella - e le
-registrazioni gia' fatte sulla chiavetta - si spostano insieme all'app.
+~/Libreria/Application Support/MindZoom/registrazioni, con la data e l'ora nel
+nome (per arrivarci: Finder, menu Vai, ALT premuto, Libreria). Restano li'
+anche se l'app viene spostata o sostituita: non stanno piu' dentro il bundle,
+dove ogni scrittura ne invalidava la firma e, se l'app stava sulla Scrivania,
+faceva chiedere un consenso.

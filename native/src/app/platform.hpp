@@ -46,6 +46,29 @@ std::FILE* openChoiceFile(bool forWrite);
  */
 std::wstring exeDirectory();
 
+/**
+ * Cartella dei dati dell'utente: su macOS ~/Library/Application Support/MindZoom,
+ * creata se manca. Ci va tutto quello che l'applicazione SCRIVE - registrazioni
+ * e log - che e' cosa diversa da quello che si porta dietro (assets e font,
+ * che stanno accanto all'eseguibile).
+ *
+ * La distinzione non e' formale, risolve due problemi veri:
+ *
+ *  1. Scrivere dentro il proprio bundle ne rompe la FIRMA. Il sigillo copre
+ *     tutti i file presenti al momento della firma; il primo log aggiunto dopo
+ *     lo invalida, e "codesign --verify" comincia a fallire. Senza firma valida
+ *     macOS puo' smettere di attribuire al processo il permesso Bluetooth, che
+ *     qui vuol dire la fascia.
+ *  2. Se l'app sta sulla Scrivania (o in Documenti, o in Download), scrivere li'
+ *     dentro passa dal consenso TCC - la finestra "vorrebbe accedere ai file
+ *     nella cartella Scrivania". Application Support non e' protetta: nessun
+ *     consenso da chiedere.
+ *
+ * @return stringa vuota se non si riesce a determinarla; chi chiama deve avere
+ *         un ripiego (di solito la cartella dell'eseguibile, come prima).
+ */
+std::wstring dataDirectory();
+
 /** Crea `path` se non esiste gia'. Non fallisce se esiste gia'. */
 void ensureDirectory(const std::wstring& path);
 

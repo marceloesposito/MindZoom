@@ -30,7 +30,7 @@ std::wstring toWide(NSString* s) {
 }
 
 /** ~/Library/Application Support/MindZoom, creata se manca. */
-NSString* choiceDir(bool createDir) {
+NSString* supportDir(bool createDir) {
     NSArray<NSString*>* dirs = NSSearchPathForDirectoriesInDomains(
         NSApplicationSupportDirectory, NSUserDomainMask, YES);
     if (dirs.count == 0) return nil;
@@ -87,16 +87,20 @@ std::vector<Display> enumerateDisplaysNative() {
 }
 
 std::FILE* openChoiceFile(bool forWrite) {
-    NSString* dir = choiceDir(forWrite);
+    NSString* dir = supportDir(forWrite);
     if (!dir) return nullptr;
 
     NSString* path = [dir stringByAppendingPathComponent:@"schermo.txt"];
     return std::fopen(path.fileSystemRepresentation, forWrite ? "wt" : "rt");
 }
 
+std::wstring dataDirectory() {
+    return toWide(supportDir(true));
+}
+
 std::wstring exeDirectory() {
     // _NSGetExecutablePath puo' restituire un percorso con "..", link simbolici
-    // ecc.: si passa da NSString per normalizzarlo, come fa gia' choiceDir().
+    // ecc.: si passa da NSString per normalizzarlo, come fa gia' supportDir().
     std::uint32_t size = 0;
     _NSGetExecutablePath(nullptr, &size);   // prima chiamata: solo per sapere size
     std::vector<char> buf(size);

@@ -591,10 +591,22 @@ NSScreen* screenForDisplay(const mz::app::Display& d) {
         _projWindow.contentView = _projView;
     }
 
+    // Quello che l'app LEGGE sta accanto all'eseguibile (assets, font: viaggiano
+    // col bundle); quello che SCRIVE sta in ~/Library/Application Support/MindZoom.
+    // Erano nello stesso posto - la convenzione "tutto accanto all'eseguibile"
+    // portata da Windows - e questo rompeva la firma del bundle a ogni avvio e
+    // faceva chiedere il consenso alla Scrivania. Vedi platform::dataDirectory().
+    //
+    // Se Application Support non si trova (non dovrebbe mai) si torna al
+    // comportamento di prima invece di restare senza posto dove scrivere.
     const std::wstring exeDir = mz::app::platform::exeDirectory();
     const std::wstring assetsDir = exeDir + L"/assets";
-    const std::wstring recordingsDir = exeDir + L"/registrazioni";
-    const std::wstring debugDir = exeDir + L"/debug";
+    const std::wstring dataDir = [&exeDir] {
+        const std::wstring d = mz::app::platform::dataDirectory();
+        return d.empty() ? exeDir : d;
+    }();
+    const std::wstring recordingsDir = dataDir + L"/registrazioni";
+    const std::wstring debugDir = dataDir + L"/debug";
     mz::app::platform::ensureDirectory(recordingsDir);
     mz::app::platform::ensureDirectory(debugDir);
 

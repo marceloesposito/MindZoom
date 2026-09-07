@@ -57,19 +57,18 @@ SE LA FASCIA NON SI COLLEGA
 - Batteria scarica: è la causa di gran lunga più frequente dei distacchi.
 
 
-AL PRIMISSIMO AVVIO: DUE PERMESSI DA CONCEDERE
-----------------------------------------------
-macOS li chiede una volta sola per Mac, e vanno concessi entrambi o l'app non
-funziona:
-
-  «MindZoom vorrebbe accedere ai file nella cartella Scrivania»
-      → Consenti. Succede perché questa cartella sta sulla Scrivania: senza,
-        l'app non può leggere le proprie immagini né la registrazione demo.
-        (Spostando la cartella in Applicazioni la richiesta non compare.)
-
+AL PRIMISSIMO AVVIO: UN PERMESSO SOLO
+-------------------------------------
   «MindZoom vorrebbe usare il Bluetooth»
-      → Consenti, altrimenti la fascia non viene mai trovata. Compare al primo
-        tentativo di collegamento, quindi solo in modalità MOSTRA.
+      → Consenti, altrimenti la fascia non viene mai trovata. macOS lo chiede
+        una volta sola per Mac, al primo tentativo di collegamento: quindi solo
+        in modalità MOSTRA, non in DEMO.
+
+Nient'altro. L'app non chiede più il consenso alla Scrivania perché non scrive
+né legge niente fuori da sé: le sessioni e i log vanno in
+~/Libreria/Application Support/MindZoom, e la registrazione della demo viaggia
+dentro MindZoom.app. La cartella può quindi stare sulla Scrivania senza che
+nessuno debba cliccare niente all'apertura.
 
 
 SE macOS NON APRE GLI SCRIPT
@@ -89,6 +88,10 @@ Va fatto una volta sola per Mac.
 
 DOVE FINISCONO LE SESSIONI
 --------------------------
-Dentro MindZoom.app, in Contents/MacOS/registrazioni (clic destro sull'app →
-«Mostra contenuto pacchetto»). Ogni sessione ha data e ora nel nome. Sono i
-dati grezzi della fascia: servono a rivedere una sessione senza rifarla.
+In ~/Libreria/Application Support/MindZoom/registrazioni, insieme ai log di
+diagnostica (sottocartella «debug»). Per arrivarci: Finder → menu Vai → tieni
+premuto ALT → Libreria → Application Support → MindZoom.
+
+Ogni sessione ha data e ora nel nome. Sono i dati grezzi della fascia: servono
+a rivedere una sessione senza rifarla, e restano lì anche se l'app viene
+sostituita con una versione nuova.
