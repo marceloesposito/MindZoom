@@ -30,8 +30,17 @@ done
 # L'app non e' notarizzata: copiata da un'altra macchina, macOS la marca in
 # quarantena e la rifiuta con "sviluppatore non identificato" o "danneggiata".
 # Togliere il flag qui evita di doverlo fare a mano.
-xattr -cr "$APP" 2>/dev/null || true
-xattr -c "$REC" 2>/dev/null || true
+# Si toglie SOLO la quarantena, non tutti gli attributi estesi. Gli asset e i
+# font stanno in Contents/MacOS (stessa convenzione "accanto all'eseguibile"
+# del ramo Windows), e li' codesign li tratta come codice annidato: la loro
+# firma vive in un attributo esteso, com.apple.cs.CodeDirectory. Un "xattr -cr"
+# lo cancellava, e il bundle risultava non firmato - verificato il 07/09/2026:
+# dopo un avvio col launcher, "codesign --verify --deep --strict" falliva su
+# assets/111.webp. L'app partiva lo stesso, ma senza firma valida TCC puo'
+# smettere di attribuire al processo il permesso Bluetooth, cioe' proprio la
+# fascia. Se il flag non c'e', xattr non si lamenta.
+xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
+xattr -d com.apple.quarantine "$REC" 2>/dev/null || true
 
 echo "Avvio con la sessione registrata..."
 echo

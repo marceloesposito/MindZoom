@@ -33,8 +33,17 @@ done
 
 # Vedi lo script della mostra: senza questo macOS può rifiutarsi di aprire
 # un'app arrivata da un altro Mac.
-xattr -cr "$APP" 2>/dev/null || true
-xattr -c "$REC" 2>/dev/null || true
+# Si toglie SOLO la quarantena, non tutti gli attributi estesi. Gli asset e i
+# font stanno in Contents/MacOS (stessa convenzione "accanto all'eseguibile"
+# del ramo Windows), e li' codesign li tratta come codice annidato: la loro
+# firma vive in un attributo esteso, com.apple.cs.CodeDirectory. Un "xattr -cr"
+# lo cancellava, e il bundle risultava non firmato - verificato il 07/09/2026:
+# dopo un avvio col launcher, "codesign --verify --deep --strict" falliva su
+# assets/111.webp. L'app partiva lo stesso, ma senza firma valida TCC puo'
+# smettere di attribuire al processo il permesso Bluetooth, cioe' proprio la
+# fascia. Se il flag non c'e', xattr non si lamenta.
+xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
+xattr -d com.apple.quarantine "$REC" 2>/dev/null || true
 
 echo "Cosa aspettarsi:"
 echo "  INVIO sulla pagina d'ingresso, poi la schermata di istruzioni."

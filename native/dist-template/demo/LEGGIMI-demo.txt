@@ -27,7 +27,8 @@ in grado di verificare che l'app non contenga malware"), prova in quest'ordine:
      fondo alla pagina. Compare una riga "'Avvia Demo.command' e' stato
      bloccato per proteggere il Mac" con un pulsante Apri comunque: cliccalo,
      conferma, poi riprova il doppio clic (un'ultima conferma con Apri).
-  3. Se hai il Terminale a portata (il piu' sicuro): scrivi "xattr -cr "
+  3. Se hai il Terminale a portata (il piu' sicuro): scrivi
+     "xattr -dr com.apple.quarantine "
      (con lo spazio alla fine), trascina dentro questa cartella e premi Invio.
      Toglie il blocco da tutti e tre i file in un colpo solo.
 

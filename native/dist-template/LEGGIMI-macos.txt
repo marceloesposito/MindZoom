@@ -65,7 +65,8 @@ prova in quest'ordine:
      file bloccato e un pulsante Apri comunque: cliccalo, conferma con
      password/Touch ID, poi riprova il doppio clic - un'ultima conferma con
      Apri e basta.
-  3. Il piu' affidabile, da Terminale: scrivi "xattr -cr " (con lo spazio
+  3. Il piu' affidabile, da Terminale: scrivi
+     "xattr -dr com.apple.quarantine " (con lo spazio
      alla fine), trascina dentro la cartella con MindZoom.app e "Avvia
      MindZoom.command", Invio. Toglie il blocco da tutto in un colpo solo.
 

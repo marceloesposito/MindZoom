@@ -81,8 +81,8 @@ verificare...»). In ordine:
   1. Tasto destro (o Ctrl+clic) sul file → Apri → Apri.
   2. Impostazioni di Sistema → Privacy e sicurezza → scorri in fondo: c'è il
      nome del file bloccato e un pulsante «Apri comunque».
-  3. Da Terminale, il più sicuro: scrivi «xattr -cr » (con lo spazio finale),
-     trascina dentro questa cartella, Invio.
+  3. Da Terminale, il più sicuro: scrivi «xattr -dr com.apple.quarantine »
+     (con lo spazio finale), trascina dentro questa cartella, Invio.
 
 Va fatto una volta sola per Mac.
 
