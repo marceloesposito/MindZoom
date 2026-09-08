@@ -2848,168 +2848,286 @@ float drawHud(render::Renderer& r, const app::ControlState& st, const control::Z
 }
 
 // ---------------------------------------------------------------------------
-// Schermo dell'operatore in modalita' a due schermi: NON l'esperienza (quella
-// sta tutta sulla proiezione) ma la sua sala di controllo - il pannello
-// esperto per intero, i grafici, e uno spazio per il testo di sala.
+// Sala di controllo (due schermi): NON l'esperienza - quella sta tutta sulla
+// proiezione - e non piu' nemmeno tutto cio' che si potrebbe mostrare.
+//
+// Resta solo quello che serve a chi guida la postazione mentre qualcuno ha la
+// fascia in testa: il SEGNALE ELABORATO della fascia (il bipolare filtrato, il
+// suo spettro, l'indice che ne esce nel tempo) e le STATISTICHE DI ESERCIZIO
+// (fps, pacchetti, stato del collegamento, diagnosi).
+//
+// Sono spariti, di proposito:
+//   - le quattro tracce grezze: il grezzo non e' il segnale elaborato, e si
+//     prendeva un quarto della finestra;
+//   - il riquadro del "testo di sala": un rettangolo grande mezza finestra con
+//     dentro un promemoria per chi scrive il programma, mai compilato;
+//   - la parete di grafici della telemetria, che ripeteva in sei riquadri
+//     quello che l'indice dice in uno.
+//
+// Non e' solo ordine. Ogni pixel di questa finestra si paga a ogni fotogramma:
+// l'interfaccia si rasterizza in CPU su una bitmap grande quanto la finestra
+// per il fattore di scala, e la bitmap viene azzerata, ridisegnata, copiata e
+// caricata sul layer. Sul Mac Intel della mostra la finestra da 1280x800 punti
+// faceva 2560x1600 px, cioe' 16 MB per fotogramma. Con meno da mostrare la
+// finestra puo' essere piccola (kControlRoomW/H in shell_macos.mm), e il conto
+// scende di circa tre volte.
 // ---------------------------------------------------------------------------
 
-// Testo di sala mostrato nel riquadro in basso a sinistra dello schermo
-// operatore: presentazione della fotografia, dell'esperienza, del processo.
-// VUOTO DI PROPOSITO: e' l'operatore a scriverlo (righe separate da \n).
-constexpr const wchar_t* kOperatorCopy = L"";
-
-void drawCopyPanel(render::Renderer& r, render::Rect box) {
-    if (box.height() < 40.0f) return;
-    r.fillRect(box, kHudBg);
-    r.drawRectOutline(box, kHudHairline, 1.0f);
-    if (kOperatorCopy[0] == L'\0') {
-        r.drawTextBody(L"Spazio riservato al testo di sala — da compilare\n"
-                       L"(kOperatorCopy in src/app/experience.cpp)",
-                      render::rect(box.left + 16, (box.top + box.bottom) * 0.5f - 22.0f,
-                                  box.right - 16, (box.top + box.bottom) * 0.5f + 22.0f),
-                      13.0f, {kHudMuted.r, kHudMuted.g, kHudMuted.b, 0.45f});
-        return;
-    }
-    r.drawTextBody(kOperatorCopy, render::rect(box.left + 20, box.top + 18, box.right - 20,
-                                               box.bottom - 18),
-                  15.0f, kHudInk, render::TextAlign::Left);
-}
-
-/** Cornice di un grafico dello schermo operatore, con titolo. */
+/** Cornice di un grafico della sala di controllo, con titolo. */
 void plotFrame(render::Renderer& r, render::Rect box, const wchar_t* title) {
     r.fillRect(box, kHudBg);
     r.drawRectOutline(box, kHudHairline, 1.0f);
-    r.drawTextBody(title, render::rect(box.left + 8, box.top + 4, box.right - 8, box.top + 22),
-                  12.0f, kHudMuted, render::TextAlign::Left);
+    r.drawTextBody(title, render::rect(box.left + 8, box.top + 3, box.right - 8, box.top + 19),
+                  11.0f, kHudMuted, render::TextAlign::Left);
 }
 
 /**
- * Le forme d'onda dell'ultimo secondo: quattro canali grezzi (DC rimossa),
- * il bipolare filtrato, lo spettro del bipolare con le tre bande evidenziate.
- * Una polilinea per traccia e i rettangolini dello spettro in una chiamata:
- * a 60 fps il costo e' dello stesso ordine di una riga di testo.
+ * Il bipolare filtrato dell'ultimo secondo: e' letteralmente "il segnale
+ * elaborato della fascia", quello da cui esce tutto il resto. La scala
+ * verticale si adatta al picco invece di essere fissa: a fascia ben messa il
+ * segnale sta in pochi microvolt, e una scala fissa lo mostrerebbe piatto.
  */
-void drawWaveforms(render::Renderer& r, const app::WaveSnapshot& w, render::Rect rawBox,
-                   render::Rect procBox, render::Rect specBox) {
+void drawProcessedTrace(render::Renderer& r, const app::WaveSnapshot& w, render::Rect box) {
+    plotFrame(r, box, L"Segnale elaborato · bipolare AF7−AF8, 1–40 Hz · µV");
+    if (w.frame == 0 || box.height() < 30.0f) return;
+
     constexpr int kN = config::kStftWindow;
     static std::vector<render::Point> pts;
     pts.resize(kN);
 
-    const auto trace = [&](const float* data, render::Rect box, float scale, render::Color c) {
-        const float midY = (box.top + box.bottom) * 0.5f;
-        const float half = box.height() * 0.5f - 2.0f;
-        for (int i = 0; i < kN; ++i) {
-            const float t = static_cast<float>(i) / (kN - 1);
-            const float v = std::clamp(data[i] / scale, -1.0f, 1.0f);
-            pts[static_cast<std::size_t>(i)] = {box.left + t * box.width(), midY - v * half};
-        }
-        r.drawPolyline(pts.data(), pts.size(), c, 1.2f);
-    };
-    const auto maxAbs = [&](const float* data) {
-        float m = 0.0f;
-        for (int i = 0; i < kN; ++i) m = std::max(m, std::fabs(data[i]));
-        return m;
-    };
+    const render::Rect lane = render::rect(box.left + 8.0f, box.top + 20.0f,
+                                           box.right - 8.0f, box.bottom - 5.0f);
+    const float mid  = (lane.top + lane.bottom) * 0.5f;
+    const float half = lane.height() * 0.5f - 2.0f;
 
-    // --- grezzo: quattro corsie ---
-    plotFrame(r, rawBox, L"Segnale grezzo (DC rimossa) · ultimo secondo · µV");
-    if (w.frame == 0) return;
-    static const wchar_t* kChannelNames[] = {L"TP9", L"AF7", L"AF8", L"TP10"};
-    const float laneTop = rawBox.top + 24.0f;
-    const float laneH   = (rawBox.bottom - laneTop - 6.0f) / config::kChannels;
-    r.pushClip(rawBox);
-    for (int ch = 0; ch < config::kChannels; ++ch) {
-        const render::Rect lane = render::rect(rawBox.left + 44.0f, laneTop + ch * laneH,
-                                               rawBox.right - 8.0f, laneTop + (ch + 1) * laneH);
-        const float mid = (lane.top + lane.bottom) * 0.5f;
-        r.drawLine({lane.left, mid}, {lane.right, mid}, {0, 0, 0, 0.08f}, 1.0f);
-        const float scale = std::max(20.0f, maxAbs(w.raw[ch]) * 1.1f);
-        r.drawTextBody(kChannelNames[ch], render::rect(rawBox.left + 8, mid - 9.0f,
-                                                       rawBox.left + 44.0f, mid + 9.0f),
-                      11.0f, kHudMuted, render::TextAlign::Left);
-        r.drawTextBody(L"±" + fixed(scale, 0), render::rect(lane.right - 60.0f, lane.top,
-                                                              lane.right, lane.top + 14.0f),
-                      10.0f, {kHudMuted.r, kHudMuted.g, kHudMuted.b, 0.6f}, render::TextAlign::Left);
-        trace(w.raw[ch], lane, scale, {kHudInk.r, kHudInk.g, kHudInk.b, 0.85f});
+    float peak = 0.0f;
+    for (int i = 0; i < kN; ++i) peak = std::max(peak, std::fabs(w.processed[i]));
+    const float scale = std::max(10.0f, peak * 1.1f);
+
+    r.pushClip(box);
+    r.drawLine({lane.left, mid}, {lane.right, mid}, {0, 0, 0, 0.08f}, 1.0f);
+    r.drawTextBody(L"±" + fixed(scale, 0),
+                  render::rect(lane.right - 60.0f, lane.top, lane.right, lane.top + 13.0f),
+                  10.0f, {kHudMuted.r, kHudMuted.g, kHudMuted.b, 0.6f}, render::TextAlign::Left);
+    for (int i = 0; i < kN; ++i) {
+        const float t = static_cast<float>(i) / (kN - 1);
+        const float v = std::clamp(w.processed[i] / scale, -1.0f, 1.0f);
+        pts[static_cast<std::size_t>(i)] = {lane.left + t * lane.width(), mid - v * half};
     }
+    r.drawPolyline(pts.data(), pts.size(), kAccent, 1.2f);
     r.popClip();
+}
 
-    // --- processato: bipolare filtrato ---
-    plotFrame(r, procBox, L"Segnale processato (bipolare AF7−AF8, filtrato 1–40 Hz) · µV");
-    {
-        const render::Rect lane = render::rect(procBox.left + 8.0f, procBox.top + 24.0f,
-                                               procBox.right - 8.0f, procBox.bottom - 6.0f);
-        const float mid = (lane.top + lane.bottom) * 0.5f;
-        r.pushClip(procBox);
-        r.drawLine({lane.left, mid}, {lane.right, mid}, {0, 0, 0, 0.08f}, 1.0f);
-        const float scale = std::max(10.0f, maxAbs(w.processed) * 1.1f);
-        r.drawTextBody(L"±" + fixed(scale, 0), render::rect(lane.right - 60.0f, lane.top,
-                                                              lane.right, lane.top + 14.0f),
-                      10.0f, {kHudMuted.r, kHudMuted.g, kHudMuted.b, 0.6f}, render::TextAlign::Left);
-        trace(w.processed, lane, scale, kAccent);
-        r.popClip();
+/** Lo spettro dello stesso bipolare, con theta/alpha/beta evidenziate. */
+void drawSpectrum(render::Renderer& r, const app::WaveSnapshot& w, render::Rect box) {
+    plotFrame(r, box, L"Spettro · 1–40 Hz · theta 4–8, alpha 8–13, beta 13–30");
+    if (w.frame == 0 || box.height() < 34.0f) return;
+
+    constexpr int kHzMax = 40;
+    const render::Rect area = render::rect(box.left + 8.0f, box.top + 20.0f,
+                                           box.right - 8.0f, box.bottom - 15.0f);
+    const float binW = area.width() / kHzMax;
+    float peak = 1e-6f;
+    for (int b = 1; b <= kHzMax; ++b) peak = std::max(peak, w.spectrum[b]);
+
+    static std::vector<render::Rect> bars[3];
+    for (auto& v : bars) v.clear();
+    for (int b = 1; b <= kHzMax; ++b) {
+        const float h  = std::clamp(w.spectrum[b] / peak, 0.0f, 1.0f) * area.height();
+        const float x0 = area.left + (b - 1) * binW + 1.0f;
+        const int   grp = (b >= 4 && b < 8) ? 1 : (b >= 8 && b < 13) ? 2 : (b >= 13 && b < 30) ? 0 : -1;
+        const render::Rect bar = render::rect(x0, area.bottom - h, x0 + binW - 2.0f, area.bottom);
+        if (grp < 0) r.fillRect(bar, {kHudMuted.r, kHudMuted.g, kHudMuted.b, 0.35f});
+        else         bars[grp].push_back(bar);
     }
-
-    // --- spettro: 1..40 Hz, bande theta/alpha/beta ---
-    plotFrame(r, specBox, L"Spettro del bipolare · 1–40 Hz · theta 4–8, alpha 8–13, beta 13–30");
-    {
-        constexpr int   kHzMax = 40;
-        const render::Rect area = render::rect(specBox.left + 8.0f, specBox.top + 24.0f,
-                                               specBox.right - 8.0f, specBox.bottom - 16.0f);
-        const float binW = area.width() / kHzMax;
-        float peak = 1e-6f;
-        for (int b = 1; b <= kHzMax; ++b) peak = std::max(peak, w.spectrum[b]);
-        static std::vector<render::Rect> bars[3];
-        for (auto& v : bars) v.clear();
-        for (int b = 1; b <= kHzMax; ++b) {
-            const float h  = std::clamp(w.spectrum[b] / peak, 0.0f, 1.0f) * area.height();
-            const float x0 = area.left + (b - 1) * binW + 1.0f;
-            const int   grp = (b >= 4 && b < 8) ? 1 : (b >= 8 && b < 13) ? 2 : (b >= 13 && b < 30) ? 0 : -1;
-            const render::Rect bar = render::rect(x0, area.bottom - h, x0 + binW - 2.0f, area.bottom);
-            if (grp < 0) r.fillRect(bar, {kHudMuted.r, kHudMuted.g, kHudMuted.b, 0.35f});
-            else         bars[grp].push_back(bar);
-        }
-        r.fillRects(bars[0].data(), static_cast<int>(bars[0].size()), {kHudInk.r, kHudInk.g, kHudInk.b, 0.55f});
-        r.fillRects(bars[1].data(), static_cast<int>(bars[1].size()), kAccent2);
-        r.fillRects(bars[2].data(), static_cast<int>(bars[2].size()), kAccent);
-        for (const int hz : {10, 20, 30, 40}) {
-            r.drawTextBody(std::to_wstring(hz), render::rect(area.left + (hz - 1) * binW - 10.0f,
-                                                             area.bottom + 1.0f,
-                                                             area.left + (hz - 1) * binW + 14.0f,
-                                                             area.bottom + 14.0f),
-                          10.0f, {kHudMuted.r, kHudMuted.g, kHudMuted.b, 0.6f}, render::TextAlign::Left);
-        }
+    r.fillRects(bars[0].data(), static_cast<int>(bars[0].size()),
+               {kHudInk.r, kHudInk.g, kHudInk.b, 0.55f});
+    r.fillRects(bars[1].data(), static_cast<int>(bars[1].size()), kAccent2);
+    r.fillRects(bars[2].data(), static_cast<int>(bars[2].size()), kAccent);
+    for (const int hz : {10, 20, 30, 40}) {
+        r.drawTextBody(std::to_wstring(hz),
+                      render::rect(area.left + (hz - 1) * binW - 10.0f, area.bottom + 1.0f,
+                                  area.left + (hz - 1) * binW + 14.0f, area.bottom + 13.0f),
+                      10.0f, {kHudMuted.r, kHudMuted.g, kHudMuted.b, 0.6f}, render::TextAlign::Left);
     }
 }
 
-void drawOperatorDashboard(render::Renderer& r, const app::ControlState& st,
-                           const control::ZoomController& zoom, const control::CrossfadeState& cf,
-                           const control::Tunables& t, const app::TelemetryHistory& history,
-                           double fps, diag::Code code, bool landing) {
-    const auto  win   = r.size();
-    const float leftW = 624.0f;
-    const float hudBottom = drawHud(r, st, zoom, cf, t, 2, fps, code, landing);
-    drawCopyPanel(r, render::rect(12.0f, hudBottom + 12.0f, 12.0f + leftW, win.height - 12.0f));
+/**
+ * L'indice elaborato negli ultimi 60 s: e' il numero che comanda lo zoom, ed
+ * e' l'unica cosa della vecchia parete di telemetria che valga uno schermo da
+ * sola. La scala si prende dai valori davvero presenti nella finestra: l'indice
+ * non e' normalizzato in [0,1] (nei log si vedono valori sopra 2), quindi una
+ * scala fissa lo appiattirebbe contro il bordo.
+ */
+void drawIndexStrip(render::Renderer& r, const app::TelemetryHistory& history, render::Rect box) {
+    plotFrame(r, box, L"Indice elaborato · ultimi 60 s");
+    if (box.height() < 30.0f) return;
 
-    const float gx = 12.0f + leftW + 16.0f;
-    const float gr = win.width - 12.0f;
-    if (gr - gx < 200.0f) return;
-    const float H   = win.height - 24.0f;
-    const float gap = 10.0f;
-    float y = 12.0f;
-    const auto next = [&](float frac) {
-        const render::Rect box = render::rect(gx, y, gr, y + H * frac - gap);
-        y += H * frac;
-        return box;
+    constexpr double kWindowS = 60.0;
+    const auto visible = static_cast<std::size_t>(kWindowS * config::kControlHz);
+    const std::size_t count = std::min(history.size(), visible);
+    if (count < 2) return;
+    const std::size_t first = history.size() - count;
+
+    const render::Rect g = render::rect(box.left + 8.0f, box.top + 20.0f,
+                                        box.right - 8.0f, box.bottom - 5.0f);
+
+    double lo = history.at(first).smoothedIndex, hi = lo;
+    for (std::size_t i = 0; i < count; ++i) {
+        const double v = history.at(first + i).smoothedIndex;
+        lo = std::min(lo, v);
+        hi = std::max(hi, v);
+    }
+    const double pad = std::max(0.05, (hi - lo) * 0.1);
+    lo -= pad;
+    hi += pad;
+    if (hi <= lo) return;
+
+    static std::vector<render::Point> pts;
+    pts.clear();
+    pts.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        const double v = history.at(first + i).smoothedIndex;
+        const double t = std::clamp((v - lo) / (hi - lo), 0.0, 1.0);
+        pts.push_back({g.left + (static_cast<float>(i) / static_cast<float>(count - 1)) * g.width(),
+                       static_cast<float>(g.bottom - t * (g.bottom - g.top))});
+    }
+    r.pushClip(box);
+    r.drawPolyline(pts.data(), pts.size(), kAccent, 1.6f);
+    r.popClip();
+
+    r.drawTextBody(fixed(hi, 2), render::rect(g.right - 54.0f, g.top, g.right, g.top + 13.0f),
+                  10.0f, {kHudMuted.r, kHudMuted.g, kHudMuted.b, 0.6f}, render::TextAlign::Left);
+    r.drawTextBody(fixed(lo, 2),
+                  render::rect(g.right - 54.0f, g.bottom - 13.0f, g.right, g.bottom),
+                  10.0f, {kHudMuted.r, kHudMuted.g, kHudMuted.b, 0.6f}, render::TextAlign::Left);
+}
+
+/**
+ * La sala di controllo per intero. Due blocchi e basta: in alto lo stato in
+ * parole (diagnosi, sorgente, esercizio), sotto i tre grafici del segnale
+ * elaborato. Il ritmo verticale del blocco di testo e' calcolato dalle righe
+ * che ci finiscono davvero, non fissato a mano: le righe cambiano di numero
+ * (registrazione, azione consigliata) e un'altezza fissa lascerebbe un buco o
+ * mangerebbe il grafico sotto.
+ */
+void drawControlRoom(render::Renderer& r, const app::ControlState& st,
+                     const control::ZoomController& zoom, const control::CrossfadeState& cf,
+                     const app::TelemetryHistory& history, double fps, diag::Code code,
+                     bool landing) {
+    const auto  win = r.size();
+    const float pad = 10.0f;
+    const float x0  = pad, x1 = win.width - pad;
+    if (x1 - x0 < 220.0f || win.height < 220.0f) return;
+
+    // ATTENZIONE, trappola gia' pagata due volte in questo programma:
+    // CTFramesetterCreateFrame compone SOLO le righe che stanno per intero nel
+    // riquadro. Un riquadro alto anche un solo punto meno dell'altezza di riga
+    // del font non produce testo tagliato a meta': non produce NIENTE, in
+    // silenzio. Le altezze qui sotto si MISURANO quindi con measureTextBody
+    // invece di stimarle da (corpo + qualche punto) - stima che aveva gia'
+    // fatto sparire l'intestazione e la riga dei tasti, viste vuote a schermo
+    // l'08/09/2026.
+    const auto lineH = [&](float size) { return r.measureTextBody(L"Hg", size).height; };
+
+    // --- intestazione: chi sono e a che ritmo sto disegnando ---
+    float y = pad;
+    {
+        const float h = lineH(12.0f);
+        r.drawTextBody(L"MIND ZOOM · SALA DI CONTROLLO",
+                      render::rect(x0, y, x1, y + h + 2.0f), 12.0f, kHudMuted,
+                      render::TextAlign::Left);
+        // Il renderer non ha TextAlign::Right: per allineare a destra si misura
+        // la larghezza e si posiziona il riquadro.
+        const std::wstring f  = fixed(fps, 0) + L" fps";
+        const float        fw = r.measureTextBody(f, 12.0f).width;
+        r.drawTextBody(f, render::rect(x1 - fw - 2.0f, y, x1, y + h + 2.0f), 12.0f,
+                      fps >= 50.0 ? kHudOk : (fps >= 25.0 ? kWarn : kBad), render::TextAlign::Left);
+        y += h + 8.0f;
+    }
+
+    // --- stato in parole: le righe che contano, e nient'altro ---
+    const auto row = [&](const std::wstring& s, render::Color c, float size) {
+        const float h = lineH(size);
+        r.drawTextBody(s, render::rect(x0, y, x1, y + h + 2.0f), size, c,
+                      render::TextAlign::Left);
+        y += h + 3.0f;
     };
-    const render::Rect rawBox  = next(0.26f);
-    const render::Rect procBox = next(0.13f);
-    const render::Rect specBox = next(0.15f);
-    drawWaveforms(r, g.wave.read(), rawBox, procBox, specBox);
 
-    const app::PlotTheme theme{kHudInk, kHudMuted, kAccent, kHudOk, kWarn, kBad,
-                               kHudHairline, kHudBg};
-    app::drawTelemetry(r, render::rect(gx, y, gr, win.height - 12.0f), history, st, t, theme);
+    if (st.replaying) {
+        row(L"Sorgente: sessione dimostrativa · " + g.replayName, kAccent, 13.0f);
+    } else {
+        const wchar_t* bleNames[] = {L"Fascia EEG scollegata", L"Ricerca della fascia in corso…",
+                                     L"Connessione alla fascia in corso…",
+                                     L"Fascia EEG collegata · dati in arrivo"};
+        const int bs = std::clamp(st.bleState, 0, 3);
+        row(std::wstring(L"Sorgente: ") + bleNames[bs],
+            bs == 3 ? kHudOk : (bs == 0 ? kBad : kWarn), 13.0f);
+    }
+
+    {
+        const auto& d = diag::info(code);
+        const render::Color c = d.severity == diag::Severity::Error ? kBad
+                              : d.severity == diag::Severity::Warn  ? kWarn
+                              : d.severity == diag::Severity::Info  ? kAccent
+                                                                    : kHudOk;
+        row(L"[" + toWide(d.code) + L"]  " + d.title, c, 13.0f);
+        if (d.action[0]) row(std::wstring(L"→ ") + d.action, kHudInk, 11.0f);
+    }
+
+    row(L"Fase: " + phaseInWords(st, landing, zoom.locked()) +
+            L"   ·   Ingrandimento " + std::to_wstring(cf.magnification) + L"×",
+        kHudMuted, 12.0f);
+
+    // Esercizio: quanto arriva e quanto se ne salva. E' la riga che dice se il
+    // collegamento sta reggendo, non se il segnale e' buono. Solo con la fascia
+    // vera: in riproduzione i contatori restano a zero per costruzione, e uno
+    // zero in una riga di statistiche si legge come un guasto.
+    if (!st.replaying) {
+        row(L"Pacchetti " + std::to_wstring(st.rawPackets) + L" grezzi / " +
+                std::to_wstring(st.validPackets) + L" validi   ·   " +
+                std::to_wstring(st.packetLen) + L" B / " + std::to_wstring(st.packetSamples) +
+                L" campioni",
+            kHudMuted, 12.0f);
+    }
+
+    // Qualita' e numeri del segnale elaborato, su una riga sola.
+    {
+        const wchar_t* faults[] = {L"OK", L"RETE 50 Hz", L"SATURO", L"PIATTO", L"NON E' UN SEGNALE"};
+        const int  fi  = std::clamp(st.signalFault, 0, 4);
+        const bool bad = st.signalFault != 0 || !st.contactOk;
+        const std::wstring qual = st.signalFault != 0
+                                      ? std::wstring(faults[fi])
+                                      : (!st.contactOk ? L"CONTATTO"
+                                                       : (st.artifact ? L"ARTEFATTO" : L"OK"));
+        row(L"Segnale " + qual + L"   ·   indice " + fixed(st.smoothedIndex, 3) +
+                L"   ·   velocità " + fixed(st.velocity, 3),
+            bad ? kBad : (st.artifact ? kWarn : kHudMuted), 12.0f);
+    }
+
+    if (st.recording) {
+        const double secs = static_cast<double>(st.recordedSamples) / config::kSampleRate;
+        row(L"Registra: " + fileNameOf(g.recorder.path()) + L"  (" + fixed(secs, 0) + L" s)",
+            kHudOk, 11.0f);
+    }
+
+    // --- i tre grafici, che si prendono tutto lo spazio che resta ---
+    const float keysH = lineH(11.0f) + 2.0f;
+    const float top   = y + 4.0f;
+    const float bottom = win.height - pad - keysH;
+    const float H = bottom - top;
+    if (H > 90.0f) {
+        const float gap = 6.0f;
+        const float h1 = H * 0.34f, h2 = H * 0.30f;
+        const app::WaveSnapshot wave = g.wave.read();
+        drawProcessedTrace(r, wave, render::rect(x0, top, x1, top + h1 - gap));
+        drawSpectrum(r, wave, render::rect(x0, top + h1, x1, top + h1 + h2 - gap));
+        drawIndexStrip(r, history, render::rect(x0, top + h1 + h2, x1, bottom - gap));
+    }
+
+    r.drawTextBody(L"H pannello · B bluetooth · R tenuto: riavvio · ESC esce",
+                  render::rect(x0, win.height - pad - keysH, x1, win.height - pad + 2.0f),
+                  11.0f, {kHudMuted.r, kHudMuted.g, kHudMuted.b, 0.55f}, render::TextAlign::Left);
 }
 
 /**
@@ -3732,14 +3850,14 @@ void frame(render::Renderer& r, double dt, const ProjectionState& proj) {
         pr.end();
 
         // La sala di controllo si ridisegna a un terzo del refresh (~20 Hz):
-        // i dati che mostra cambiano a 5 Hz, e le sue ~50 righe di testo a
-        // 60 Hz costavano meta' del fotogramma - la proiezione, che e' quella
-        // che il pubblico guarda, deve restare a refresh pieno. Saltando
-        // begin()/end() il layer della finestra tiene l'ultima immagine.
+        // i dati che mostra cambiano a 5 Hz, e disegnarla a 60 Hz costava meta'
+        // del fotogramma - la proiezione, che e' quella che il pubblico guarda,
+        // deve restare a refresh pieno. Saltando begin()/end() il layer della
+        // finestra tiene l'ultima immagine.
         static unsigned dashboardTick = 0;
         if (++dashboardTick % 3 != 0) return;
         r.begin(kPhotoBg);
-        drawOperatorDashboard(r, st, zoom, cf, g.tune, history, fps, code, showLanding);
+        drawControlRoom(r, st, zoom, cf, history, fps, code, showLanding);
     } else {
         // --- schermo unico: esperienza con il pannello operatore sopra ---
         r.begin(kPhotoBg);

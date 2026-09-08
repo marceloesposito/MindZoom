@@ -56,6 +56,26 @@ struct Options {
     int          hudLevel     = 0;
 };
 
+// Dimensione della finestra dell'operatore quando esiste la proiezione, cioe'
+// quando quella finestra non e' piu' l'esperienza ma solo la sala di controllo
+// (vedi drawControlRoom in experience.cpp).
+//
+// Ogni pixel si paga a ogni fotogramma: l'interfaccia si rasterizza in CPU su
+// una bitmap grande quanto la finestra per il fattore di scala dello schermo, e
+// quella bitmap viene azzerata, ridisegnata, copiata e caricata sul layer. Sul
+// Mac Intel della mostra la finestra da 1280x800 punti faceva 2560x1600 px
+// (4,1 Mpx, ~16 MB per fotogramma) e l'app disegnava a 23 fps; con due schermi
+// il costo si somma a quello della proiezione, che e' l'unica finestra che il
+// pubblico guarda. 700x500 punti fanno 1,4 Mpx sullo stesso schermo: tre volte
+// meno lavoro per una finestra che nessuno guarda per l'estetica.
+//
+// E' anche il minimo che regge il contenuto: i tre grafici del segnale
+// elaborato vogliono una larghezza che non schiacci i 40 bin dello spettro, e
+// il blocco di stato vuole le sue otto righe. Si puo' ingrandire (la finestra
+// resta ridimensionabile), non rimpicciolire sotto questa misura.
+constexpr CGFloat kControlRoomW = 700.0;
+constexpr CGFloat kControlRoomH = 500.0;
+
 Options parseOptions(int argc, char** argv) {
     Options o;
     for (int i = 1; i < argc; ++i) {
@@ -595,6 +615,19 @@ NSScreen* screenForDisplay(const mz::app::Display& d) {
         _projView = [[MZView alloc] initWithFrame:NSMakeRect(0, 0, 640, 480)];
         _projView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
         _projWindow.contentView = _projView;
+    }
+
+    // La proiezione esiste: la finestra principale non mostra piu' l'esperienza
+    // ma la sala di controllo, e allora si rimpicciolisce. Vedi kControlRoomW/H
+    // per il perche' - a due schermi i costi delle due finestre si sommano, e
+    // questa e' quella che nessuno guarda.
+    if (_projWindow) {
+        [_window setContentSize:NSMakeSize(kControlRoomW, kControlRoomH)];
+        // Sotto questa misura i grafici diventano illeggibili: si lascia
+        // ingrandire, non rimpicciolire.
+        [_window setContentMinSize:NSMakeSize(kControlRoomW, kControlRoomH)];
+        _window.title = @"Mind Zoom · sala di controllo";
+        [_window center];
     }
 
     // Quello che l'app LEGGE sta accanto all'eseguibile (assets, font: viaggiano
