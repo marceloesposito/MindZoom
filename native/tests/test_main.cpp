@@ -5,6 +5,7 @@
 #include "app/displays.hpp"
 #include "ble/recording.hpp"
 #include "config.hpp"
+#include "control/adaptive_band.hpp"
 #include "control/calibration.hpp"
 #include "control/tunables.hpp"
 #include "control/zoom.hpp"
@@ -75,11 +76,18 @@ void feedPhase(control::Calibration& cal, double centro, double rumore = 0.0) {
     }
 }
 
+/** Consuma la pausa Prepare (tempo, non campioni) finche' non passa da sola. */
+void passPrepare(control::Calibration& cal) {
+    const auto partenza = cal.stage();
+    for (int i = 0; i < 2000 && cal.stage() == partenza; ++i) cal.tick(kDt, true);
+}
+
 /** Porta una calibrazione a termine con estremi noti, senza passare dal segnale. */
 void calibrateTo(control::Calibration& cal, double lo, double hi) {
-    cal.start();          // -> CONCENTRATE
-    feedPhase(cal, hi);   // -> RELAX
-    feedPhase(cal, lo);   // -> Done oppure Failed
+    cal.start();          // -> CONCENTRATE (bersaglio che cresce, ora la prima fase)
+    feedPhase(cal, hi);   // registra absMax -> PREPARE
+    passPrepare(cal);     // -> RELAX
+    feedPhase(cal, lo);   // registra absMin -> Done oppure Failed
 }
 
 /**
@@ -202,7 +210,8 @@ void testCalibration() {
     check(cal.stage() == control::CalibStage::Intro, "si parte dalla schermata introduttiva");
 
     cal.start();
-    check(cal.stage() == control::CalibStage::Concentrate, "start -> fase di concentrazione");
+    check(cal.stage() == control::CalibStage::Concentrate,
+          "start -> fase di concentrazione (bersaglio che cresce, ora la prima)");
 
     // I primi campioni sono il transitorio di reazione al prompt: non contano.
     for (int i = 0; i < 4; ++i) { cal.sample(99.0); cal.tick(kDt, true); }
@@ -210,14 +219,18 @@ void testCalibration() {
           "quattro campioni non bastano a chiudere la fase");
 
     feedPhase(cal, 2.0);
+    check(cal.stage() == control::CalibStage::Prepare,
+          "raccolti abbastanza campioni indipendenti si passa alla pausa");
+
+    passPrepare(cal);
     check(cal.stage() == control::CalibStage::Relax,
-          "raccolti i campioni richiesti si passa al rilassamento");
+          "la pausa finisce da sola e si passa al rilassamento");
 
     feedPhase(cal, 1.0);
     check(cal.stage() == control::CalibStage::Done, "la calibrazione si chiude da sola");
     check(cal.valid(), "calibrazione valida");
-    nearly(cal.absMax(), 2.0, 1e-9, "absMax dal picco registrato (scarta il transitorio)");
-    nearly(cal.absMin(), 1.0, 1e-9, "absMin dal minimo registrato");
+    nearly(cal.absMax(), 2.0, 1e-9, "absMax dal picco registrato in concentrazione (scarta il transitorio)");
+    nearly(cal.absMin(), 1.0, 1e-9, "absMin dal minimo registrato in relax");
     nearly(cal.neutral(), 1.5, 1e-9, "neutro M = media dei due estremi");
     nearly(cal.localMax(), 1.5, 1e-9, "la banda locale parte dal neutro");
     nearly(cal.localMin(), 1.5, 1e-9, "banda locale inizializzata su M");
@@ -314,18 +327,26 @@ void testCalibrationStatistics() {
               "fasi sovrapposte -> separazione sotto la soglia");
     }
 
-    // La barra deve arrivare a 1 solo quando la fase si chiude davvero.
+    // La barra deve arrivare a 1 solo quando la fase si chiude davvero, senza
+    // scatti. Il ritmo e' garantito solo in Relax, che chiude a un bordo di
+    // ciclo del respiro guidato: Concentrate (ora la prima fase) non ha questo
+    // vincolo e puo' chiudersi in un solo tick appena il traguardo statistico
+    // e' pieno - e' la scelta di design, vedi Calibration::tick. Si porta
+    // quindi la calibrazione fino a Relax e si misura li'.
     {
         control::Calibration cal;
-        cal.start();
+        cal.start();            // -> CONCENTRATE
+        feedPhase(cal, 2.0);    // -> PREPARE
+        passPrepare(cal);       // -> RELAX
+
         double maxPrima = 0.0;
         const auto partenza = cal.stage();
         for (int i = 0; i < 2000 && cal.stage() == partenza; ++i) {
-            cal.sample(2.0);
+            cal.sample(1.0);
             maxPrima = std::max(maxPrima, cal.progress());
             cal.tick(kDt, true);
         }
-        check(cal.stage() == control::CalibStage::Relax, "la fase si e' chiusa");
+        check(cal.stage() == control::CalibStage::Done, "la fase (relax) si e' chiusa");
         check(maxPrima < 1.0 + 1e-9, "la barra non supera mai il 100%");
         check(maxPrima > 0.9, "la barra arriva quasi a fondo prima di chiudere");
     }
@@ -334,33 +355,160 @@ void testCalibrationStatistics() {
 void testCalibrationFailures() {
     group("5. Fallimenti di calibrazione");
 
+    // La modulazione debole non fa piu' fallire: lo span misurato viene
+    // allargato al minimo invece di rimandare la persona a ricominciare da
+    // capo - vedi Calibration::finalize.
     control::Calibration narrow;
     calibrateTo(narrow, 1.00, 1.01);   // span 0.01 su M~1 -> sotto kCalibMinSpanRel
-    check(narrow.stage() == control::CalibStage::Failed, "span troppo stretta -> fallimento");
-    check(!narrow.valid(), "calibrazione fallita non e' valida");
-    nearly(narrow.velocity(5.0, kDt, kTune), 0.0, 1e-12,
-           "calibrazione fallita -> velocita' nulla");
+    check(narrow.stage() == control::CalibStage::Done,
+          "span troppo stretta -> si chiude comunque, niente piu' fallimento bloccante");
+    check(narrow.valid(), "calibrazione valida anche con modulazione minima");
+    check(narrow.absMax() - narrow.absMin() > 0.01 + 1e-9,
+          "lo span misurato viene allargato al minimo, non lasciato com'era");
 
-    // Nessun campione: la rete di sicurezza deve chiudere, altrimenti in
-    // un'installazione pubblica la barra resterebbe ferma per sempre.
-    control::Calibration silent;
-    silent.start();
-    silent.tick(config::kCalibMaxPhaseS + 1.0, true);
-    check(silent.stage() == control::CalibStage::Failed,
-          "nessun campione utile entro il tempo massimo -> fallimento");
-
-    // Due fasi indistinguibili: la seconda non si chiude mai da sola e deve
-    // cadere nella rete di sicurezza con il messaggio giusto.
+    // Due fasi indistinguibili: non falliscono piu', si chiudono comunque col
+    // meglio raccolto entro il tempo massimo per fase.
     control::Calibration piatta;
-    piatta.start();
+    piatta.start();                     // -> CONCENTRATE
     feedPhase(piatta, 1.0, 0.4);
-    check(piatta.stage() == control::CalibStage::Relax, "prima fase chiusa");
+    passPrepare(piatta);
+    check(piatta.stage() == control::CalibStage::Relax, "prima fase chiusa, si passa al relax");
     for (int i = 0; i < 6000 && piatta.stage() == control::CalibStage::Relax; ++i) {
-        piatta.sample(1.0 + 0.4 * ((i % 7) / 7.0 - 0.5));
+        piatta.sample(1.0 + 0.4 * ((i % 7) / 7.0 - 0.5));   // stessa distribuzione: nessuna vera differenza
         piatta.tick(kDt, true);
     }
-    check(piatta.stage() == control::CalibStage::Failed,
-          "fasi non distinguibili -> fallimento invece di attesa infinita");
+    check(piatta.stage() == control::CalibStage::Done,
+          "fasi non distinguibili -> si chiude comunque invece di attesa infinita");
+    check(piatta.valid(), "anche con modulazione debole la calibrazione e' valida");
+
+    // L'UNICO fallimento rimasto: zero campioni utilizzabili per l'intera
+    // calibrazione, entrambe le fasi scadute per il tempo massimo.
+    control::Calibration silent;
+    silent.start();                                     // -> CONCENTRATE
+    silent.tick(config::kCalibMaxPhaseS + 1.0, true);    // timeout -> avanza comunque
+    check(silent.stage() == control::CalibStage::Prepare,
+          "concentrazione senza campioni: il tempo massimo fa avanzare, non fallire");
+    silent.tick(config::kCalibPrepareS + 1.0, true);     // pausa finita -> RELAX
+    silent.tick(config::kCalibMaxPhaseS + 1.0, true);    // timeout, ancora zero campioni
+    check(silent.stage() == control::CalibStage::Failed,
+          "zero campioni per l'intera calibrazione -> unico fallimento rimasto");
+    check(!silent.valid(), "calibrazione fallita non e' valida");
+    nearly(silent.velocity(5.0, kDt, kTune), 0.0, 1e-12,
+           "calibrazione fallita -> velocita' nulla");
+
+    // Il ripiego esplicito (tasto M): sostituisce gli estremi mai misurati con
+    // una banda generica, e resta distinguibile da una calibrazione vera.
+    silent.useFallbackProfile();
+    check(silent.stage() == control::CalibStage::Done, "il ripiego chiude la calibrazione");
+    check(silent.valid(), "il ripiego e' valido");
+    check(silent.usingFallback(), "il ripiego si dichiara come tale");
+    check(silent.absMax() > silent.absMin(), "il ripiego da' comunque una banda utilizzabile");
+}
+
+void testAdaptiveBand() {
+    group("19. Banda adattiva");
+
+    const auto campioniPer = [](double secondi) {
+        return static_cast<int>(secondi * config::kControlHz) + 4;
+    };
+
+    // Riscaldamento: prima di kAdaptiveWarmupS non si guida.
+    {
+        control::AdaptiveBand b;
+        for (int i = 0; i < 20; ++i) b.push(1.0 + 0.01 * i);
+        check(!b.ready(), "pochi campioni -> non ancora pronta");
+        check(b.warmupProgress() < 1.0, "il riscaldamento non e' finito");
+    }
+
+    // Su una distribuzione nota i percentili devono uscire dove ci si aspetta.
+    // Rampa uniforme 0..1: mediana ~0.5, p15 ~0.15, p85 ~0.85.
+    {
+        control::AdaptiveBand b;
+        const int n = campioniPer(config::kAdaptiveWarmupS + 5.0);
+        // Rampa uniforme sull'intero intervallo: i percentili sono allora
+        // noti esattamente. (Un `i % 101` sembrerebbe equivalente ma non lo e'
+        // se n non e' un multiplo di 101: l'ultimo tratto incompleto pesa
+        // due volte e sposta la mediana - preso in castagna proprio qui.)
+        for (int i = 0; i < n; ++i) b.push(static_cast<double>(i) / (n - 1));
+        check(b.ready(), "passato il riscaldamento -> pronta");
+        nearly(b.mid(), 0.5, 0.06, "il neutro e' la mediana");
+        nearly(b.lo(), config::kAdaptiveLoPercentile, 0.06, "estremo basso al percentile giusto");
+        nearly(b.hi(), config::kAdaptiveHiPercentile, 0.06, "estremo alto al percentile giusto");
+    }
+
+    // IL PUNTO DI TUTTO: il neutro cade al centro della distribuzione, non in
+    // un punto qualsiasi. E' il difetto della calibrazione a due fasi, dove
+    // misurato sul campo cadeva al 19°, 21°, 47° e 100° percentile.
+    // Distribuzione asimmetrica a coda destra, come l'indice di Pope vero.
+    {
+        control::AdaptiveBand b;
+        std::uint32_t seed = 12345;
+        std::vector<double> visti;
+        const int n = campioniPer(config::kAdaptiveWindowS);
+        for (int i = 0; i < n; ++i) {
+            seed = seed * 1664525u + 1013904223u;
+            const double u = ((seed >> 8) & 0xFFFF) / 65535.0;
+            const double c = 0.4 + 2.5 * u * u * u;   // coda destra marcata
+            visti.push_back(c);
+            b.push(c);
+        }
+        check(b.ready(), "distribuzione asimmetrica -> pronta");
+
+        // Percentile in cui cade il neutro, sugli stessi campioni della finestra.
+        std::sort(visti.begin(), visti.end());
+        const auto sotto = static_cast<double>(
+            std::lower_bound(visti.begin(), visti.end(), b.mid()) - visti.begin());
+        const double pct = 100.0 * sotto / static_cast<double>(visti.size());
+        check(pct > 40.0 && pct < 60.0,
+              "il neutro cade a meta' della distribuzione, non a un percentile qualsiasi");
+        check(b.lo() < b.mid() && b.mid() < b.hi(), "banda ordinata");
+    }
+
+    // La banda INSEGUE la deriva: e' l'altro difetto che deve risolvere.
+    // Misurato sul campo: l'indice sale del 36-64% durante una sessione
+    // mentre la banda calibrata resta ferma dov'era.
+    {
+        control::AdaptiveBand b;
+        const int n = campioniPer(config::kAdaptiveWindowS);
+        for (int i = 0; i < n; ++i) b.push(1.0);
+        const double primaM = b.mid();
+        for (int i = 0; i < n; ++i) b.push(2.0);   // il segnale raddoppia
+        nearly(b.mid(), 2.0, 0.05, "dopo una finestra intera il neutro ha seguito il segnale");
+        check(b.mid() > primaM + 0.9, "il neutro si e' spostato davvero");
+    }
+
+    // Segnale piatto: banda degenere, meglio non guidare affatto.
+    {
+        control::AdaptiveBand b;
+        const int n = campioniPer(config::kAdaptiveWarmupS + 5.0);
+        for (int i = 0; i < n; ++i) b.push(1.5);
+        check(!b.ready(), "segnale costante -> banda degenere, non pronta");
+    }
+
+    // Adozione da parte della legge di controllo: la banda entra, l'isteresi
+    // gia' maturata non viene buttata via.
+    {
+        control::Calibration cal;
+        cal.adoptBand(0.5, 1.5, 1.0);
+        check(cal.valid(), "adoptBand rende la calibrazione valida");
+        nearly(cal.neutral(), 1.0, 1e-9, "neutro adottato");
+        nearly(cal.localMax(), 1.0, 1e-9, "la banda locale parte dal neutro");
+
+        cal.velocity(1.4, kDt, kTune);            // porta il massimo locale in alto
+        const double localePrima = cal.localMax();
+        check(localePrima > 1.0, "il massimo locale si e' mosso");
+
+        cal.adoptBand(0.45, 1.55, 1.02);          // la banda si sposta un poco
+        nearly(cal.localMax(), localePrima, 1e-9,
+               "una nuova adozione NON azzera l'isteresi gia' maturata");
+
+        cal.adoptBand(0.5, 1.05, 0.8);            // ora gli estremi la stringono
+        check(cal.localMax() <= 1.05 + 1e-12,
+              "l'isteresi viene riportata dentro i nuovi estremi");
+
+        cal.adoptBand(2.0, 1.0, 1.5);             // degenere: si ignora
+        nearly(cal.absMin(), 0.5, 1e-9, "una banda degenere non sostituisce quella buona");
+    }
 }
 
 void testExtremaVelocity() {
@@ -683,7 +831,7 @@ void testRecording() {
     // lasciare un file vuoto, che poi ricompare nell'elenco e viene rifiutato.
     {
         const std::wstring empty = L"mz_test_vuota.mzr";
-        _wremove(empty.c_str());
+        ble::detail::removeFile(empty);
         {
             ble::Recorder rec;
             check(rec.arm(empty), "la registrazione si arma");
@@ -751,12 +899,12 @@ void testRecording() {
         check(!emptyRec.ok, "una registrazione senza campioni viene rifiutata");
         check(emptyRec.error != bad.error,
               "il motivo distingue 'vuota' da 'file estraneo'");
-        _wremove(headerOnly.c_str());
+        ble::detail::removeFile(headerOnly);
     }
 
-    _wremove(path.c_str());
-    _wremove(L"mz_test_vuota.mzr");
-    _wremove(L"mz_test_garbage.mzr");
+    ble::detail::removeFile(path);
+    ble::detail::removeFile(L"mz_test_vuota.mzr");
+    ble::detail::removeFile(L"mz_test_garbage.mzr");
 }
 
 /** Riempie la STFT con valori ADC dati da `gen`, finché non emette un frame. */
@@ -1180,6 +1328,7 @@ int main() {
     testCalibration();
     testCalibrationStatistics();
     testCalibrationFailures();
+    testAdaptiveBand();
     testExtremaVelocity();
     testSmoother();
     testZoom();

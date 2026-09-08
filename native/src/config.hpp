@@ -112,31 +112,196 @@ inline constexpr double kCalibMinSpanRel   = 0.08;  // TUNE - soglia di fallimen
 // fasi da n_eff campioni ciascuna e una separazione di d deviazioni standard,
 //     t = d / sqrt(2 / n_eff)   ->   n_eff = 2 * (t / d)^2
 // Per una differenza netta fra concentrazione e rilassamento (d = 1,5) e t = 4
-// servono 14 campioni; 20 lascia margine senza allungare troppo l'attesa.
-inline constexpr double kCalibTargetEffSamples = 20.0;
+// servono 14 campioni. Portato da 20 (il margine) a 14 (il minimo che regge il
+// confronto): misurato sul campo che con segnale reale in Relax n_eff satura
+// molto sotto 20 e non accumulandosi mai (per richiesta esplicita: i campioni
+// non si azzerano ne' calano) restava sotto soglia per sempre. Il margine si
+// paga in tempo di attesa, non in un'attesa infinita.
+inline constexpr double kCalibTargetEffSamples = 14.0;
 
-// Separazione minima fra le due fasi, in unita' di errore standard. Sotto
-// questa soglia le due fasi non sono distinguibili e la calibrazione fallisce:
-// e' lo stesso giudizio di kCalibMinSpanRel, ma espresso sul rumore misurato
-// invece che su una frazione fissa.
-inline constexpr double kCalibMinSeparationT = 4.0;
+// Sotto questa soglia di campioni GREZZI (non effettivi) un massimo storico di
+// separazione/campioni non si aggiorna: con pochissimi campioni la varianza si
+// stima male, e un picco statistico enorme puo' uscire per puro rumore, non
+// perche' le due fasi siano davvero separate. Misurato: senza questo minimo,
+// un segnale identico in media fra le due fasi "riusciva" dopo appena una
+// trentina di campioni per un picco casuale del t di Welch. Non e' un reset -
+// gli accumulatori continuano a crescere sempre - e' solo il momento da cui in
+// poi ci si puo' fidare di un massimo raggiunto.
+inline constexpr int kCalibMinRawForLatch = 40;
+
+// --- Respiro guidato (fase Relax, ora la prima): box breathing 4-4-4-4 ---
+// Ogni lato del box (inspira / trattieni / espira / trattieni) dura
+// kBreathBoxS; l'animazione dei cerchi concentrici e il traguardo della fase
+// sono entrambi derivati da qui, cosi' restano sincronizzati per costruzione
+// invece che per coincidenza fra due costanti separate.
+//
+// La fase NON si chiude a meta' respiro: si valuta solo a fine ciclo, se ha
+// gia' abbastanza campioni indipendenti bene, altrimenti se ne fa un altro -
+// vedi Calibration::tick(). Un solo ciclo (16s) basta quasi sempre, dato che
+// kCalibTargetEffSamples arriva prima; i cicli in piu' sono l'eccezione, non
+// la norma.
+inline constexpr double kBreathBoxS      = 4.0;
+inline constexpr double kBreathCycleS    = kBreathBoxS * 4.0;   // un ciclo intero, 16 s
+
+// --- Accoglienza e congedo (mostra senza operatore accanto) ---
+//
+// Fra la pagina d'ingresso e l'esperienza c'e' una schermata di istruzioni:
+// indossare la fascia, accenderla, respirare un ciclo di box breathing. Il
+// pulsante per proseguire resta SPENTO per kOnboardReadyS e poi si accende
+// con una dissolvenza: e' l'unico modo per far durare davvero le istruzioni
+// il tempo di leggerle e di fare almeno mezzo respiro guidato - chi ha fretta
+// preme INVIO appena entrato e si ritrova nell'esperienza senza fascia in
+// testa. Non e' un tempo di caricamento travestito: la banda adattiva si
+// scalda per conto suo, e questo tempo le va a favore.
+inline constexpr double kOnboardReadyS = 8.0;
+inline constexpr double kOnboardFadeS  = 0.8;    // dissolvenza del pulsante quando si abilita
+
+// Il promemoria per il riavvio compare solo a esperienza avviata da un po':
+// prima sarebbe un invito a interromperla appena cominciata.
+inline constexpr double kRestartHintAfterS = 50.0;
+
+// Quanto tenere premuto R per riavviare. Due secondi sono lunghi apposta: e'
+// un gesto che butta via la sessione, e l'anello di avanzamento attorno al
+// tasto ha bisogno di tempo per essere letto come "sto per fare qualcosa" e
+// non come un lampo. Condiviso con lo shell (shell_macos.mm), che e' chi
+// misura la pressione.
+inline constexpr double kRestartHoldS = 2.0;
+
+// Congedo dopo il riavvio: togliere e igienizzare la fascia per chi viene
+// dopo. Passa da solo - a fine esperienza nessuno ha voglia di premere un
+// altro tasto, e la persona ha le mani occupate dalla fascia.
+inline constexpr double kOffboardS = 8.0;
+
+// Schermata di istruzioni fra la prima e la seconda fase: ha la stessa forma
+// dell'introduzione, ma passa da sola invece di chiedere un tasto - a meta'
+// esercizio non si puo' pretendere che la persona tenga una mano sulla
+// tastiera, tanto meno mentre le si sta chiedendo di rilassarsi. Non fa parte
+// della misura.
+//
+// Salita da 2.5: quella era una pausa "di respiro" con due righe di testo,
+// non una schermata da leggere. Ora ci sono un titolo, un'istruzione e il
+// promemoria del passaggio successivo, e sotto i 6 secondi non si fa in tempo
+// a leggerli senza fretta - che e' l'opposto di come si dovrebbe arrivare a
+// una fase di rilassamento.
+inline constexpr double kCalibPrepareS = 6.5;
+
+// Separazione minima fra le due fasi, in unita' di errore standard, sotto la
+// quale si continua a raccogliere invece di accontentarsi (vedi
+// Calibration::tick - non e' piu' un fallimento, solo un traguardo che decide
+// quando fermarsi prima del tempo massimo per fase).
+//
+// Sceso da 4.0: quel valore veniva dal caso "differenza netta" (d = 1,5 dev.
+// standard fra le due fasi, vedi kCalibTargetEffSamples) ed e' un bersaglio
+// statisticamente pulito ma STRETTO per una persona media al primo tentativo,
+// con una fascia dry consumer - osservato sul campo: 5 calibrazioni su 5 mai
+// arrivate in fondo per questo motivo, con segnale altrimenti valido. 2.5
+// resta un requisito vero (p < 0.02, non rumore) ed e' protetto dal pavimento
+// di campioni grezzi kCalibMinRawForLatch: si e' scelto di essere raggiungibili
+// piuttosto che statisticamente ineccepibili, perche' una calibrazione che non
+// finisce mai non e' "rigorosa", e' inutilizzabile.
+inline constexpr double kCalibMinSeparationT = 2.5;
+
+// --- Banda adattiva (alternativa alla calibrazione a due fasi) ---
+//
+// Vedi control/adaptive_band.hpp per il perche'. Qui solo i tre numeri che la
+// governano.
+//
+// La finestra decide DUE cose in tensione fra loro, e va scelta guardando
+// entrambe - misurate rigiocando tre sessioni reali con finestre diverse
+// (sweep del 28/08, zoom out disponibile e spostamento netto):
+//
+//   finestra   out%          netto (in - out)
+//     20 s     34-40%        30 / 13 / -14      la banda insegue troppo:
+//     30 s     32-40%        43 / 33 /  -7      il netto va a zero, cioe' si
+//                                               oscilla sul posto invece di
+//                                               viaggiare in profondita'
+//     45 s     29-40%        61 / 54 /   3      <- scelta
+//     60 s     25-39%        79 / 70 /  11
+//    150 s     15-34%       134 /140 /  40      la banda resta indietro
+//                                               rispetto alla deriva: 81% del
+//                                               tempo sopra il neutro, che e'
+//                                               il difetto da cui si partiva
+//
+// Corta, il neutro sta sempre al centro ma il controllo "si abitua" a te in
+// pochi secondi e non si va da nessuna parte: concentrarsi a lungo smette di
+// portare avanti. Lunga, si viaggia ma torna il problema originale. 45 s
+// tengono lo zoom out disponibile circa un terzo del tempo (era un sesto con
+// la calibrazione) senza azzerare la possibilita' di andare in profondita'.
+inline constexpr double kAdaptiveWindowS = 45.0;
+
+// Prima di questo tempo di segnale utile il controllo resta fermo: e' il
+// "riscaldamento". Non e' una calibrazione mascherata - non si chiede niente
+// alla persona e non si puo' fallire - e' solo il tempo che serve perche' i
+// percentili significhino qualcosa. Meno della meta' della finestra, cosi' si
+// comincia presto e la banda si affina strada facendo.
+inline constexpr double kAdaptiveWarmupS = 20.0;
+
+// Estremi della banda, in percentili della distribuzione corrente. Non 0 e 100:
+// gli estremi assoluti su una distribuzione a code pesanti come questa sono
+// dominati da un singolo campione anomalo. 15/85 lasciano fuori le code e
+// tengono la parte in cui l'indice vive davvero.
+inline constexpr double kAdaptiveLoPercentile = 0.15;
+inline constexpr double kAdaptiveHiPercentile = 0.85;
+
+// --- Banda di ripiego, quando la calibrazione personale non e' mai partita ---
+//
+// Usata SOLO su richiesta esplicita dell'utente dalla schermata "calibrazione
+// non riuscita" per assenza totale di segnale (tasto M): non sostituisce la
+// misura personale, la sostituisce quando quella misura proprio non e' stata
+// possibile, cosi' l'esperienza resta raggiungibile anche con una fascia che
+// non ha mai dato un campione buono.
+//
+// ATTENZIONE alla portata reale di questi numeri: l'indice di Pope qui è
+// ESPLICITAMENTE adimensionale e dipendente dall'hardware (somma di magnitudo
+// FFT grezza su una derivazione bipolare specifica, non potenza normalizzata -
+// vedi il commento su popeIndex in dsp/stft.cpp). Non esiste in letteratura un
+// valore assoluto "medio" per QUESTA implementazione, quindi questi due numeri
+// non sono una citazione diretta di uno studio: kCalibFallbackNeutral e' ancorato
+// al valore che l'indice assume meccanicamente su rumore bianco con questi
+// stessi bin (vedi il commento su kMinAutocorr1 piu' sotto, ~2.1 - un punto di
+// partenza "nulla in particolare sta succedendo" verificabile nel codice,
+// invece che inventato), e la semi-ampiezza del ±50% riflette l'ordine di
+// grandezza con cui la letteratura sull'indice di engagement di Pope, Bogart e
+// Bartolome (1995) e i lavori successivi che lo usano riportano la RISALITA
+// relativa fra uno stato di riposo e uno di compito attivo (tipicamente un
+// fattore 1,5-3x, mai un numero assoluto portabile fra hardware diversi). E'
+// un ripiego onesto, non una misura: il controllo che ne risulta reagisce a
+// un bersaglio generico, non alla persona che lo indossa.
+inline constexpr double kCalibFallbackNeutral  = 2.1;
+inline constexpr double kCalibFallbackSpanFrac = 0.5;  // ±50% attorno al neutro
 
 // Primi campioni di ogni fase, scartati: e' il transitorio di reazione al
 // prompt, non lo stato che si vuole misurare. Sostituisce il vecchio lead-in a
 // tempo con lo stesso scopo.
 inline constexpr int    kCalibLeadInSamples = 8;
 
-// Rete di sicurezza: oltre questo tempo di segnale UTILE in una fase si smette
-// e si dichiara fallita. Senza, con una modulazione troppo debole la barra
-// resterebbe ferma per sempre - in un'installazione pubblica e' inaccettabile.
-inline constexpr double kCalibMaxPhaseS = 90.0;
+// Rete di sicurezza: oltre questo tempo di segnale UTILE in una fase si
+// procede comunque con quello che c'e' (vedi Calibration::tick/finalize - non
+// e' piu' un fallimento). Senza un limite, con una modulazione debole la
+// barra resterebbe ferma per sempre; in un'installazione pubblica, o solo per
+// una persona che sta provando l'esperienza, e' inaccettabile.
+//
+// Sceso da 90: era pensato come rete di sicurezza per un fallimento vero, che
+// giustificava un margine ampio prima di arrendersi. Ora che il tempo massimo
+// non fa piu' fallire ma solo accontentarsi del meglio raccolto, tenerlo cosi'
+// alto significa solo far aspettare fino a 3 minuti (due fasi + pausa) chi ha
+// un segnale debole prima di essere comunque lasciato passare. 45 dimezza
+// l'attesa peggiore senza toccare il caso comune, che chiude molto prima
+// perche' governato da kCalibTargetEffSamples/kCalibMinSeparationT, non da
+// questo tetto.
+inline constexpr double kCalibMaxPhaseS = 45.0;
 
 // --- Condizionamento dell'indice di Pope ---
 // L'indice è un rapporto fra potenze di banda: ha code pesanti, un singolo
 // campione anomalo passerebbe dritto in un EMA. Prima la mediana lo toglie,
 // poi due poli in cascata smussano senza lasciare spigoli.
 inline constexpr int    kIndexMedianTaps = 5;       // dispari; latenza (n-1)/2 campioni
-inline constexpr double kIndexTauS       = 0.90;    // TUNE - costante di tempo, non un alfa
+// Sceso da 0.90: a 5.33 Hz un polo a 0.9s produce una correlazione a ritardo 1
+// vicina a 1 (misurato sul campo: 0.9-0.99), che nella calibrazione conta come
+// "quasi lo stesso campione ripetuto" e affossa n_eff indipendentemente da
+// quanti campioni grezzi arrivano. Qui la mediana toglie gia' l'anomalo; il
+// polo serve solo a smussare, non a introdurre un ritardo di quasi un secondo.
+inline constexpr double kIndexTauS       = 0.40;    // TUNE - costante di tempo, non un alfa
 
 // --- Controllo a estremi ---
 inline constexpr double kExtremaGain     = 0.30;    // LIVE - velocità normalizzata massima
@@ -149,8 +314,10 @@ inline constexpr double kExtremaGain     = 0.30;    // LIVE - velocità normaliz
 inline constexpr double kLocalDecay      = 0.10;    // LIVE
 // Ampiezza della rampa di attivazione, in frazioni della semi-span M->estremo.
 // È il compromesso fra "fasico e faticoso" (piccolo) e "continuo e facile"
-// (grande): con 0 si torna esattamente al gradino di prima.
-inline constexpr double kLocalTolerance  = 0.18;    // LIVE
+// (grande): con 0 si torna esattamente al gradino di prima. Alzato da 0.18:
+// attivare la concentrazione risultava troppo faticoso, a scapito di
+// un'esperienza che deve restare stimolante.
+inline constexpr double kLocalTolerance  = 0.24;    // LIVE
 // Zona morta attorno al neutro, in frazioni di u: toglie la deriva a riposo
 // senza reintrodurre una soglia netta.
 inline constexpr double kNeutralDeadzone = 0.10;    // TUNE
@@ -161,6 +328,16 @@ inline constexpr double kNeutralDeadzone = 0.10;    // TUNE
 inline constexpr double kVelTauS       = 0.35;      // LIVE - a valle della legge di controllo
 inline constexpr double kVelRenderTauS = 0.12;      // TUNE - interpolazione 5.3 Hz -> 60 Hz
 inline constexpr double kVelStaleTauS  = 0.50;      // TUNE - decadimento a segnale assente
+
+// Smoothing elastico: uno stadio in PIU', a monte della legge di controllo,
+// applicato solo all'indice che guida lo zoom (non a quello che alimenta la
+// misura della banda adattiva/calibrazione, che deve restare fedele al
+// segnale vero). Tempo di risposta piu' lungo = un picco di concentrazione
+// isolato non muove piu' lo zoom, serve tenerla per davvero: e' quello che
+// rende facile restare fermi sul livello attuale. A due poli come
+// IndexSmoother, per lo stesso motivo (niente spigoli). Tasto E/MAIUSC+E,
+// LIVE come velTauS; 0 = disattivato (emaAlpha lo rende un passa-through).
+inline constexpr double kElasticTauS = 0.6;         // LIVE - vedi sopra
 
 // --- Rate control (INVARIATO rispetto al JS) ---
 inline constexpr double kZoomSpeedFactor = 0.003;
@@ -258,9 +435,17 @@ inline constexpr double kOutroTargetFocus = 1.0;
 inline constexpr double kOutroEasing      = 0.012; // TUNE
 
 // --- Rendering ---
-inline constexpr int kTotalImages = 12;            // /images/1..12.webp
+inline constexpr int kTotalImages = 8;             // /images/<kScaleLabels[i]>.webp
+// Stesse foto di prima (stesso soggetto, stessa sequenza di ingrandimento),
+// solo colorate e ridotte da 10 a 8: le due tagliate erano i frame 7 e 8, gli
+// unici due con lo stesso identico ingrandimento (2441 e 2441, nessun
+// dettaglio in piu' fra i due). Percio' i valori restano quelli gia' misurati
+// sulla barra di scala stampata nelle foto originali (lunghezza in pixel
+// della barra / larghezza dell'immagine, rispetto al valore in μm
+// dell'etichetta), non ristimati sulle nuove: e' la stessa scala vera di
+// prima, non una nuova plausibile.
 inline constexpr std::array<int, kTotalImages> kScaleLabels = {
-    32, 32, 100, 220, 700, 1500, 3000, 6000, 10000, 17000, 25000, 41000
+    19, 54, 111, 260, 605, 1302, 3125, 7129
 };
 
 // Larghezza di riferimento a cui si riferiscono gli ingrandimenti qui sopra.

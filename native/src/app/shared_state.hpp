@@ -4,9 +4,26 @@
 // (consumatore). Deve restare banalmente copiabile: viene pubblicato con un
 // double buffer atomico, quindi niente std::string e niente puntatori.
 
+#include "config.hpp"
+
 #include <cstdint>
 
 namespace mz::app {
+
+/**
+ * Ultimo secondo di segnale, in ordine di tempo, per i grafici del pannello
+ * operatore: i quattro canali fisici con la sola DC rimossa ("grezzo"), il
+ * canale bipolare filtrato in banda ("processato", e' quello su cui si
+ * calcola l'indice) e il suo spettro. Pubblicato dal thread DSP a ogni frame
+ * (~5 Hz) con lo stesso double buffer dello stato: ~6 KB copiati, niente
+ * allocazioni, nessun costo che si veda.
+ */
+struct WaveSnapshot {
+    float raw[config::kChannels][config::kStftWindow]{};
+    float processed[config::kStftWindow]{};
+    float spectrum[config::kStftBins]{};
+    std::uint64_t frame = 0;   // 0 = mai pubblicato
+};
 
 /** Comandi dalla UI al thread DSP. Uno alla volta, via atomica. */
 enum class Command : int {
@@ -15,7 +32,11 @@ enum class Command : int {
     RetryCalibration,
     // Riparte da zero: cambiata la sorgente del segnale, gli estremi calibrati
     // su un'altra sessione non valgono più.
-    RestartSession
+    RestartSession,
+    // Solo dalla schermata di calibrazione non riuscita (segnale mai
+    // arrivato): invece di ricominciare, usa una banda di ripiego non
+    // personale - vedi Calibration::useFallbackProfile.
+    UseFallbackProfile
 };
 
 /** Motivo di fallimento della calibrazione, per scegliere il testo da mostrare. */
@@ -35,13 +56,24 @@ struct ControlState {
 
     // --- calibrazione ---
     int    calibStage         = 0;    // control::CalibStage
-    double calibDisplayTarget = 0.5;  // altezza normalizzata del quadratino
-    bool   calibShowTarget    = false; // il quadratino si mostra solo in concentrazione
+    double calibDisplayTarget = 0.5;  // quanto e' pieno il cerchio interno, normalizzato
+    bool   calibShowTarget    = false; // il cerchio bersaglio si mostra solo in concentrazione
     double calibProgress      = 0.0;  // [0,1] verso la fine della fase
     double calibEffN          = 0.0;  // campioni INDIPENDENTI raccolti
     double calibSeparation    = 0.0;  // distanza fra le fasi, in errori standard
+    // Fase del respiro guidato in Relax, in [0, kBreathCycleS): vedi
+    // Calibration::breathPhase(). Ferma quando il segnale non e' utilizzabile.
+    double calibBreathPhase   = 0.0;
     bool   calibValid         = false;
     int    failReason         = 0;
+    // La banda attuale viene dal ripiego generico (tasto M da "non riuscita"),
+    // non da una misura personale - vedi Calibration::usingFallback().
+    bool   calibUsingFallback = false;
+
+    // --- banda adattiva (al posto della calibrazione a due fasi) ---
+    bool   adaptiveActive   = false;  // la sessione sta usando la banda adattiva
+    bool   adaptiveReady    = false;  // riscaldamento finito, il controllo guida
+    double adaptiveWarmup   = 0.0;    // [0,1] quanto manca alla fine del riscaldamento
 
     // --- banda di controllo ---
     double absMin   = 0.0;

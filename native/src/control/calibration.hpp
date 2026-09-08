@@ -18,17 +18,34 @@
 #include "control/tunables.hpp"
 #include "util/smoothing.hpp"
 
+#include <cmath>
 #include <cstddef>
 #include <limits>
 #include <string>
 
 namespace mz::control {
 
-/** Sotto-stati della scheda di calibrazione, interni alla fase di onboarding. */
+/**
+ * Sotto-stati della scheda di calibrazione, interni alla fase di onboarding.
+ *
+ * Si parte dalla concentrazione (bersaglio che cresce): e' il compito con un
+ * traguardo VISIBILE e un feedback immediato ("il cerchio si riempie"), il
+ * modo piu' diretto per capire cosa fare senza bisogno di sperimentare prima
+ * col respiro guidato. Relax viene subito dopo, ed e' li' che si misura anche
+ * la separazione dalla concentrazione appena fatta, perche' a quel punto
+ * concStats_ esiste gia'.
+ *
+ * Un solo tasto in tutta la calibrazione, quello che la avvia da Intro. La
+ * schermata che introduce la seconda fase (Prepare) ha la stessa forma di
+ * Intro ma non chiede niente: passa da sola. Chiedere un secondo tasto a meta'
+ * esercizio significherebbe che la persona deve tenere una mano sulla
+ * tastiera mentre le si chiede di rilassarsi.
+ */
 enum class CalibStage {
-    Intro,        // schermata introduttiva, attende il via
-    Concentrate,  // l'utente spinge il quadratino in alto (registra absMax)
-    Relax,        // lo lascia scendere (registra absMin)
+    Intro,        // schermata di istruzioni della prima fase, attende il via
+    Concentrate,  // il cerchio interno insegue quello bersaglio (registra absMax)
+    Prepare,      // schermata di istruzioni della seconda fase, passa da sola
+    Relax,        // respiro guidato a cerchi concentrici (registra absMin)
     Done,         // riuscita: breve conferma, poi si passa all'interazione
     Failed        // segnale assente o modulazione troppo debole -> Riprova
 };
@@ -99,14 +116,14 @@ double separationT(const PhaseStats& a, const PhaseStats& b) noexcept;
  * secondi possono contenere due campioni utili o ottanta.
  *
  * Uso tipico:
- *   start();                            // -> Concentrate
+ *   start();                            // -> Relax
  *   ogni frame: tick(dt, usable)        // avanza le fasi, misura il tempo utile
  *   ogni campione di controllo: sample(c, usable)
  *   quando stage()==Done: velocity(c, dt) guida lo zoom
  */
 class Calibration {
 public:
-    void start();                       // reset completo -> fase Concentrate
+    void start();                       // reset completo -> fase Relax
     void enterStage(CalibStage stage);  // reset degli accumulatori di fase
 
     /**
@@ -128,6 +145,33 @@ public:
 
     /** Chiude la calibrazione: valida la span e fissa gli estremi assoluti. */
     void finalize();
+
+    /**
+     * Ripiego esplicito: solo da CalibStage::Failed (assenza totale di
+     * segnale). Sostituisce gli estremi personali - mai misurati, qui - con
+     * una banda generica (config::kCalibFallbackNeutral/SpanFrac), cosi'
+     * l'esperienza resta raggiungibile anche senza una calibrazione riuscita.
+     * Non e' silenzioso: usingFallback() resta true finche' non si passa da
+     * una calibrazione vera (start()).
+     */
+    void useFallbackProfile();
+
+    /** true se la banda attuale viene dal ripiego, non da una misura vera. */
+    bool usingFallback() const noexcept { return usingFallback_; }
+
+    /**
+     * Adotta estremi calcolati da fuori (vedi control/adaptive_band.hpp), senza
+     * passare dalle due fasi. La LEGGE di controllo resta questa: cambia solo
+     * da dove vengono gli estremi, cosi' non esistono due leggi da tenere
+     * allineate.
+     *
+     * Va chiamata di continuo, non una volta sola: la banda adattiva si muove.
+     * Per questo NON tocca la banda locale (l'isteresi che rende il controllo
+     * fasico) se non per riportarla dentro i nuovi estremi - azzerarla a ogni
+     * chiamata la terrebbe incollata al neutro e il gate resterebbe chiuso per
+     * sempre.
+     */
+    void adoptBand(double lo, double hi, double neutral);
 
     /**
      * Velocità di zoom dalla concentrazione `c` relativa agli estremi.
@@ -152,18 +196,28 @@ public:
     double stageElapsed() const noexcept { return stageElapsed_; }
     const std::string& message() const noexcept { return message_; }
 
-    /** Altezza normalizzata [0,1] del quadratino: display auto-scalato sulla fase. */
+    /** Quanto e' pieno il cerchio interno [0,1]: auto-scalato sul range visto in fase. */
     double displayTarget() const noexcept { return displayTarget_; }
 
     /**
-     * Il quadratino va mostrato? Solo in concentrazione.
+     * Il cerchio bersaglio (fase Concentrate) va mostrato? Solo li'.
      *
-     * Nel rilassamento un indicatore che si muove è controproducente: dà un
-     * compito, e guardare come sta andando il proprio rilassamento è essa
-     * stessa un'attività attenzionale. Si misura peggio proprio ciò che si
-     * vuole misurare. In quella fase resta solo la barra di avanzamento.
+     * Nel rilassamento un indicatore pilotato dal segnale sarebbe
+     * controproducente: darebbe un compito, e guardare come sta andando il
+     * proprio rilassamento è essa stessa un'attività attenzionale. Si misura
+     * peggio proprio ciò che si vuole misurare. Li' il ritmo lo detta il
+     * respiro guidato, non l'indice - vedi breathPhase().
      */
     bool showTarget() const noexcept { return stage_ == CalibStage::Concentrate; }
+
+    /**
+     * Fase del respiro guidato, in [0, kBreathCycleS): 0 = inizio inspirazione.
+     * Utile solo durante Relax; ferma quando il segnale non e' utilizzabile,
+     * perche' e' la stessa lettura di tempo che decide quando la fase finisce
+     * (vedi tick()) - un orologio decorativo separato andrebbe fuori sincrono
+     * da quello che sta davvero succedendo.
+     */
+    double breathPhase() const noexcept { return std::fmod(stageElapsed_, config::kBreathCycleS); }
 
     /**
      * Quanto manca alla fine della fase, in [0,1].
@@ -176,6 +230,9 @@ public:
 
     /** Campioni indipendenti raccolti nella fase corrente. */
     double effectiveSamples() const noexcept;
+
+    /** Campioni grezzi (non pesati per autocorrelazione) raccolti in Relax. Diagnostica. */
+    int rawRelaxSamples() const noexcept { return relaxStats_.n; }
 
     /** Separazione fra le due fasi, in errori standard. 0 durante la prima. */
     double separation() const noexcept;
@@ -198,6 +255,29 @@ private:
     PhaseStats relaxStats_;
     int        phaseSamples_ = 0;   // conteggio grezzo, per il lead-in
 
+    // Massimo storico di campioni effettivi visti in Relax, da inizio fase:
+    // relaxStats_ non si azzera mai a meta' fase (i dati buoni non si buttano),
+    // ma effectiveN() dal vivo oscilla parecchio con segnale reale (rumore
+    // della stima di autocorrelazione) e puo' scendere sotto la soglia un
+    // attimo dopo averla superata. Guardare solo il valore istantaneo al bordo
+    // ciclo significherebbe perdere un traguardo gia' raggiunto per sfortuna di
+    // tempismo - osservato sul campo, calibrazione mai conclusa nonostante il
+    // segnale superasse la soglia piu' volte. Questo massimo e' anche cio' che
+    // effectiveSamples()/progress() mostrano per Relax: quello che l'utente
+    // vede non deve mai calare.
+    double     relaxBestEffN_ = 0.0;
+
+    // Stesso principio in Concentrate, dove pero' il traguardo e' una
+    // congiunzione di DUE condizioni dal vivo (campioni a sufficienza E
+    // separazione statistica dalla fase di Relax): richiedere che siano vere
+    // nello STESSO istante e' un bersaglio molto piu' stretto che richiederle
+    // vere ciascuna in un momento qualsiasi - osservato sul campo, effN
+    // superava piu' volte il traguardo (fino a 22 su 14) ma la calibrazione
+    // falliva comunque perche' la separazione non coincideva mai nello stesso
+    // tick. Due massimi storici indipendenti, stesso spirito di relaxBestEffN_.
+    double     concBestEffN_     = 0.0;
+    double     bestSeparation_   = 0.0;
+
     // Estremi della fase corrente, per l'auto-scala del display.
     double runMin_ =  std::numeric_limits<double>::infinity();
     double runMax_ = -std::numeric_limits<double>::infinity();
@@ -208,6 +288,7 @@ private:
     double trough_ =  std::numeric_limits<double>::infinity();
 
     // Banda di controllo derivata.
+    bool   usingFallback_ = false;
     bool   valid_   = false;
     double absMax_  = 0.0;
     double absMin_  = 0.0;

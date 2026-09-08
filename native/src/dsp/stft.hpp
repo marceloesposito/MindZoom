@@ -58,6 +58,13 @@ public:
     /** Campioni totali processati: sotto kN la finestra non è ancora piena. */
     std::uint64_t totalSamples() const noexcept { return totalSamples_; }
 
+    /**
+     * Posizione dell'ULTIMO campione scritto nei ring filtered()/dcFree()/adc():
+     * il piu' vecchio sta subito dopo, a (writeIndex+1) % kN. Serve a chi vuole
+     * la forma d'onda in ordine di tempo (il pannello operatore).
+     */
+    int writeIndex(int ch) const noexcept { return writeIndex_[static_cast<std::size_t>(ch)]; }
+
     void reset();
 
 private:

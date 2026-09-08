@@ -5,7 +5,12 @@
 // e' un rischio inutile. Il JPEG e' supportato da sempre e su immagini
 // fotografiche come queste costa quanto il WebP in spazio.
 //
-// Uso: mz_convert <cartella_ingresso> <cartella_uscita> <numero_immagini>
+// Uso: mz_convert <cartella_ingresso> <cartella_uscita>
+//
+// Converte ogni .webp trovato in <cartella_ingresso>, qualunque sia il nome
+// (l'ingrandimento, non piu' un indice 1..N): il numero di immagini e i loro
+// nomi si leggono dalla cartella stessa invece di doverli passare a mano e
+// tenerli sincronizzati con config::kTotalImages.
 
 #include <windows.h>
 #include <wincodec.h>
@@ -13,6 +18,7 @@
 
 #include <cstdio>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -66,14 +72,30 @@ bool convertOne(IWICImagingFactory* wic, const std::wstring& in, const std::wstr
 } // namespace
 
 int wmain(int argc, wchar_t** argv) {
-    if (argc < 4) {
-        std::printf("uso: mz_convert <ingresso> <uscita> <numero>\n");
+    if (argc < 3) {
+        std::printf("uso: mz_convert <ingresso> <uscita>\n");
         return 2;
     }
 
     const std::wstring inDir  = argv[1];
     const std::wstring outDir = argv[2];
-    const int count = _wtoi(argv[3]);
+
+    std::vector<std::wstring> baseNames;
+    {
+        WIN32_FIND_DATAW find{};
+        HANDLE h = FindFirstFileW((inDir + L"\\*.webp").c_str(), &find);
+        if (h != INVALID_HANDLE_VALUE) {
+            do {
+                std::wstring name = find.cFileName;
+                baseNames.push_back(name.substr(0, name.size() - 5)); // via ".webp"
+            } while (FindNextFileW(h, &find));
+            FindClose(h);
+        }
+    }
+    if (baseNames.empty()) {
+        std::printf("nessun .webp trovato in %ls\n", inDir.c_str());
+        return 1;
+    }
 
     if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return 1;
 
@@ -86,16 +108,16 @@ int wmain(int argc, wchar_t** argv) {
 
     CreateDirectoryW(outDir.c_str(), nullptr);
 
-    for (int i = 1; i <= count; ++i) {
-        const std::wstring in  = inDir + L"\\" + std::to_wstring(i) + L".webp";
-        const std::wstring out = outDir + L"\\" + std::to_wstring(i) + L".jpg";
+    for (const std::wstring& name : baseNames) {
+        const std::wstring in  = inDir + L"\\" + name + L".webp";
+        const std::wstring out = outDir + L"\\" + name + L".jpg";
         if (!convertOne(wic.get(), in, out)) {
-            std::printf("conversione fallita: %d.webp\n", i);
+            std::printf("conversione fallita: %ls.webp\n", name.c_str());
             return 1;
         }
-        std::printf("%d.webp -> %d.jpg\n", i, i);
+        std::printf("%ls.webp -> %ls.jpg\n", name.c_str(), name.c_str());
     }
 
-    std::printf("fatte %d immagini\n", count);
+    std::printf("fatte %zu immagini\n", baseNames.size());
     return 0;
 }

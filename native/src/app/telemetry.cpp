@@ -126,6 +126,8 @@ bool TelemetryHistory::append(const ControlState& st, double targetFocus, double
     s.artifact      = st.artifact;
     s.calibValid    = st.calibValid;
     s.locked        = locked;
+    s.calibEffN     = st.calibEffN;
+    s.autocorr1     = st.autocorr1;
 
     buf_[write_] = s;
     write_ = (write_ + 1) % kCapacity;
