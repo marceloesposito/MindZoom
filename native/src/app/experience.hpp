@@ -53,6 +53,16 @@ struct StartOptions {
 std::string debugLogPath();
 
 /**
+ * Scrive una riga nel log di diagnostica della sessione.
+ *
+ * Serve allo shell di piattaforma per annotare cose che solo lui sa - la
+ * geometria della finestra, il refresh dello schermo - accanto agli fps, che
+ * senza quei numeri non si sanno interpretare: 23 fps su una finestra piccola
+ * e 23 fps su un pannello Retina a tutto schermo sono due diagnosi diverse.
+ */
+void logLine(const std::string& msg);
+
+/**
  * Avvia BLE (o la riproduzione da file) e il thread DSP.
  * @return vuoto se e' andata, altrimenti un messaggio d'errore.
  */

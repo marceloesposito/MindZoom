@@ -3383,6 +3383,8 @@ void backToLanding() {
 
 std::string debugLogPath() { return g.debugLogPath; }
 
+void logLine(const std::string& msg) { g.pushBleLog(msg); }
+
 std::string start(const StartOptions& opt) {
     g.running.store(true, std::memory_order_release);
     g.quitRequested.store(false, std::memory_order_release);

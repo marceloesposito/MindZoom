@@ -18,6 +18,7 @@
 #include "config.hpp"
 #include "render/renderer.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -167,6 +168,10 @@ int reportScreens() {
     // Guida il ciclo di disegno agganciato al refresh reale dello schermo -
     // vedi il commento su -startDisplayLinkForScreen: per il perche' non e' un NSTimer.
     CVDisplayLinkRef         _displayLink;
+    // Contropressione del ciclo di disegno: vero da quando il display link ha
+    // accodato un fotogramma a quando il thread principale lo ha finito. Letto
+    // e scritto da due thread (CoreVideo e il principale), quindi atomico.
+    std::atomic<bool>        _frameInFlight;
     mz::render::GraphicsCore _graphics;
     mz::render::Renderer     _renderer;
     NSSize                   _lastSize;
@@ -389,6 +394,7 @@ NSScreen* screenForDisplay(const mz::app::Display& d) {
         _opt = opt;
         _candidate = -1;
         _projIndex = -1;
+        _frameInFlight.store(false, std::memory_order_relaxed);
     }
     return self;
 }
@@ -686,6 +692,26 @@ NSScreen* screenForDisplay(const mz::app::Display& d) {
                  object:nil];
     }
 
+    // Geometria vera, nel log: gli fps da soli non si sanno interpretare
+    // (vedi experience::logLine). Sono i PIXEL, non i punti, a decidere quanto
+    // costa un fotogramma - l'interfaccia si rasterizza in CPU su una bitmap
+    // grande quanto la finestra per il fattore di scala, e quella bitmap viene
+    // consegnata al layer ad ogni fotogramma.
+    {
+        NSScreen* sc = _window.screen ?: [NSScreen mainScreen];
+        const CGFloat backing = sc ? sc.backingScaleFactor : 1.0;
+        const NSSize pt = _view.bounds.size;
+        char buf[256];
+        std::snprintf(buf, sizeof buf,
+            "grafica: finestra %.0fx%.0f pt, scala %.1fx -> %.0fx%.0f px (%.1f Mpx) "
+            "| schermo %.0fx%.0f pt | proiezione=%d",
+            pt.width, pt.height, backing, pt.width * backing, pt.height * backing,
+            pt.width * backing * pt.height * backing / 1.0e6,
+            sc ? sc.frame.size.width : 0.0, sc ? sc.frame.size.height : 0.0,
+            _projWindow ? 1 : 0);
+        mz::app::experience::logLine(buf);
+    }
+
     _lastSize = NSZeroSize;
     _projLastSize = NSZeroSize;
     _lastTick = std::chrono::steady_clock::now();
@@ -726,11 +752,43 @@ NSScreen* screenForDisplay(const mz::app::Display& d) {
         CVDisplayLinkSetCurrentCGDisplay(_displayLink, screenNumber.unsignedIntValue);
     }
 
+    _frameInFlight.store(false, std::memory_order_relaxed);
+
     __weak MZAppDelegate* weakSelf = self;
     CVDisplayLinkSetOutputHandler(_displayLink, ^CVReturn(
         CVDisplayLinkRef, const CVTimeStamp*, const CVTimeStamp*, CVOptionFlags, CVOptionFlags*) {
+        MZAppDelegate* strong = weakSelf;
+        if (!strong) return kCVReturnSuccess;
+
+        // CONTROPRESSIONE. Senza, questo blocco accodava un fotogramma al
+        // thread principale a ogni refresh dello schermo, senza mai chiedersi
+        // se il precedente fosse finito. Finche' un fotogramma sta dentro i
+        // 16 ms non si nota; appena costa di piu' - e su un Mac lento costa di
+        // piu' - la coda del thread principale cresce di (refresh - fps)
+        // blocchi al secondo e non rientra mai. Il thread principale resta
+        // allora perennemente occupato a disegnare, e TUTTO il resto gli sta in
+        // fila dietro: eventi di tastiera, ordinamento delle finestre,
+        // toggleFullScreen:. Da fuori e' un'app che non risponde, con la
+        // rotella colorata, e un comando che arriva minuti dopo - misurato
+        // l'08/09/2026 sul Mac Intel della mostra, che disegnava a 23 fps
+        // contro un display link a 60: la coda si allungava di 37 blocchi al
+        // secondo, e il fullscreen chiesto all'avvio e' comparso dopo tre
+        // minuti.
+        //
+        // Saltare il giro invece di accodare costa un fotogramma perso, che a
+        // 23 fps non si vede: l'animazione e' tutta a tempo (dt da
+        // steady_clock in -tick:), quindi salta avanti da sola e non
+        // rallenta. Quello che si guadagna e' un run loop che torna a servire
+        // gli eventi.
+        if (strong->_frameInFlight.exchange(true, std::memory_order_acq_rel)) {
+            return kCVReturnSuccess;
+        }
+
         dispatch_async(dispatch_get_main_queue(), ^{
-            [weakSelf tick:nil];
+            MZAppDelegate* inner = weakSelf;
+            if (!inner) return;
+            [inner tick:nil];
+            inner->_frameInFlight.store(false, std::memory_order_release);
         });
         return kCVReturnSuccess;
     });
