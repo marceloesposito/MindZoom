@@ -160,10 +160,18 @@ FontFile loadFontFile(IDWriteFactory* dwrite, const std::wstring& path) {
 
     winrt::com_ptr<IDWriteFontCollection1> collection1;
     if (FAILED(f5->CreateFontCollectionFromFontSet(set.get(), collection1.put()))) return out;
-    if (collection1->GetFontFamilyCount() == 0) return out;
+
+    // Da qui in poi si lavora sull'interfaccia BASE, e non e' pignoleria:
+    // IDWriteFontCollection1 dichiara un proprio GetFontFamily che restituisce
+    // IDWriteFontFamily1, e in C++ quel nome NASCONDE l'omonimo della classe
+    // base invece di affiancarlo. Chiamandolo sul puntatore derivato con un
+    // IDWriteFontFamily** il codice non compila affatto.
+    auto collection = collection1.try_as<IDWriteFontCollection>();
+    if (!collection) return out;
+    if (collection->GetFontFamilyCount() == 0) return out;
 
     winrt::com_ptr<IDWriteFontFamily> family;
-    if (FAILED(collection1->GetFontFamily(0, family.put()))) return out;
+    if (FAILED(collection->GetFontFamily(0, family.put()))) return out;
 
     winrt::com_ptr<IDWriteLocalizedStrings> names;
     if (FAILED(family->GetFamilyNames(names.put()))) return out;
@@ -175,7 +183,7 @@ FontFile loadFontFile(IDWriteFactory* dwrite, const std::wstring& path) {
     if (FAILED(names->GetString(0, name.data(), length + 1))) return out;
     name.resize(length);
 
-    out.collection = collection1.try_as<IDWriteFontCollection>();
+    out.collection = std::move(collection);
     out.family     = std::move(name);
     return out;
 }
@@ -1029,14 +1037,23 @@ void drawLayoutCentered(ID2D1RenderTarget* target, IDWriteTextLayout* layout, Po
     DWRITE_TEXT_METRICS metrics{};
     if (FAILED(layout->GetMetrics(&metrics))) return;
 
+    // GetLineMetrics con un buffer da una riga sola torna
+    // E_NOT_SUFFICIENT_BUFFER se le righe sono di piu'. Qui non dovrebbe
+    // succedere - il layout e' costruito largo 100000 apposta perche' non vada
+    // a capo - ma trattarlo come un errore vorrebbe dire NON DISEGNARE
+    // NIENTE, e un'etichetta sparita si nota molto piu' di una centrata male.
+    // Si ripiega sulle metriche del blocco.
     DWRITE_LINE_METRICS line{};
     UINT32              lines = 0;
-    if (FAILED(layout->GetLineMetrics(&line, 1, &lines)) || lines == 0) return;
+    float               ascent  = metrics.height;
+    float               descent = 0.0f;
+    if (SUCCEEDED(layout->GetLineMetrics(&line, 1, &lines)) && lines > 0) {
+        ascent  = line.baseline;
+        descent = std::max(0.0f, line.height - line.baseline);
+    }
 
-    const float ascent  = line.baseline;
-    const float descent = std::max(0.0f, line.height - line.baseline);
-    const float top     = center.y + (ascent - descent) * 0.5f - ascent;
-    const float left    = center.x - metrics.width * 0.5f;
+    const float top  = center.y + (ascent - descent) * 0.5f - ascent;
+    const float left = center.x - metrics.width * 0.5f;
 
     brush->SetColor(toD2D(color));
     target->DrawTextLayout(D2D1::Point2F(left, top), layout, brush,

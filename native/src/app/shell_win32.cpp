@@ -176,6 +176,16 @@ void fatal(app::diag::Code code, const std::wstring& detail, const std::wstring&
     if (!debugDir.empty()) {
         app::platform::ensureDirectory(debugDir);
         const std::wstring path = debugDir + L"\\mindzoom-avvio.log";
+
+        // _wfopen e localtime fanno scattare C4996 ("usa la variante _s"). Le
+        // varianti sicure non danno niente in piu' qui - il file e' un
+        // artefatto nostro, e siamo su un thread solo, prima che ne parta
+        // qualunque altro - e cambiarle vorrebbe dire codice diverso da quello
+        // che gira su macOS a poche righe di distanza.
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
         if (FILE* f = _wfopen(path.c_str(), L"a")) {
             const std::time_t t = std::time(nullptr);
             char when[32]{};
@@ -183,6 +193,9 @@ void fatal(app::diag::Code code, const std::wstring& detail, const std::wstring&
             std::fprintf(f, "%s %s\n  %s\n", when, narrow(title).c_str(), narrow(body).c_str());
             std::fclose(f);
         }
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
     }
 
     MessageBoxW(g.opHwnd, body.c_str(), title.c_str(), MB_ICONERROR | MB_OK);
