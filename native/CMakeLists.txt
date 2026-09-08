@@ -53,7 +53,13 @@ endif()
 # arriva come LPSTR). NOMINMAX: senza, le macro min/max di windows.h rompono
 # std::min/std::max.
 if(WIN32)
-    add_compile_definitions(UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    # _USE_MATH_DEFINES: M_PI non e' standard C++, e' un'estensione POSIX. Sui
+    # sistemi Unix arriva comunque da <cmath>; su Windows (MSVC come mingw) c'e'
+    # solo se si chiede questa macro PRIMA di includere <cmath>, e siccome
+    # CMAKE_CXX_EXTENSIONS e' OFF non arriva per altre vie. Senza, non compilano
+    # ble/synthetic.hpp e app/experience.cpp - cioe' il segnale sintetico e la
+    # logica condivisa, due file che con macOS non davano problemi.
+    add_compile_definitions(UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN _USE_MATH_DEFINES)
 else()
     add_compile_options(-Wall -Wextra)
 endif()

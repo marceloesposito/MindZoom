@@ -24,6 +24,11 @@
 #endif
 
 #include <commdlg.h>
+// objbase.h: CoInitializeEx/CoUninitialize. Servono esplicitamente perche' il
+// progetto compila con WIN32_LEAN_AND_MEAN, che toglie proprio le API COM da
+// windows.h. Il renderer le tira dentro per conto suo (wincodec.h), ma qui
+// non arriverebbero.
+#include <objbase.h>
 #include <shellapi.h>
 #include <windowsx.h>   // GET_X_LPARAM / GET_Y_LPARAM
 
