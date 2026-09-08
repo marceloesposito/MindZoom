@@ -1,4 +1,28 @@
 cmake_minimum_required(VERSION 3.25)
+
+# macOS: si compila per entrambe le architetture, e per un macOS vecchio.
+# Vanno impostate PRIMA di project(), perche' CMake le usa gia' nelle prove del
+# compilatore; dopo, varrebbero solo per i target e non per la configurazione.
+#
+# ARCHITECTURES: senza questa riga clang produce solo la fetta della macchina
+# che compila (qui arm64), e un Mac Intel rifiuta il bundle con "the application
+# cannot be opened because it has an incorrect executable format" - accaduto sul
+# Mac di destinazione. Il binario universale contiene entrambe le fette: circa il
+# doppio di peso per un eseguibile da mezzo mega, niente rispetto agli asset.
+#
+# DEPLOYMENT_TARGET: senza, clang incide come minimo il macOS della macchina che
+# compila (qui 26.x, e nel bundle spedito c'era "minos 14.5"), e su un Mac piu'
+# vecchio l'app non parte comunque - con un secondo errore diverso, dopo aver
+# risolto il primo. 11.0 e' il valore che l'Info.plist gia' dichiara in
+# LSMinimumSystemVersion, ed e' il primo macOS su cui NSBluetoothAlwaysUsage-
+# Description e' obbligatoria: sotto, il BLE non funzionerebbe comunque.
+if(APPLE)
+    set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING
+        "Architetture del binario macOS (universale per default)")
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING
+        "macOS minimo supportato, da tenere allineato a macos/Info.plist")
+endif()
+
 project(MindZoomNative LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
