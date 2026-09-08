@@ -9,9 +9,21 @@
 // Win32 non viene fatto passare da questa classe (non fatto in questa
 // sessione: nessuna macchina Windows a disposizione per verificarlo).
 //
-// Scope di questa prima versione macOS: una sola finestra (operatore e
-// partecipante coincidono). La proiezione a due schermi - drawScreenPicker,
-// placeProjection - resta solo nel ramo Windows.
+// Doppio schermo: SCRITTO, MAI ESEGUITO con due monitor veri (stato all'08
+// settembre 2026). Il ramo macOS ha tutto - finestra di proiezione senza bordo
+// sopra ogni cosa, schermata di scelta del monitor, placeProjection, memoria
+// della scelta in schermo.txt invalidata se il layout cambia - e con due
+// schermi la finestra principale diventa la sala di controllo (drawControlRoom
+// in experience.cpp), rimpicciolita apposta perche' i pixel si pagano a ogni
+// fotogramma. Quello che manca e' la PROVA: finora e' stato esercitato solo
+// con --proiezione-finestra, cioe' la proiezione simulata in una finestra sullo
+// stesso schermo, che non tocca l'enumerazione dei monitor, la scelta, il
+// posizionamento ne' il comportamento della finestra senza bordo su un secondo
+// pannello. Fino a quella prova, qui non c'e' niente su cui contare.
+//
+// (Questo commento diceva fino a ieri che la proiezione a due schermi "resta
+// solo nel ramo Windows". Era scaduto: il codice c'era gia'. Un commento che
+// mente su una parte che sta per andare in mostra costa piu' di uno assente.)
 
 #include "app/displays.hpp"
 #include "app/shared_state.hpp"
