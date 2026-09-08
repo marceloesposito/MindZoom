@@ -2703,8 +2703,17 @@ float drawHud(render::Renderer& r, const app::ControlState& st, const control::Z
         line(L"Log: debug/" + fileNameOf(toWide(g.debugLogPath.c_str())), kHudMuted, 12.0f);
     }
 
-    line(L"H livello pannello   B Bluetooth   R tenuto premuto: riavvio completo   ESC/Q esci",
-         kKeys, 12.0f);
+    // Due righe da ~58 caratteri invece di una da ~105: a 12 punti una riga
+    // sola sfonderebbe i 600 punti di larghezza del pannello e andrebbe a capo,
+    // ma line() riserva l'altezza di UNA riga - e CoreText, quando la seconda
+    // non ci sta, non la accorcia: non la disegna affatto.
+    //
+    // P c'e' perche' adesso e' vero anche qui: dal 08/09 crea la finestra di
+    // proiezione se manca (vedi ensureProjectionWindow in shell_macos.mm),
+    // quindi funziona pure se l'app e' partita a schermo singolo - come fa il
+    // launcher della DEMO, che passa --schermo-singolo.
+    line(L"H livello pannello   P schermo di proiezione   B Bluetooth", kKeys, 12.0f);
+    line(L"R tenuto premuto: riavvio completo   ESC/Q esci", kKeys, 12.0f);
 
     if (level < 2) {
         // --- disegno (solo base) ---
@@ -3134,7 +3143,11 @@ void drawControlRoom(render::Renderer& r, const app::ControlState& st,
         drawIndexStrip(r, history, render::rect(x0, top + h1 + h2, x1, bottom - gap));
     }
 
-    r.drawTextBody(L"H pannello · B bluetooth · R tenuto: riavvio · ESC esce",
+    // NON "H pannello": con due schermi H non fa niente - il pannello esiste
+    // solo nel percorso a schermo singolo, e qui e' questa schermata ad averne
+    // preso il posto. P invece serve, ed e' l'unico modo per rimediare a una
+    // proiezione finita sullo schermo sbagliato senza riavviare.
+    r.drawTextBody(L"P schermo di proiezione · B bluetooth · R tenuto: riavvio · ESC esce",
                   render::rect(x0, win.height - pad - keysH, x1, win.height - pad + 2.0f),
                   11.0f, {kHudMuted.r, kHudMuted.g, kHudMuted.b, 0.55f}, render::TextAlign::Left);
 }

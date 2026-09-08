@@ -2,7 +2,7 @@ MIND ZOOM
 Una fotografia al microscopio elettronico, guidata dalle onde cerebrali
 
 
-DUE MODI DI AVVIARLA
+TRE MODI DI AVVIARLA
 --------------------
   1 - Avvia la MOSTRA.command    con la fascia EEG vera. È la modalità da
                                  usare in mostra: nessun pannello a schermo,
@@ -13,8 +13,31 @@ DUE MODI DI AVVIARLA
   2 - Avvia la DEMO.command      senza fascia. Rigioca una sessione registrata
                                  davvero (sessione-demo.mzr) e mostra
                                  l'esperienza completa così com'è andata.
+                                 ATTENZIONE: la DEMO forza lo SCHERMO SINGOLO,
+                                 quindi con essa il doppio monitor non si può
+                                 provare — l'app si comporta come se ce ne
+                                 fosse uno solo. Per quello c'è il terzo.
 
-Doppio clic su uno dei due. Se macOS si rifiuta di aprirli, vedi in fondo.
+  3 - Prova il DOPPIO SCHERMO    senza fascia, ma con la proiezione accesa:
+      .command                   serve a verificare prima dell'apertura che
+                                 con due monitor l'esperienza vada su quello
+                                 del pubblico e la sala di controllo su quello
+                                 dell'operatore.
+
+Doppio clic su uno dei tre. Se macOS si rifiuta di aprirli, vedi in fondo.
+
+
+DUE SCHERMI: TRE COSE DA SAPERE
+-------------------------------
+- Il secondo schermo va collegato PRIMA di aprire l'app. La finestra di
+  proiezione si crea all'avvio; collegare un monitor a programma già aperto non
+  la fa comparire da sola — ma il tasto P la crea al momento, senza riavviare.
+- Gli schermi devono essere in «schermo esteso», NON in «duplica»: duplicati
+  macOS ne vede uno solo e si ricade nel caso a monitor singolo.
+- La prima volta compare «SU QUALE SCHERMO PROIETTARE?» a coprire la finestra
+  dell'operatore: frecce per scegliere, INVIO per confermare. La scelta viene
+  ricordata. Se hai confermato lo schermo sbagliato — la proiezione copre la
+  sala di controllo — premi P e la domanda torna.
 
 
 IL GIRO DI UN VISITATORE

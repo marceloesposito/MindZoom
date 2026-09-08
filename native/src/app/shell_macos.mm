@@ -207,6 +207,7 @@ int reportScreens() {
     BOOL                          _choosing;
     int                           _candidate;
     int                           _projIndex;
+    BOOL                          _screenObserverOn;
 }
 
 - (instancetype)initWithOptions:(Options)opt;
@@ -214,8 +215,21 @@ int reportScreens() {
 /** true se il tasto e' stato consumato dalla scelta schermo (frecce/INVIO/cifre). */
 - (BOOL)handlePickerKeyCode:(unsigned short)keyCode chars:(NSString*)chars;
 
-/** Tasto P: riapre la scelta senza riavviare, solo se la proiezione esiste gia'. */
+/** Tasto P: riapre la scelta dello schermo di proiezione, creando la finestra
+ *  di proiezione se ancora non c'e'. */
 - (void)reopenPicker;
+
+/** La finestra di proiezione senza bordo, sopra ogni cosa. Solo la finestra:
+ *  il renderer si inizializza a parte, perche' all'avvio la grafica non e'
+ *  ancora pronta quando questa viene creata. */
+- (void)makeProjectionWindowBorderless;
+
+/** Rimpicciolisce la finestra principale a sala di controllo. */
+- (void)applyControlRoomGeometry;
+
+/** @return YES se dopo la chiamata la proiezione esiste ed e' disegnabile.
+ *  Creata al volo se mancava e gli schermi bastano. */
+- (BOOL)ensureProjectionWindow;
 
 /** Tasto F: la proiezione in finestra (--proiezione-finestra) a tutto schermo. */
 - (void)toggleProjectionFullScreen;
@@ -488,8 +502,80 @@ NSScreen* screenForDisplay(const mz::app::Display& d) {
     [_view.window makeFirstResponder:_view];
 }
 
+- (void)makeProjectionWindowBorderless {
+    // Senza bordo, senza titolo: canBecomeKeyWindow torna NO di default per
+    // una finestra borderless (vedi NSWindow), quindi non ruba mai il focus
+    // da sola - i tasti restano tutti alla finestra dell'operatore.
+    _projWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 640, 480)
+                                              styleMask:NSWindowStyleMaskBorderless
+                                                backing:NSBackingStoreBuffered
+                                                  defer:NO];
+    _projWindow.level = NSScreenSaverWindowLevel;   // "sopra tutto", equivalente a WS_EX_TOPMOST
+    _projWindow.hasShadow = NO;
+    _projWindow.ignoresMouseEvents = YES;
+    _projWindow.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces |
+                                     NSWindowCollectionBehaviorStationary;
+    _projView = [[MZView alloc] initWithFrame:NSMakeRect(0, 0, 640, 480)];
+    _projView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    _projWindow.contentView = _projView;
+}
+
+- (void)applyControlRoomGeometry {
+    // Vedi kControlRoomW/H: a due schermi i costi delle due finestre si
+    // sommano, e questa e' quella che nessuno guarda.
+    [_window setContentSize:NSMakeSize(kControlRoomW, kControlRoomH)];
+    // Sotto questa misura i grafici diventano illeggibili: si lascia
+    // ingrandire, non rimpicciolire.
+    [_window setContentMinSize:NSMakeSize(kControlRoomW, kControlRoomH)];
+    _window.title = @"Mind Zoom · sala di controllo";
+    [_window center];
+}
+
+/**
+ * La finestra di proiezione, creandola al momento se manca.
+ *
+ * Prima esisteva solo se all'avvio c'erano gia' due schermi: collegarne uno a
+ * programma aperto non la faceva comparire, e lanciando la DEMO - che passa
+ * --schermo-singolo di proposito - il doppio schermo era irraggiungibile senza
+ * riavviare. Era anche il motivo per cui il tasto P non poteva essere
+ * annunciato nel pannello operatore: li' non avrebbe fatto niente.
+ *
+ * Creandola qui, P diventa vero ovunque: se gli schermi ci sono, la proiezione
+ * si accende e parte la scelta. Il flag --schermo-singolo resta rispettato
+ * all'AVVIO; premere P e' una richiesta esplicita e successiva, e vince.
+ */
+- (BOOL)ensureProjectionWindow {
+    if (_projWindow) return YES;
+
+    _displays = mz::app::enumerateDisplays();
+    if (_displays.size() < 2) return NO;
+
+    [self makeProjectionWindowBorderless];
+
+    if (!_projRenderer.init(_graphics, (__bridge void*)_projView)) {
+        // Stessa politica dell'avvio: la proiezione e' un di piu', se non si
+        // inizializza si resta a schermo singolo invece di negare l'esperienza.
+        [_projWindow orderOut:nil];
+        _projWindow = nil;
+        _projView   = nil;
+        return NO;
+    }
+
+    [self applyControlRoomGeometry];
+
+    if (!_screenObserverOn) {
+        _screenObserverOn = YES;
+        [[NSNotificationCenter defaultCenter]
+            addObserver:self
+               selector:@selector(screenParametersChanged:)
+                   name:NSApplicationDidChangeScreenParametersNotification
+                 object:nil];
+    }
+    return YES;
+}
+
 - (void)reopenPicker {
-    if (_displays.size() < 2 || !_projWindow) return;
+    if (![self ensureProjectionWindow]) return;
     _choosing = YES;
     [self placeProjection:(_projIndex >= 0 ? _projIndex : 1)];
 }
@@ -600,35 +686,12 @@ NSScreen* screenForDisplay(const mz::app::Display& d) {
         [_projWindow orderFront:nil];
         [_projWindow makeFirstResponder:_projView];
     } else if (wantDual) {
-        // Senza bordo, senza titolo: canBecomeKeyWindow torna NO di default per
-        // una finestra borderless (vedi NSWindow), quindi non ruba mai il focus
-        // da sola - i tasti restano tutti alla finestra dell'operatore.
-        _projWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 640, 480)
-                                                    styleMask:NSWindowStyleMaskBorderless
-                                                      backing:NSBackingStoreBuffered
-                                                        defer:NO];
-        _projWindow.level = NSScreenSaverWindowLevel;   // "sopra tutto", equivalente a WS_EX_TOPMOST
-        _projWindow.hasShadow = NO;
-        _projWindow.ignoresMouseEvents = YES;
-        _projWindow.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces |
-                                         NSWindowCollectionBehaviorStationary;
-        _projView = [[MZView alloc] initWithFrame:NSMakeRect(0, 0, 640, 480)];
-        _projView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-        _projWindow.contentView = _projView;
+        [self makeProjectionWindowBorderless];
     }
 
     // La proiezione esiste: la finestra principale non mostra piu' l'esperienza
-    // ma la sala di controllo, e allora si rimpicciolisce. Vedi kControlRoomW/H
-    // per il perche' - a due schermi i costi delle due finestre si sommano, e
-    // questa e' quella che nessuno guarda.
-    if (_projWindow) {
-        [_window setContentSize:NSMakeSize(kControlRoomW, kControlRoomH)];
-        // Sotto questa misura i grafici diventano illeggibili: si lascia
-        // ingrandire, non rimpicciolire.
-        [_window setContentMinSize:NSMakeSize(kControlRoomW, kControlRoomH)];
-        _window.title = @"Mind Zoom · sala di controllo";
-        [_window center];
-    }
+    // ma la sala di controllo, e allora si rimpicciolisce.
+    if (_projWindow) [self applyControlRoomGeometry];
 
     // Quello che l'app LEGGE sta accanto all'eseguibile (assets, font: viaggiano
     // col bundle); quello che SCRIVE sta in ~/Library/Application Support/MindZoom.
@@ -718,6 +781,7 @@ NSScreen* screenForDisplay(const mz::app::Display& d) {
             _choosing = YES;
             [self placeProjection:1];
         }
+        _screenObserverOn = YES;
         [[NSNotificationCenter defaultCenter]
             addObserver:self
                selector:@selector(screenParametersChanged:)
