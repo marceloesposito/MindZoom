@@ -4,6 +4,10 @@ Scritto l'8 settembre 2026, insieme al porto. **Niente di quanto segue è stato
 eseguito su una macchina Windows**: il codice è stato scritto su un Mac, dove
 MSVC non c'è. Leggilo come istruzioni, non come resoconto.
 
+Il codice però **è stato compilato**, in croce dal Mac con mingw-w64 — tutto
+tranne il BLE. Vedi "Controllare senza un PC Windows" in fondo: è la cosa da
+rifare dopo ogni modifica finché la macchina vera non arriva.
+
 ## In breve
 
 1. Copia la cartella del progetto sul PC Windows (tutta: serve anche `images/`,
@@ -54,25 +58,32 @@ lanciarlo a mano dopo ogni modifica alla grafica.
 
 ## Cosa aspettarsi al primo tentativo
 
-Il ramo Windows non veniva compilato dal 16 agosto, e la parte nuova non è
-stata compilata mai. Metti in conto **mezza giornata di errori del
-compilatore**, quasi tutti banali — un `#include` mancante, una conversione che
-MSVC rifiuta e clang perdona, un nome di interfaccia sbagliato.
+La stima iniziale era **mezza giornata di errori del compilatore**. Dopo il
+controllo incrociato con mingw-w64 (sotto) è più ragionevole **un'ora o due**:
+tutto il ramo Windows tranne il BLE compila e linka già.
+
+I due errori che il controllo ha trovato erano reali e avrebbero fermato la
+prima compilazione — `<objbase.h>` mancante e `M_PI` non definito — e sono già
+corretti. Quello che resta da scoprire è la differenza fra gli header di
+mingw-w64 e il vero Windows SDK, che c'è ma è piccola.
 
 I punti dove è più probabile che si rompa, in ordine:
 
-1. **`renderer_win32.cpp`, caricamento dei font.** Usa `IDWriteFactory5` e
-   `IDWriteFontSetBuilder1` (`dwrite_3.h`). Se il Windows SDK è vecchio quelle
-   interfacce non ci sono e non compila. Se non compila, la via d'uscita rapida
-   è far tornare `FontFile` sempre vuoto: i due font impacchettati non si
-   caricano e il testo esce nel font di sistema — brutto ma funzionante, e
-   sblocca tutto il resto.
+1. **`ble/muse.cpp`.** È l'unico file che il controllo incrociato **non tocca**:
+   usa C++/WinRT, che è di MSVC. Non è codice nuovo — non lo modifico dal 16
+   agosto, e prima compilava — ma è anche l'unico su cui non ho alcuna
+   evidenza fresca.
 
-2. **`shell_win32.cpp`, i tipi Win32.** Portato riga per riga da Cocoa: gli
-   errori qui sono di traduzione, non di logica.
+2. **`renderer_win32.cpp`, caricamento dei font.** Usa `IDWriteFactory5` e
+   `IDWriteFontSetBuilder1` (`dwrite_3.h`). Compila con gli header di mingw; se
+   il Windows SDK installato è vecchio quelle interfacce potrebbero non
+   esserci. In quel caso la via d'uscita rapida è far tornare `FontFile`
+   sempre vuoto: i font impacchettati non si caricano e il testo esce in
+   quello di sistema — brutto ma funzionante, e sblocca tutto il resto.
 
-3. **`experience.cpp`**, che MSVC non ha mai visto. Non ha `#ifdef` di sistema
-   né header POSIX — verificato — ma è il file più grosso del progetto.
+3. **Differenze fra compilatori.** MSVC è più severo di GCC su certe
+   conversioni, e con `/W4` dirà cose che mingw tace. Sono avvisi, non errori:
+   il progetto non compila con `/WX`.
 
 ## Cosa va guardato a schermo, non solo compilato
 
@@ -158,3 +169,55 @@ src/
 con logica e shell nello stesso file. Resta come riferimento durante il porto,
 con un avviso in testa. Se stai per modificarlo, il file giusto è quasi
 sicuramente `experience.cpp` o `shell_win32.cpp`.
+
+## Controllare senza un PC Windows
+
+Finché la macchina vera non arriva, si può compilare in croce da un Mac con
+**mingw-w64**. Non sostituisce MSVC, ma prende la stragrande maggioranza degli
+errori — quelli che altrimenti si scoprono uno alla volta la prima mattina
+davanti al PC.
+
+```sh
+brew install mingw-w64
+cd native
+./tools/verifica-windows.sh
+```
+
+Lo script compila ogni sorgente del ramo Windows e prova il link. Cosa copre:
+
+| | |
+|---|---|
+| Compila | `renderer_win32`, `shell_win32`, `crash_win32`, `platform_win32`, `experience`, `telemetry`, `displays`, `stft`, `gating`, `calibration`, `zoom` |
+| Linka | tutto quanto sopra, con un BLE finto: verifica che non manchi nessuna definizione |
+| **Non** copre | `ble/muse.cpp` — C++/WinRT è di MSVC e mingw non ce l'ha |
+
+### Le due finzioni, e perché non falsano il risultato
+
+Lo script si appoggia a due sostituti, che stanno in `tools/verifica-windows/`
+e **non entrano mai nella build vera**:
+
+- **`winrt/base.h`**, una sessantina di righe che riproducono la sola
+  `winrt::com_ptr` con le firme identiche a quelle vere (`put`, `get`,
+  `try_as`, conversione a `bool`). Serve perché C++/WinRT non c'è in mingw. Se
+  il codice usa `com_ptr` in un modo che non compila, non compila anche qui.
+- **un `MuseClient` finto**, che definisce i simboli e basta. Il selftest non
+  usa la fascia, quindi non manca niente al disegno.
+
+Il limite vero, da tenere presente: gli header di mingw-w64 non sono quelli
+del Windows SDK. Sono completi (`dwrite_3.h` incluso), ma qualche differenza
+c'è. Un errore che esce qui è quasi certamente vero; **l'assenza di errori non
+è una garanzia**, è un forte indizio.
+
+### E con Wine?
+
+Tentato, non riuscito. Il link produce un `MindZoom.exe` vero, e in teoria
+`MindZoom.exe --selftest` sotto Wine direbbe se la catena Direct2D disegna
+davvero. Ma tutti i pacchetti Wine di Homebrew sono **disabilitati dal 1
+settembre 2026** perché non passano il controllo Gatekeeper di macOS; resterebbe
+solo scaricare il `.pkg` da winehq.org aggirando Gatekeeper a mano.
+
+Vale la pena saperlo prima di provarci: l'implementazione di Direct2D in Wine è
+parziale, e quella di DirectWrite lo è di più — `IDWriteFactory5` e il font set
+builder molto probabilmente non ci sono. Quindi **un successo direbbe qualcosa,
+un fallimento no**: non si saprebbe distinguere un difetto nostro da un pezzo
+di Wine che manca. È un controllo asimmetrico, e per questo non è la priorità.
