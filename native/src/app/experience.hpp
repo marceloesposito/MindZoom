@@ -129,4 +129,19 @@ struct ProjectionState {
  */
 void frame(render::Renderer& r, double dt, const ProjectionState& proj = {});
 
+/**
+ * Un fotogramma che attraversa OGNI percorso di disegno, su una finestra mai
+ * mostrata: valida la catena grafica senza fascia, senza schermo e senza
+ * qualcuno che guardi.
+ *
+ * Non richiede start(): non tocca il DSP ne' i thread, costruisce da se' lo
+ * stato finto che gli serve. E' il controllo che l'impacchettamento esegue
+ * prima di produrre l'archivio, e il suo valore e' che tocca TUTTE le
+ * primitive del Renderer - lettering, sfumature, sfocature, ritagli a forma
+ * libera, archi. Un backend a cui ne manca una qui si vede subito.
+ *
+ * @return true se il fotogramma e' stato disegnato per intero.
+ */
+bool selfTest(render::Renderer& r);
+
 } // namespace mz::app::experience

@@ -144,20 +144,21 @@ endif()
 
 # L'applicazione.
 #
-# ATTENZIONE, unico pezzo ancora non portato: src/app/main.cpp contiene sia la
-# logica dell'esperienza (stato, disegno, tasti) sia lo shell Win32 (finestre,
-# message loop, dialoghi). Va diviso in app/experience.cpp portabile e
-# app/shell_win32.cpp / app/shell_macos.mm prima che il target macOS possa
-# esistere. Tutto il resto - core, DSP, controllo, rendering, schermi, BLE - e'
-# gia' diviso e ha entrambi i backend.
+# Le due piattaforme condividono app/experience.cpp (stato, DSP, disegno) e si
+# differenziano nel solo shell: finestre, ciclo di messaggi, tasti. Prima non
+# era cosi' - src/app/main.cpp teneva logica e shell Win32 nello stesso file, e
+# il ramo macOS ne era la copia divergente. main.cpp resta nel repo come
+# riferimento storico ma NON viene piu' compilato: vedi ARCHEOLOGIA.md.
 if(WIN32)
     # WIN32 = sottosistema grafico, niente finestra di console.
     # shell32: CommandLineToArgvW e SHGetKnownFolderPath.
     add_executable(mz_app WIN32
-        src/app/main.cpp
+        src/app/experience.cpp
         src/app/telemetry.cpp
+        src/app/crash_win32.cpp
+        src/app/shell_win32.cpp
     )
-    # comdlg32: la finestra di scelta della registrazione (tasto P).
+    # comdlg32: la finestra di scelta della registrazione.
     target_link_libraries(mz_app PRIVATE mz_ble mz_render mz_platform shlwapi comdlg32)
     set_target_properties(mz_app PROPERTIES OUTPUT_NAME "MindZoom")
 
@@ -167,6 +168,26 @@ if(WIN32)
                 "${CMAKE_CURRENT_SOURCE_DIR}/../images"
                 "$<TARGET_FILE_DIR:mz_app>/assets"
         COMMENT "Copia delle immagini in assets/")
+
+    # Gli stessi due font del bundle macOS, in <exe>\fonts, dove il renderer li
+    # registra presso DirectWrite con GraphicsCore::loadFonts: Manrope per il
+    # corpo del testo e League Gothic per il lettering delle intestazioni
+    # (identita' Biodetails, vedi design/biodetails/IDENTITA-VISIVA.md).
+    #
+    # Il terzo font, quello d'accento, su macOS e' Iowan Old Style ed e' di
+    # SISTEMA; su Windows non esiste e non e' ridistribuibile, quindi il
+    # renderer sceglie il piu' vicino fra quelli presenti (Constantia, poi
+    # Georgia) - vedi pickAccentFamily in renderer_win32.cpp. E' l'unico punto
+    # in cui le due piattaforme mostrano per forza qualcosa di diverso.
+    add_custom_command(TARGET mz_app POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:mz_app>/fonts"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/Manrope-Variable.ttf"
+                "$<TARGET_FILE_DIR:mz_app>/fonts/Manrope-Variable.ttf"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/LeagueGothic-Variable.ttf"
+                "$<TARGET_FILE_DIR:mz_app>/fonts/LeagueGothic-Variable.ttf"
+        COMMENT "Copia dei font in fonts/")
 elseif(APPLE)
     # app/experience.cpp e' l'estrazione portabile della logica di main.cpp
     # (DSP, calibrazione, disegno); vedi il commento in app/experience.hpp per

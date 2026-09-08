@@ -1,3 +1,23 @@
+// ATTENZIONE: QUESTO FILE NON VIENE PIU' COMPILATO. NON MODIFICARLO.
+//
+// E' la vecchia applicazione Windows, logica e shell nello stesso file. Dall'8
+// settembre 2026 il ramo Windows usa app/experience.cpp (la logica, condivisa
+// con macOS) piu' app/shell_win32.cpp (finestre, tasti, ciclo di messaggi), e
+// il CMakeLists non nomina piu' main.cpp.
+//
+// Resta qui come riferimento durante il porto - il codice di shell_win32.cpp e'
+// stato portato da qui, e certe scelte (DPI, WM_DISPLAYCHANGE, il dialogo di
+// scelta della registrazione) sono documentate meglio in questi commenti che
+// altrove. Va cancellato quando il porto e' stato provato su una macchina
+// Windows vera e non serve piu' il confronto.
+//
+// Il rischio che questo avviso esiste per evitare: correggere un difetto qui
+// dentro, vederlo "risolto" nel file, e scoprire in mostra che l'eseguibile non
+// e' mai passato da questa riga. Se stai per cambiare qualcosa qui, quasi
+// sicuramente il file giusto e' app/experience.cpp o app/shell_win32.cpp.
+//
+// ---------------------------------------------------------------------------
+//
 // Mind Zoom - applicazione nativa Windows.
 //
 // Tre thread, come da architettura del brief:

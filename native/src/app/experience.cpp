@@ -341,7 +341,17 @@ struct Shared {
             // Il log deve leggersi da solo, senza il programma accanto: la
             // legenda dei codici sta in testa, e ogni riga [MZ-...] porta
             // comunque il proprio testo in chiaro.
-            debugLog << "=== Mind Zoom - log di diagnostica (macOS) ===\n"
+            // La piattaforma nel titolo non e' decorazione: i log arrivano per
+            // posta staccati dal computer che li ha prodotti, e la prima
+            // domanda davanti a un problema e' su quale dei due girava.
+#if defined(_WIN32)
+            constexpr const char* kPlatform = "Windows";
+#elif defined(__APPLE__)
+            constexpr const char* kPlatform = "macOS";
+#else
+            constexpr const char* kPlatform = "?";
+#endif
+            debugLog << "=== Mind Zoom - log di diagnostica (" << kPlatform << ") ===\n"
                      << "build: " << __DATE__ << " " << __TIME__ << "\n"
                      << "kLocalTolerance=" << config::kLocalTolerance
                      << " kSampleRate=" << config::kSampleRate
@@ -3902,6 +3912,82 @@ void frame(render::Renderer& r, double dt, const ProjectionState& proj) {
     }
 
     r.end();
+}
+
+bool selfTest(render::Renderer& r) {
+    // Un fotogramma che attraversa OGNI percorso di disegno, su una finestra
+    // mai mostrata. Serve a validare la catena grafica senza fascia, senza
+    // schermo e senza qualcuno che guardi: e' il controllo che package.bat fa
+    // prima di produrre l'archivio.
+    //
+    // Il valore vero e' che tocca tutte le primitive del Renderer - lettering,
+    // sfumature, sfocature, ritagli a forma libera, archi. Un backend a cui ne
+    // manca una, o che ne sbaglia una, qui si vede subito invece che in
+    // mostra. E' esattamente il caso del porto Windows, dove il backend
+    // Direct2D e' stato riscritto da zero contro quello macOS.
+    app::ControlState st;
+    st.calibStage      = static_cast<int>(control::CalibStage::Concentrate);
+    st.calibProgress   = 0.45;
+    st.calibShowTarget = true;
+    st.calibEffN       = 9.0;
+    st.calibValid      = true;
+    st.absMin  = 0.5; st.absMax  = 1.5; st.neutral = 1.0;
+    st.localMin = 0.9; st.localMax = 1.2;
+
+    // Un po' di storia finta: senza, le tracce non verrebbero disegnate e il
+    // percorso delle spezzate resterebbe non verificato.
+    app::TelemetryHistory history;
+    for (int i = 0; i < 200; ++i) {
+        st.frames        = static_cast<std::uint64_t>(i) + 1;
+        st.smoothedIndex = 1.0 + 0.3 * std::sin(i * 0.1);
+        st.rawIndex      = st.smoothedIndex + 0.05;
+        st.velocity      = 0.2 * std::sin(i * 0.07);
+        st.maxAbsRaw     = 80.0 + 20.0 * std::sin(i * 0.05);
+        history.append(st, 0.4, 0.38, i % 40 < 5);
+    }
+
+    // Uno schermo finto, per la scelta del monitor: e' un percorso di disegno
+    // come gli altri e va esercitato anche su una macchina con un solo
+    // pannello, che e' il caso normale di chi compila.
+    std::vector<Display> fakeDisplays;
+    {
+        Display d;
+        d.bounds     = ScreenRect{0, 0, 1920, 1080};
+        d.deviceName = L"Selftest 1";
+        d.primary    = true;
+        fakeDisplays.push_back(d);
+        d.bounds     = ScreenRect{1920, 0, 3840, 1080};
+        d.deviceName = L"Selftest 2";
+        d.primary    = false;
+        fakeDisplays.push_back(d);
+    }
+
+    control::ZoomController probe;
+    const auto              cf = probe.crossfade();
+
+    r.begin(kBg);
+    r.drawSprite(cf.activeIndex, static_cast<float>(cf.activeScale),
+                 static_cast<float>(cf.activeAlpha));
+    r.drawSprite(cf.activeIndex + 1, static_cast<float>(cf.nextScale),
+                 static_cast<float>(cf.nextAlpha));
+
+    // Le tre schermate di contorno: sono quelle che usano il lettering e le
+    // forme libere (la macchia del poster, il campo di metaball), cioe' le
+    // primitive piu' recenti e meno collaudate del Renderer.
+    drawLandingPage(r, st, 1.0);
+    drawOnboarding(r, 2.0, 1.0);
+    drawOffboarding(r, 1.0, 1.0);
+    drawRestartHint(r, 0.5, 1.0);
+
+    drawCalibrationCard(r, st, 0.6, 1.0);
+    drawProjectionScale(r, cf);
+    drawControlRoom(r, st, probe, cf, history, 60.0, diag::Code::Ok, false);
+    drawCalibDebug(r, history, st);
+    drawBleModal(r, st);
+    drawScreenPicker(r, 0, fakeDisplays);
+    drawScreenPickerPanel(r, 0, fakeDisplays);
+
+    return r.end();
 }
 
 } // namespace mz::app::experience

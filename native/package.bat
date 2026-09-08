@@ -3,17 +3,47 @@ REM Produce la cartella distribuibile: dist\MindZoom\ con l'eseguibile e gli
 REM asset. Il CRT e' linkato staticamente, quindi non serve installare il
 REM redistributable di Visual C++ sulla macchina di destinazione.
 
-setlocal
-set VCVARS="C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-if not exist %VCVARS% (
-    echo [package] vcvars64.bat non trovato: controlla il percorso dei Build Tools.
+setlocal EnableDelayedExpansion
+cd /d "%~dp0"
+
+REM L'ambiente del compilatore si trova da solo, come in build.bat: vswhere sta
+REM in un percorso fisso per qualunque Visual Studio dal 2017. Il percorso
+REM scritto a mano che c'era qui funzionava su una macchina sola.
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if not exist "%VSWHERE%" set "VSWHERE=%ProgramFiles%\Microsoft Visual Studio\Installer\vswhere.exe"
+
+set "VCVARS="
+if exist "%VSWHERE%" (
+    for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * ^
+        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 ^
+        -property installationPath`) do (
+        if exist "%%i\VC\Auxiliary\Build\vcvars64.bat" set "VCVARS=%%i\VC\Auxiliary\Build\vcvars64.bat"
+    )
+)
+
+if not defined VCVARS (
+    echo [package] Compilatore C++ non trovato. Lancia prima build.bat, che
+    echo           spiega cosa installare.
     exit /b 1
 )
 
-call %VCVARS% >nul 2>&1
-cd /d "%~dp0"
+call "%VCVARS%" >nul 2>&1
 
-cmake -S . -B build-release -G "Ninja" -DCMAKE_BUILD_TYPE=Release || exit /b 1
+where cmake >nul 2>&1
+if errorlevel 1 (
+    if exist "%VSINSTALLDIR%Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" (
+        set "PATH=%VSINSTALLDIR%Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;%PATH%"
+    ) else (
+        echo [package] CMake non trovato. Lancia prima build.bat.
+        exit /b 1
+    )
+)
+
+cmake -S . -B build-release -G "Ninja" -DCMAKE_BUILD_TYPE=Release >nul 2>&1
+if errorlevel 1 (
+    echo [package] Ninja non disponibile, ripiego su NMake ^(piu' lento^).
+    cmake -S . -B build-release -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release || exit /b 1
+)
 cmake --build build-release || exit /b 1
 
 echo.
@@ -44,6 +74,23 @@ if exist dist\_registrazioni_tmp (
 )
 
 copy /y build-release\MindZoom.exe "%DIST%\" >nul
+
+REM I due font impacchettati vanno accanto all'eseguibile, in fonts\, dove il
+REM renderer li registra presso DirectWrite. Senza, l'applicazione parte
+REM lo stesso ma il lettering delle intestazioni ripiega sul font di sistema e
+REM i titoli escono larghi il doppio: un difetto che si nota solo guardando lo
+REM schermo, cioe' quando l'installazione e' gia' montata.
+mkdir "%DIST%\fonts" 2>nul
+copy /y "assets\fonts\Manrope-Variable.ttf" "%DIST%\fonts\" >nul
+if errorlevel 1 (
+    echo [package] font Manrope non trovato: pacchetto non prodotto.
+    exit /b 1
+)
+copy /y "assets\fonts\LeagueGothic-Variable.ttf" "%DIST%\fonts\" >nul
+if errorlevel 1 (
+    echo [package] font League Gothic non trovato: pacchetto non prodotto.
+    exit /b 1
+)
 
 echo.
 echo [package] conversione degli asset in JPEG (niente codec WebP richiesto)...
