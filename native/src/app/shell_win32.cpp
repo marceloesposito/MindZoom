@@ -571,7 +571,31 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_DESTROY:
             // Solo la finestra dell'operatore chiude l'applicazione: la
             // proiezione viene distrutta insieme, non e' lei a comandare.
-            if (hwnd == g.opHwnd) PostQuitMessage(0);
+            if (hwnd == g.opHwnd) {
+                PostQuitMessage(0);
+            } else if (hwnd == g.projHwnd) {
+                // Chiusa la proiezione da sola - succede con
+                // --proiezione-finestra, che e' una finestra normale con la
+                // sua X. Senza queste righe il renderer continuerebbe a
+                // disegnare su una finestra che non c'e' piu'.
+                g.projRenderer.shutdown();
+                g.projHwnd   = nullptr;
+                g.choosing   = false;
+                g.projIndex  = -1;
+                g.candidate  = -1;
+                g.projLastW  = 0;
+                g.projLastH  = 0;
+                // L'esperienza torna nella finestra dell'operatore, che ora
+                // non e' piu' la sala di controllo: senza questo resterebbe
+                // della misura ridotta a mostrare l'esperienza intera.
+                if (g.opHwnd) {
+                    SetWindowTextW(g.opHwnd, L"Mind Zoom");
+                    RECT r{0, 0, 1280, 800};
+                    AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
+                    SetWindowPos(g.opHwnd, nullptr, 0, 0, r.right - r.left, r.bottom - r.top,
+                                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+                }
+            }
             return 0;
 
         default:
@@ -646,7 +670,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int showCmd) {
 
     if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return 1;
 
-    if (g.opt.listScreens) return reportScreens();
+    if (g.opt.listScreens) {
+        const int rc = reportScreens();
+        CoUninitialize();
+        return rc;
+    }
 
     WNDCLASSEXW wc{};
     wc.cbSize        = sizeof(wc);
