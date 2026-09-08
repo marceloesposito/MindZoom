@@ -142,7 +142,19 @@ Options parseOptions(PWSTR cmdLine) {
             o.hudLevel = 2;
         } else if (a == L"--selftest") {
             o.selfTest = true;
-        } else {
+        } else if (!a.empty() && a[0] == L'-') {
+            // Solo i token che iniziano con un trattino sono opzioni sbagliate.
+            //
+            // Senza questa guardia, lanciare il programma con un DOPPIO CLIC -
+            // cioe' il modo normale - apriva la finestra "Opzione non
+            // riconosciuta" col percorso dell'eseguibile dentro, e il
+            // programma usciva senza partire. CommandLineToArgvW, quando la
+            // riga di comando e' vuota, restituisce per documentazione il
+            // percorso dell'eseguibile come primo argomento: questo ciclo lo
+            // vedeva come un'opzione da non riconoscere.
+            //
+            // C'era gia' in main.cpp e l'ho persa portando; e' costata la
+            // prima accensione su una macchina Windows vera.
             o.badArg     = true;
             o.badArgText = a;
         }
