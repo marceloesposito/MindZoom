@@ -1959,7 +1959,7 @@ constexpr float kOnbPassiH         = kOnbRigaPasso * 3.0f;
 constexpr float kOnbDopoPassi      = 40.0f;
 constexpr float kOnbEtichettaH     = kOnbEtichettaPt * 1.60f;
 constexpr float kOnbDopoEtichetta  = 10.0f;
-constexpr float kOnbParagrafoH     = kOnbParagrafoPt * kOnbInterlinea * 3.0f;   // tre righe
+constexpr float kOnbParagrafoH     = kOnbParagrafoPt * kOnbInterlinea * 2.0f;   // due righe
 constexpr float kOnbDopoParagrafo  = 48.0f;
 constexpr float kOnbDopoPulsante   = 14.0f;
 constexpr float kOnbNotaH          = kOnbNotaPt * 1.60f;
@@ -2026,10 +2026,19 @@ void drawOnboarding(render::Renderer& r, double elapsed, double animT) {
         L"Accendila con il tasto sul lato: la luce si accende",
         L"Prenditi un momento per respirare, prima di entrare",
     };
+    // Due righe di lunghezza simile (40 e 38 caratteri): il blocco e' centrato,
+    // e due righe molto diverse fra loro lo fanno sembrare storto anche quando
+    // e' matematicamente al centro.
+    //
+    // Non si dice piu' quanto andare avanti ("bastano due o tre giri") ne'
+    // perche' ("il segnale diventa piu' nitido"). La seconda era una ragione
+    // strumentale - respira meglio COSI' LA MISURA VIENE MEGLIO - cioe' un
+    // compito da eseguire bene, l'opposto di quello che serve qui: vedi il
+    // commento in testa alla funzione. Il segnale che si puo' entrare resta il
+    // pulsante che si accende dopo kOnboardReadyS.
     static const wchar_t* const kParagrafo =
-        L"Quattro tempi uguali: inspira, trattieni, espira, trattieni.\n"
-        L"Bastano due o tre giri perché il respiro si distenda\n"
-        L"e il segnale che guida l’immagine diventi più nitido.";
+        L"Quattro tempi uguali di quattro secondi:\n"
+        L"inspira, trattieni, espira, trattieni.";
 
     float y = win.height * 0.5f - kOnbTotale * 0.5f;
 
@@ -2400,7 +2409,7 @@ void drawCalibrationCard(render::Renderer& r, const app::ControlState& st, doubl
                           render::rect(panel.left, rowY + 50.0f, panel.right, rowY + 100.0f),
                           36.0f, kAccent2);
         r.drawTextBody(L"Segui la sfera che respira: inspira, trattieni, espira, trattieni —\n"
-                       L"quattro tempi da 4 secondi ciascuno.\n"
+                       L"quattro tempi uguali di quattro secondi.\n"
                        L"Lascia andare lo sforzo di prima.",
                       render::rect(panel.left + 40, rowY + 104.0f, panel.right - 40, rowY + 180.0f),
                       15.5f, kMuted);
