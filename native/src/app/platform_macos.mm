@@ -1,14 +1,19 @@
 // Controparte macOS di platform_win32.cpp: enumerare gli schermi e trovare dove
 // si scrive la scelta.
 //
-// ATTENZIONE: non e' mai stato compilato. Scritto su Windows, dove non esiste un
-// toolchain Objective-C.
+// enumerateDisplaysNative() e' verificata dal test "Enumerazione degli schermi"
+// (tests/test_main.cpp): su questa macchina rileva correttamente 1 schermo. Non
+// era mai stata usata dallo shell macOS pero' (nessuna modalita' a due schermi
+// finche' non l'ha portata experience.cpp/shell_macos.mm) - la firma resta la
+// stessa di platform_win32.cpp apposta.
 
 #import <Cocoa/Cocoa.h>
+#include <mach-o/dyld.h>
 
 #include "app/platform.hpp"
 
 #include <string>
+#include <vector>
 
 namespace mz::app::platform {
 namespace {
@@ -25,7 +30,7 @@ std::wstring toWide(NSString* s) {
 }
 
 /** ~/Library/Application Support/MindZoom, creata se manca. */
-NSString* choiceDir(bool createDir) {
+NSString* supportDir(bool createDir) {
     NSArray<NSString*>* dirs = NSSearchPathForDirectoriesInDomains(
         NSApplicationSupportDirectory, NSUserDomainMask, YES);
     if (dirs.count == 0) return nil;
@@ -82,11 +87,40 @@ std::vector<Display> enumerateDisplaysNative() {
 }
 
 std::FILE* openChoiceFile(bool forWrite) {
-    NSString* dir = choiceDir(forWrite);
+    NSString* dir = supportDir(forWrite);
     if (!dir) return nullptr;
 
     NSString* path = [dir stringByAppendingPathComponent:@"schermo.txt"];
     return std::fopen(path.fileSystemRepresentation, forWrite ? "wt" : "rt");
+}
+
+std::wstring dataDirectory() {
+    return toWide(supportDir(true));
+}
+
+std::wstring exeDirectory() {
+    // _NSGetExecutablePath puo' restituire un percorso con "..", link simbolici
+    // ecc.: si passa da NSString per normalizzarlo, come fa gia' supportDir().
+    std::uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size);   // prima chiamata: solo per sapere size
+    std::vector<char> buf(size);
+    if (_NSGetExecutablePath(buf.data(), &size) != 0) return {};
+
+    NSString* full = [[NSString stringWithUTF8String:buf.data()]
+                          stringByResolvingSymlinksInPath];
+    return toWide([full stringByDeletingLastPathComponent]);
+}
+
+void ensureDirectory(const std::wstring& path) {
+    // path e' sempre ASCII qui (sottocartelle come "registrazioni" o "assets"),
+    // quindi l'allargamento byte-per-byte da wchar_t a char e' sicuro.
+    NSString* s = [[NSString alloc] initWithBytes:path.data()
+                                            length:path.size() * sizeof(wchar_t)
+                                          encoding:NSUTF32LittleEndianStringEncoding];
+    [[NSFileManager defaultManager] createDirectoryAtPath:s
+                             withIntermediateDirectories:YES
+                                              attributes:nil
+                                                   error:nil];
 }
 
 } // namespace mz::app::platform

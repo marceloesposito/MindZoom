@@ -21,6 +21,7 @@ struct Tunables {
     double sensitivity    = 1.0;                        // moltiplicatore su kExtremaGain
     double localTolerance = config::kLocalTolerance;    // ampiezza della rampa di attivazione
     double velTauS        = config::kVelTauS;           // smoothing a valle del controllo
+    double elasticTauS    = config::kElasticTauS;       // smoothing a monte, solo sullo zoom
     bool   holdEnabled    = true;                       // hold/select attivo
 
     // --- fissi, ma passati insieme agli altri per non spargere config:: nella
@@ -40,6 +41,9 @@ struct Tunables {
     }
     void adjustSmoothing(int steps) noexcept {
         velTauS = std::clamp(velTauS + 0.05 * steps, 0.10, 1.00);
+    }
+    void adjustElastic(int steps) noexcept {
+        elasticTauS = std::clamp(elasticTauS + 0.2 * steps, 0.0, 3.0);
     }
     void reset() noexcept { *this = Tunables{}; }
 };

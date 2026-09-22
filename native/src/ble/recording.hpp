@@ -27,12 +27,52 @@
 namespace mz::ble {
 namespace detail {
 
+#ifndef _WIN32
+/**
+ * `_wfopen` è un'API CRT di Windows, non esiste altrove. Fuori da Windows i
+ * percorsi si convertono a UTF-8 (quello che il filesystem si aspetta) e si
+ * passa per `fopen`. Nessuna gestione delle coppie surrogate: quelle esistono
+ * solo in UTF-16, cioè solo su Windows, dove questa funzione non viene
+ * compilata - lì `wchar_t` è già UTF-16 e si passa diretto a `_wfopen`.
+ */
+inline std::string toUtf8(const std::wstring& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (const wchar_t wc : s) {
+        const auto cp = static_cast<std::uint32_t>(wc);
+        if (cp < 0x80) {
+            out.push_back(static_cast<char>(cp));
+        } else if (cp < 0x800) {
+            out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        } else if (cp < 0x10000) {
+            out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        } else {
+            out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        }
+    }
+    return out;
+}
+
+inline std::string toNarrow(const wchar_t* s) {
+    std::string out;
+    for (; *s; ++s) out.push_back(static_cast<char>(*s));
+    return out;
+}
+#endif
+
 /**
  * Il file è un artefatto locale scritto dal programma stesso: le varianti _s
  * non aggiungono sicurezza qui, chiedono solo di controllare un errno che già
  * si ricava dal puntatore nullo.
  */
 inline std::FILE* openFile(const std::wstring& path, const wchar_t* mode) {
+#ifdef _WIN32
 #ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable : 4996)
@@ -40,6 +80,18 @@ inline std::FILE* openFile(const std::wstring& path, const wchar_t* mode) {
     return _wfopen(path.c_str(), mode);
 #ifdef _MSC_VER
 #pragma warning(pop)
+#endif
+#else
+    return std::fopen(toUtf8(path).c_str(), toNarrow(mode).c_str());
+#endif
+}
+
+/** Controparte di `openFile`: `_wremove` su Windows, `remove` su UTF-8 altrove. */
+inline bool removeFile(const std::wstring& path) {
+#ifdef _WIN32
+    return _wremove(path.c_str()) == 0;
+#else
+    return std::remove(toUtf8(path).c_str()) == 0;
 #endif
 }
 

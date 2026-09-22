@@ -33,6 +33,11 @@ struct TelemetrySample {
     bool   artifact     = false;
     bool   calibValid   = false;
     bool   locked       = false;
+
+    // Diagnostica della fase di calibrazione: quanti campioni indipendenti si
+    // sono accumulati e quanto e' correlato il segnale filtrato che li produce.
+    double calibEffN  = 0.0;
+    double autocorr1  = 0.0;
 };
 
 /**

@@ -1,5 +1,7 @@
 build/
 build-release/
+build-release-macos/
+build-macos/
 dist/
 *.obj
 *.pdb

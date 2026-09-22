@@ -67,8 +67,25 @@ public:
     bool init();
     void shutdown();
 
-    /** Decodifica <dir>/1.jpg .. <dir>/N.jpg (o .webp/.png). Una volta sola. */
-    bool loadSprites(const std::wstring& dir, int count);
+    /**
+     * Decodifica <dir>/<magnitudes[0]>.jpg .. <dir>/<magnitudes[count-1]>.jpg
+     * (o .webp/.png), nell'ordine dell'array. Una volta sola. I nomi sono
+     * l'ingrandimento (config::kScaleLabels), non un indice progressivo: cosi'
+     * la cartella assets si autodocumenta invece di essere una sequenza opaca
+     * 1..N leggibile solo insieme al codice.
+     */
+    bool loadSprites(const std::wstring& dir, const int* magnitudes, int count);
+
+    /**
+     * Registra un font impacchettato accanto all'eseguibile presso il sistema
+     * (per processo), cosi' drawText lo trova per nome. Se manca o il backend
+     * non la supporta (solo macOS per ora), drawText ripiega sul font di
+     * sistema: mai fatale.
+     *
+     * Serve al font di corpo, Manrope (<dir>/Manrope-Variable.ttf), che non e'
+     * di sistema; l'accento (Iowan Old Style) lo e'.
+     */
+    bool loadFonts(const std::wstring& dir);
 
     std::size_t spriteCount() const noexcept;
 
@@ -119,6 +136,150 @@ public:
     void drawRectOutline(Rect r, Color color, float stroke, float radius = 0.0f);
     void drawText(const std::wstring& text, Rect box, float fontSize,
                   Color color, TextAlign align = TextAlign::Center, bool bold = false);
+
+    /**
+     * Una riga sola (niente a-capo), il cui centro tipografico - non il
+     * riquadro che la contiene - coincide con `center`. drawText ancora al
+     * TOP del box passato: bene per i paragrafi, sbagliato per una cifra dentro
+     * un pallino o l'etichetta di un pulsante, dove l'occhio nota lo scarto.
+     */
+    void drawTextCentered(const std::wstring& text, Point center, float fontSize, Color color,
+                          bool bold = false);
+
+    // drawText/drawTextCentered disegnano nel font d'accento (Iowan Old Style):
+    // cifre, etichette dei pulsanti, righe di servizio. drawTextBody e la sua
+    // variante centrata usano invece un sans neutro (Manrope) per il corpo del
+    // testo. Restano tutte e due com'erano: con l'identita' Biodetails cambia
+    // solo il LETTERING DELLE INTESTAZIONI, che ha una terza voce sua
+    // (drawTextDisplay, piu' sotto).
+    void drawTextBody(const std::wstring& text, Rect box, float fontSize, Color color,
+                      TextAlign align = TextAlign::Center, bool bold = false);
+    void drawTextBodyCentered(const std::wstring& text, Point center, float fontSize, Color color,
+                              bool bold = false);
+
+    // --- Primitive "avanzate", finora solo macOS: nulla nel backend Windows le
+    // chiama ancora (main.cpp non e' stato portato), quindi non serve una
+    // controparte Direct2D subito. Quando shell_win32 passera' a experience.cpp
+    // andranno implementate anche li'.
+
+    /**
+     * Ingombro del testo nel font del corpo, entro `maxWidth`.
+     *
+     * Serve a CENTRARE davvero un blocco allineato a sinistra (per esempio un
+     * elenco numerato): senza misura, l'unico modo e' stimare la larghezza a
+     * occhio, e il blocco finisce spostato di qualche decina di pixel rispetto
+     * all'asse - visibile, e proprio la cosa che un impaginato pulito non deve
+     * avere. Con `maxWidth` grande, misura la riga piu' lunga.
+     */
+    Size measureTextBody(const std::wstring& text, float fontSize, bool bold = false,
+                         float maxWidth = 100000.0f) const;
+
+    /**
+     * Paragrafo con interlinea esplicita (`lineHeight` come multiplo del corpo).
+     *
+     * drawTextBody usa il leading naturale del font, che per Manrope e' stretto
+     * e va bene per una riga sola o due; per un paragrafo di quattro righe
+     * serve piu' aria, e serve poterla scegliere invece di subirla.
+     */
+    void drawParagraph(const std::wstring& text, Rect box, float fontSize, Color color,
+                       TextAlign align = TextAlign::Center, float lineHeight = 1.45f);
+
+    // --- Identita' Biodetails (vedi design/biodetails/IDENTITA-VISIVA.md) ---
+    //
+    // Il lettering dei titoli e' un grottesco ultracompresso tutto maiuscolo
+    // (League Gothic a larghezza 75, il sostituto misurato del lettering del
+    // poster). E' una voce a parte rispetto a drawText: si usa SOLO per il
+    // titolo di una schermata, mai per il testo che va letto. `tracking` e'
+    // in punti (negativo = lettere piu' vicine); il poster le tiene quasi a
+    // toccarsi.
+    void drawTextDisplay(const std::wstring& text, Rect box, float fontSize, Color color,
+                         TextAlign align = TextAlign::Center, float tracking = 0.0f);
+    void drawTextDisplayCentered(const std::wstring& text, Point center, float fontSize,
+                                 Color color, float tracking = 0.0f);
+    Size measureTextDisplay(const std::wstring& text, float fontSize,
+                            float tracking = 0.0f) const;
+
+    /**
+     * Forma chiusa di curve cubiche: `pts` e' [partenza, c1, c2, fine, c1, c2,
+     * fine, ...] in coordinate finestra, quindi count = 1 + 3*segmenti. Serve
+     * alla macchia del poster (biodetails_blob.hpp), che non e' ne' un cerchio
+     * ne' un rettangolo. La variante clip la usa come maschera, da chiudere
+     * con popClip(): e' il dispositivo "il titolo cambia colore dentro la
+     * macchia".
+     */
+    void fillCubicPath(const Point* pts, int count, Color color);
+    void pushClipCubicPath(const Point* pts, int count);
+
+    /**
+     * Insieme di poligoni chiusi come UN'unica forma (riempimento non-zero):
+     * `lengths[i]` punti consecutivi per ciascuno degli `shapes` contorni.
+     *
+     * Serve al campo di metaball della pagina d'ingresso, che a ogni
+     * fotogramma produce qualche centinaio di pezzetti di contorno: disegnarli
+     * uno per uno lascerebbe le cuciture visibili fra un pezzo e l'altro
+     * (l'antialiasing di due bordi adiacenti non si somma a 1), mentre in una
+     * path sola i bordi interni si annullano e la macchia esce piena.
+     * La variante clip la usa come maschera, da chiudere con popClip().
+     */
+    void fillPolygons(const Point* pts, const int* lengths, int shapes, Color color);
+    void pushClipPolygons(const Point* pts, const int* lengths, int shapes);
+
+    /** Riempimento con sfumatura verticale (top -> bottom), stesso arrotondamento di fillRect. */
+    void fillRectGradient(Rect r, Color top, Color bottom, float radius = 0.0f);
+
+    /** Come fillRect, ma con un'ombra morbida dietro (blur gaussiano, offset in coordinate finestra). */
+    void fillRectShadow(Rect r, Color color, float radius, Color shadowColor, float shadowBlur,
+                        Point shadowOffset);
+
+    /**
+     * Rettangolo arrotondato riempito e poi sfocato per intero (bordi
+     * compresi), come il "layer blur" di Figma; `sigma` e' la deviazione
+     * standard della gaussiana, in pixel logici.
+     */
+    void fillRectBlurred(Rect r, Color color, float radius, float sigma);
+
+    /**
+     * Ombra interna senza offset: un bagliore del colore dato lungo il bordo
+     * interno, pieno per `spread` pixel e poi sfumato con `sigma`.
+     */
+    void fillInnerGlow(Rect r, Color color, float radius, float sigma, float spread = 0.0f);
+
+    /**
+     * Contorno con sfumatura lineare lungo il tratto. `positions` in [0,1];
+     * `from`/`to` in coordinate finestra sono i punti dove la sfumatura vale 0 e 1
+     * (oltre, si prolunga col colore estremo).
+     */
+    void drawRectOutlineGradient(Rect r, const Color* stops, const float* positions, int count,
+                                 Point from, Point to, float stroke, float radius);
+
+    void fillCircle(Point center, float radius, Color color);
+
+    /**
+     * Molti rettangolini tutti dello STESSO colore, in una chiamata sola.
+     *
+     * Esiste per il campo di puntini della pagina d'ingresso, che ne disegna
+     * decine di migliaia per fotogramma. Passando da fillCircle il costo non e'
+     * il riempimento - i puntini sono di uno o due pixel - ma il contorno: un
+     * colore da costruire e un tracciato da avviare per ognuno. Raggruppandoli
+     * per colore quel contorno si paga una volta per gruppo invece che una
+     * volta per puntino.
+     *
+     * A queste dimensioni un quadratino e un cerchietto sono indistinguibili:
+     * la forma si perde comunque nell'antialiasing.
+     */
+    void fillRects(const Rect* rects, int count, Color color);
+
+    /**
+     * Cerchio con sfumatura radiale a tre tappe (centro / meta' / bordo): il
+     * trattamento "alla Siri" riservato ai pochi elementi che lo meritano - i
+     * cerchi animati della calibrazione, non la grafica ovunque.
+     */
+    void fillCircleGradient(Point center, float radius, Color inner, Color mid, Color outer);
+
+    /** Arco tratteggiato spesso, per indicatori circolari di progresso. Angoli in gradi,
+     *  0 = verso destra, crescenti in senso orario (coerente con y verso il basso). */
+    void drawArc(Point center, float radius, float startDeg, float endDeg, float thickness,
+                Color color);
 
     void drawLine(Point a, Point b, Color color, float stroke = 1.0f);
     /** Spezzata: una geometria per chiamata, trascurabile a qualche centinaio di punti. */

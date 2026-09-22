@@ -1,0 +1,120 @@
+=== Mind Zoom - log di diagnostica (macOS) ===
+build: Sep  5 2026 21:48:27
+kLocalTolerance=0.24 kSampleRate=256 kChannels=4
+Come leggerlo: le righe [MZ-xNN] sono lo stato del sistema in linguaggio
+naturale (B = Bluetooth/fascia, S = segnale EEG, C = calibrazione,
+R = grafica/prestazioni, A = avvio, I = informativo, X = crash).
+Ogni 10 s una riga [stato] riassume fps, fase e codice corrente:
+se il file finisce senza '=== fine sessione ===' e senza '[MZ-X01]',
+il programma e' stato interrotto dall'esterno (chiuso a forza o spento).
+[1788638347710] [MZ-B02] Ricerca della fascia EEG in corso | cosa fare: Attendi. Se non si collega entro 30 s: fascia accesa e carica? Bluetooth del Mac attivo?
+[1788638347710] [stato] MZ-B02 | fps=60 | Pagina d’ingresso · in attesa del partecipante | ble=1 pkt=0/0 frames=0 fresh=0 fault=0 contact=1 | indice=0.000 vel=0.000 | fascia
+[1788638349686] adattiva: pronta=0 riscaldamento=0% campioni=0 banda=[0.000 .. 0.000] M=0.000 signalFresh=0 contactOk=0 plausible=0
+[1788638351688] adattiva: pronta=0 riscaldamento=0% campioni=0 banda=[0.000 .. 0.000] M=0.000 signalFresh=0 contactOk=0 plausible=0
+[1788638353690] adattiva: pronta=0 riscaldamento=0% campioni=0 banda=[0.000 .. 0.000] M=0.000 signalFresh=0 contactOk=0 plausible=0
+[1788638354126] connesso, cerco i servizi
+[1788638354302] servizi trovati: 1
+[1788638354333] characteristic trovate: 2
+[1788638354392] notifiche controllo attive
+[1788638354467] notifiche EEG attive
+[1788638354467] handshake 1/11: 'v6'
+[1788638354498]   -> ack ricevuto
+[1788638354599] handshake 2/11: 's'
+[1788638354632]   -> ack ricevuto
+[1788638354733] handshake 3/11: 'h'
+[1788638354766]   -> ack ricevuto
+[1788638354871] handshake 4/11: 'p21'
+[1788638354902]   -> ack ricevuto
+[1788638355062] [MZ-B03] Connessione alla fascia in corso | cosa fare: Attendi qualche secondo.
+[1788638355108] handshake 5/11: 'dc001'
+[1788638355141]   -> ack ricevuto
+[1788638355141] handshake 6/11: 'L1'
+[1788638355566]   -> timeout, nessun ack per 'L1'
+[1788638355691] adattiva: pronta=0 riscaldamento=0% campioni=0 banda=[0.000 .. 0.000] M=0.000 signalFresh=0 contactOk=0 plausible=0
+[1788638355883] handshake 7/11: 'h'
+[1788638355907]   -> ack ricevuto
+[1788638356014] handshake 8/11: 'p1041'
+[1788638356043]   -> ack ricevuto
+[1788638356250] handshake 9/11: 'dc001'
+[1788638356281]   -> ack ricevuto
+[1788638356281] handshake 10/11: 'L1'
+[1788638356684]   -> timeout, nessun ack per 'L1'
+[1788638356885] handshake 11/11: 's'
+[1788638356918]   -> ack ricevuto
+[1788638356918] streaming avviato
+[1788638357692] adattiva: pronta=0 riscaldamento=0% campioni=0 banda=[0.000 .. 0.000] M=0.000 signalFresh=0 contactOk=0 plausible=0
+[1788638357716] [stato] MZ-B03 | fps=58 | Pagina d’ingresso · in attesa del partecipante | ble=3 pkt=57/8 frames=0 fresh=0 fault=0 contact=1 | indice=0.000 vel=0.000 | fascia
+[1788638358949] [MZ-I03] Pagina d'ingresso: in attesa del partecipante | cosa fare: INVIO per iniziare l'esperienza.
+[1788638359694] adattiva: pronta=0 riscaldamento=7% campioni=7 banda=[0.000 .. 0.000] M=0.000 signalFresh=1 contactOk=1 plausible=1
+[1788638361694] adattiva: pronta=0 riscaldamento=17% campioni=18 banda=[0.000 .. 0.000] M=0.000 signalFresh=1 contactOk=1 plausible=1
+[1788638363695] adattiva: pronta=0 riscaldamento=27% campioni=29 banda=[0.000 .. 0.000] M=0.000 signalFresh=1 contactOk=1 plausible=1
+[1788638365695] adattiva: pronta=0 riscaldamento=37% campioni=39 banda=[0.000 .. 0.000] M=0.000 signalFresh=1 contactOk=1 plausible=1
+[1788638367696] adattiva: pronta=0 riscaldamento=47% campioni=50 banda=[0.000 .. 0.000] M=0.000 signalFresh=1 contactOk=1 plausible=1
+[1788638367726] [stato] MZ-I03 | fps=55 | Pagina d’ingresso · in attesa del partecipante | ble=3 pkt=419/266 frames=50 fresh=1 fault=0 contact=1 | indice=1.096 vel=0.000 | fascia
+[1788638369698] adattiva: pronta=0 riscaldamento=57% campioni=61 banda=[0.000 .. 0.000] M=0.000 signalFresh=1 contactOk=1 plausible=1
+[1788638370085] [MZ-I02] Adattamento al segnale in corso | cosa fare: Nessuna azione: termina da solo in circa 20 s.
+[1788638371699] adattiva: pronta=0 riscaldamento=67% campioni=71 banda=[0.000 .. 0.000] M=0.000 signalFresh=1 contactOk=1 plausible=1
+[1788638373701] adattiva: pronta=0 riscaldamento=77% campioni=82 banda=[0.000 .. 0.000] M=0.000 signalFresh=1 contactOk=1 plausible=1
+[1788638375702] adattiva: pronta=0 riscaldamento=87% campioni=93 banda=[0.000 .. 0.000] M=0.000 signalFresh=1 contactOk=1 plausible=1
+[1788638377703] adattiva: pronta=0 riscaldamento=97% campioni=103 banda=[0.000 .. 0.000] M=0.000 signalFresh=1 contactOk=1 plausible=1
+[1788638377733] [stato] MZ-I02 | fps=50 | Adattamento al segnale · 97% | ble=3 pkt=781/525 frames=103 fresh=1 fault=0 contact=1 | indice=0.664 vel=0.000 | fascia
+[1788638379704] adattiva: pronta=1 riscaldamento=100% campioni=114 banda=[0.606 .. 1.103] M=0.932 signalFresh=1 contactOk=1 plausible=1
+[1788638380922] [MZ-00] Tutto regolare
+[1788638381705] adattiva: pronta=1 riscaldamento=100% campioni=125 banda=[0.640 .. 1.152] M=0.945 signalFresh=1 contactOk=1 plausible=1
+[1788638383705] adattiva: pronta=1 riscaldamento=100% campioni=135 banda=[0.606 .. 1.142] M=0.945 signalFresh=1 contactOk=1 plausible=1
+[1788638385706] adattiva: pronta=1 riscaldamento=100% campioni=146 banda=[0.586 .. 1.119] M=0.914 signalFresh=1 contactOk=1 plausible=1
+[1788638387708] adattiva: pronta=1 riscaldamento=100% campioni=157 banda=[0.576 .. 1.126] M=0.913 signalFresh=1 contactOk=1 plausible=1
+[1788638387733] [stato] MZ-00 | fps=60 | Esperienza in corso | ble=3 pkt=1144/789 frames=157 fresh=1 fault=0 contact=1 | indice=1.369 vel=0.250 | fascia
+[1788638389711] adattiva: pronta=1 riscaldamento=100% campioni=167 banda=[0.577 .. 1.183] M=0.929 signalFresh=1 contactOk=1 plausible=1
+[1788638391712] adattiva: pronta=1 riscaldamento=100% campioni=178 banda=[0.587 .. 1.223] M=0.951 signalFresh=1 contactOk=1 plausible=1
+[1788638393713] adattiva: pronta=1 riscaldamento=100% campioni=189 banda=[0.590 .. 1.236] M=0.966 signalFresh=1 contactOk=1 plausible=1
+[1788638395716] adattiva: pronta=1 riscaldamento=100% campioni=199 banda=[0.592 .. 1.229] M=0.964 signalFresh=1 contactOk=1 plausible=1
+[1788638397716] adattiva: pronta=1 riscaldamento=100% campioni=210 banda=[0.586 .. 1.223] M=0.951 signalFresh=1 contactOk=1 plausible=1
+[1788638397734] [stato] MZ-00 | fps=60 | Esperienza in corso | ble=3 pkt=1506/1046 frames=210 fresh=1 fault=0 contact=1 | indice=1.282 vel=-0.110 | fascia
+[1788638399719] adattiva: pronta=1 riscaldamento=100% campioni=221 banda=[0.587 .. 1.229] M=0.964 signalFresh=1 contactOk=1 plausible=1
+[1788638401720] adattiva: pronta=1 riscaldamento=100% campioni=231 banda=[0.590 .. 1.228] M=0.951 signalFresh=1 contactOk=1 plausible=1
+[1788638403723] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.605 .. 1.253] M=0.962 signalFresh=1 contactOk=1 plausible=1
+[1788638405725] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.605 .. 1.270] M=0.977 signalFresh=1 contactOk=1 plausible=1
+[1788638407726] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.605 .. 1.287] M=0.983 signalFresh=1 contactOk=1 plausible=1
+[1788638407751] [stato] MZ-00 | fps=60 | Esperienza in corso | ble=3 pkt=1868/1311 frames=263 fresh=1 fault=0 contact=1 | indice=0.956 vel=0.001 | fascia
+[1788638409727] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.605 .. 1.263] M=0.964 signalFresh=1 contactOk=1 plausible=1
+[1788638411729] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.605 .. 1.270] M=0.970 signalFresh=1 contactOk=1 plausible=1
+[1788638413730] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.626 .. 1.337] M=0.983 signalFresh=1 contactOk=1 plausible=1
+[1788638415730] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.648 .. 1.433] M=1.002 signalFresh=1 contactOk=1 plausible=1
+[1788638417731] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.640 .. 1.433] M=1.002 signalFresh=1 contactOk=1 plausible=1
+[1788638417768] [stato] MZ-00 | fps=60 | Esperienza in corso | ble=3 pkt=2232/1570 frames=317 fresh=1 fault=0 contact=1 | indice=0.910 vel=-0.238 | fascia
+[1788638419731] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.639 .. 1.433] M=1.012 signalFresh=1 contactOk=1 plausible=1
+[1788638421733] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.651 .. 1.448] M=1.077 signalFresh=1 contactOk=1 plausible=1
+[1788638423735] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.664 .. 1.490] M=1.108 signalFresh=1 contactOk=1 plausible=1
+[1788638425736] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.733 .. 1.524] M=1.138 signalFresh=1 contactOk=1 plausible=1
+[1788638427738] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.733 .. 1.554] M=1.141 signalFresh=1 contactOk=1 plausible=1
+[1788638427785] [stato] MZ-00 | fps=60 | Esperienza in corso | ble=3 pkt=2596/1833 frames=371 fresh=1 fault=0 contact=1 | indice=0.914 vel=-0.026 | fascia
+[1788638428785] [MZ-S07] Movimento rilevato: lettura momentaneamente sospesa | cosa fare: Passa da solo: chiedi di restare fermi qualche secondo.
+[1788638429738] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.745 .. 1.554] M=1.155 signalFresh=1 contactOk=1 plausible=1
+[1788638431035] [MZ-00] Tutto regolare
+[1788638431740] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.778 .. 1.555] M=1.181 signalFresh=1 contactOk=1 plausible=1
+[1788638433741] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.778 .. 1.555] M=1.181 signalFresh=1 contactOk=1 plausible=1
+[1788638435744] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.762 .. 1.555] M=1.166 signalFresh=1 contactOk=1 plausible=1
+[1788638437744] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.755 .. 1.580] M=1.158 signalFresh=1 contactOk=1 plausible=1
+[1788638437801] [stato] MZ-00 | fps=60 | Esperienza in corso | ble=3 pkt=2960/2092 frames=424 fresh=1 fault=0 contact=1 | indice=0.524 vel=-0.245 | fascia
+[1788638439746] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.682 .. 1.580] M=1.138 signalFresh=1 contactOk=1 plausible=1
+[1788638441747] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.640 .. 1.580] M=1.097 signalFresh=1 contactOk=1 plausible=1
+[1788638443749] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.645 .. 1.580] M=1.089 signalFresh=1 contactOk=1 plausible=1
+[1788638445750] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.685 .. 1.580] M=1.082 signalFresh=1 contactOk=1 plausible=1
+[1788638447752] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.700 .. 1.580] M=1.029 signalFresh=1 contactOk=1 plausible=1
+[1788638447818] [stato] MZ-00 | fps=60 | Esperienza in corso | ble=3 pkt=3322/2353 frames=477 fresh=1 fault=0 contact=1 | indice=0.951 vel=-0.267 | fascia
+[1788638449755] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.700 .. 1.580] M=0.983 signalFresh=1 contactOk=1 plausible=1
+[1788638451756] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.700 .. 1.566] M=0.991 signalFresh=1 contactOk=1 plausible=1
+[1788638453756] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.700 .. 1.499] M=0.964 signalFresh=1 contactOk=1 plausible=1
+[1788638455758] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.685 .. 1.490] M=0.950 signalFresh=1 contactOk=1 plausible=1
+[1788638457759] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.647 .. 1.490] M=0.936 signalFresh=1 contactOk=1 plausible=1
+[1788638457834] [stato] MZ-00 | fps=60 | Esperienza in corso | ble=3 pkt=3685/2615 frames=531 fresh=1 fault=0 contact=1 | indice=0.849 vel=-0.156 | fascia
+[1788638459761] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.647 .. 1.490] M=0.936 signalFresh=1 contactOk=1 plausible=1
+[1788638459868] [MZ-S07] Movimento rilevato: lettura momentaneamente sospesa | cosa fare: Passa da solo: chiedi di restare fermi qualche secondo.
+[1788638461534] [MZ-00] Tutto regolare
+[1788638461763] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.645 .. 1.467] M=0.926 signalFresh=1 contactOk=1 plausible=1
+[1788638463764] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.632 .. 1.417] M=0.885 signalFresh=1 contactOk=1 plausible=1
+[1788638465635] [MZ-S07] Movimento rilevato: lettura momentaneamente sospesa | cosa fare: Passa da solo: chiedi di restare fermi qualche secondo.
+[1788638465767] adattiva: pronta=1 riscaldamento=100% campioni=240 banda=[0.632 .. 1.417] M=0.885 signalFresh=1 contactOk=1 plausible=1
+[1788638467137] [stato] MZ-S07 | fps=60 | Esperienza in corso · zoom fermo (in attesa di un cambio netto) | ble=3 pkt=4023/2861 frames=581 fresh=1 fault=0 contact=1 | indice=1.143 vel=0.002 | fascia
+=== fine sessione (chiusura regolare): bleState=3 rawPackets=4023 validPackets=2861 packetLen=207 packetSamples=12 ===

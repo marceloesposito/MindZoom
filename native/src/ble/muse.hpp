@@ -87,8 +87,14 @@ public:
     std::uint64_t rawPackets() const noexcept { return rawPackets_.load(std::memory_order_relaxed); }
     std::uint64_t validPackets() const noexcept { return validPackets_.load(std::memory_order_relaxed); }
 
+public:
+    // Isola winrt/*.h (o CoreBluetooth) dal resto del progetto: tipo opaco,
+    // nessun membro visibile qui. Pubblico solo nel nome - il backend macOS ne
+    // ha bisogno perche' il delegate CoreBluetooth e' un NSObject separato, non
+    // un membro C++, e deve poter dichiarare un puntatore a Impl.
+    struct Impl;
+
 private:
-    struct Impl;                 // isola winrt/*.h dal resto del progetto
     Impl* impl_ = nullptr;
 
     SampleCallback onSample_;
